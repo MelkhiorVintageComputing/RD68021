@@ -54,6 +54,54 @@ a clean copy of figure 5-44 or a real MC68020.
 
 ---
 
+## Format $A is emitted only for a prefetch fault
+
+Table 6-5 gives the short bus fault frame for "Address Error or Bus Error —
+Execution Unit at Instruction Boundary". A real MC68020's bus controller runs
+ahead of its sequencer, so it can retire an instruction while that instruction's
+write is still outstanding, and a *data* fault can then arrive with the execution
+unit at an instruction boundary — a short frame for a data access.
+
+**This design emits format `$A` only for a fault on a prefetch, and every data
+fault produces format `$B`.** The microcode stalls on `req_ack`, so there is no
+bus/sequencer concurrency in this phase and a data access always has an
+instruction in progress.
+
+**What could differ:** a handler that branches on the frame format rather than on
+the SSW will see `$B` where a real part might have given it `$A`. The frame is
+larger and carries strictly more information, so nothing a handler needs is
+missing; it is 30 words more stack.
+
+The manual licenses this explicitly, UM 6.4: "The system software should not
+depend on a particular exception generating a particular stack frame. For
+compatibility with future devices, the software should be able to handle any type
+of stack frame for any type of exception."
+
+**How it is checked:** the fault testbenches of M9, which assert the frame format
+for each shape of fault.
+
+---
+
+## The cache holding register is not saved in a fault frame
+
+UM 1.6's instruction pipe is fed from a 32-bit cache holding register. It is 64
+bits of state once its address and validity are counted — a fifth of the long
+frame's private budget.
+
+**It is not checkpointed. RTE restores it as invalid, and the next prefetch
+re-reads the long word.** It is a pure cache of the last long word fetched: the
+cost of discarding it is one bus cycle after a fault and it can never give a wrong
+answer, where keeping it costs 66 bits and adds a way for a restored pipe to
+disagree with memory.
+
+**What differs:** one extra bus cycle per RTE from a fault frame. Nothing
+architectural.
+
+**How it is checked:** `doc/timing-divergences.md` measures it when M12 measures
+the cycle counts. `doc/checkpoint.md` records the budget it bought.
+
+---
+
 ## The address group is released between bus cycles
 
 Specification 7, "Clock High to Address, Data, FC, Size, RMC High Impedance",

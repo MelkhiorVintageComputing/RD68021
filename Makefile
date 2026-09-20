@@ -56,7 +56,7 @@ help:
 	@echo "  make sim-bus   ... just the bus-level ones"
 	@echo "  make audit     prove no register initialises outside reset"
 	@echo "  make timing    AC-specification feasibility, all four speed grades"
-	@echo "  make ucode     regenerate the microcode ROMs from tools/ucode/"
+	@echo "  make ucode     regenerate rtl/gen/ from tools/ucode/"
 	@echo "  make check     the gate: ucode-check, lint, audit"
 	@echo
 	@echo "  make synth        Vivado synthesis ($(XPART))"
@@ -124,13 +124,13 @@ audit: dirs
 # ---------------------------------------------------------------------------
 # Microcode -- M4
 # ---------------------------------------------------------------------------
+# The generated files are committed, so a build needs no Python. ucode-check is
+# the first thing `make check` runs, so they cannot drift from their source.
 ucode: dirs
-	@if [ -f tools/ucode/assemble.py ]; then python3 tools/ucode/assemble.py; \
-	 else echo "  ucode: nothing to build yet (M4)"; fi
+	@python3 tools/ucode/assemble.py
 
 ucode-check: dirs
-	@if [ -f tools/ucode/assemble.py ]; then python3 tools/ucode/assemble.py --check; \
-	 else echo "  ucode-check: nothing to check yet (M4)"; fi
+	@python3 tools/ucode/assemble.py --check
 
 # ---------------------------------------------------------------------------
 # Directed testbenches
