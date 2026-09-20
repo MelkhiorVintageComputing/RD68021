@@ -27,6 +27,8 @@ GEN = os.path.join(ROOT, 'rtl', 'gen')
 sys.path.insert(0, HERE)
 
 import frames                                                   # noqa: E402
+import isa                                                      # noqa: E402
+import program                                                  # noqa: E402
 
 BANNER = """// RD68021 - SystemVerilog MC68020
 //
@@ -164,8 +166,247 @@ def doc_tables():
     return '\n'.join(out) + '\n'
 
 
+# --------------------------------------------------------------------------
+# The microcode store
+# --------------------------------------------------------------------------
+def assemble_words():
+    """Every microword as an integer, with `next` resolved.
+
+    Fall-through is the default: a microword whose `seq` is NEXT and which names
+    no successor runs the one after it. An unset field can therefore never mean
+    micro-address zero by accident.
+    """
+    lay, width = isa.layout()
+    out = []
+    for i, (fields, _comment) in enumerate(program.WORDS):
+        word = 0
+        for name, (lsb, w) in lay.items():
+            enc = isa.FIELDS[name][1]
+            default = isa.FIELDS[name][2]
+            v = fields.get(name, default)
+            if name == 'next':
+                if name in fields:
+                    v = program.entry(fields['next']) if isinstance(v, str) else v
+                else:
+                    v = i + 1        # fall through
+            elif enc is not None:
+                if v not in enc:
+                    raise SystemExit('assemble: microword %d: %r is not a value of '
+                                     'field %r' % (i, v, name))
+                v = enc[v]
+            if v < 0 or v >= (1 << w):
+                raise SystemExit('assemble: microword %d: field %r value %d does '
+                                 'not fit in %d bits' % (i, name, v, w))
+            word |= v << lsb
+        out.append(word)
+    return out, width
+
+
+# --------------------------------------------------------------------------
+# The opcode decoder
+#
+# Written as an ordered list -- first match wins -- and emitted as DISJOINT
+# patterns, because Quartus builds an ordered casez as a priority chain and does
+# not flatten it. On the MC68010 project that cost 1401 patterns 498 logic levels
+# and 4.67 MHz where Vivado and yosys flattened the same source.
+#
+# The order is resolved once, here, and the two tables are then proved to agree
+# over all 65536 opcodes.
+# --------------------------------------------------------------------------
+def cube_minus(a, b):
+    """The cubes covering a but not b."""
+    for i in range(16):
+        if a[i] != '-' and b[i] != '-' and a[i] != b[i]:
+            return [a]                      # disjoint already
+    out = []
+    cur = list(a)
+    for i in range(16):
+        if b[i] != '-' and a[i] == '-':
+            piece = list(cur)
+            piece[i] = '1' if b[i] == '0' else '0'
+            out.append(''.join(piece))
+            cur[i] = b[i]
+    return out
+
+
+def make_disjoint(pats):
+    out = []
+    for i, (p, t, m) in enumerate(pats):
+        cubes = [p]
+        for q, _, _ in pats[:i]:
+            nxt = []
+            for c in cubes:
+                nxt.extend(cube_minus(c, q))
+            cubes = nxt
+        if not cubes:
+            raise SystemExit('assemble: opcode pattern %s (%s) is completely '
+                             'shadowed by an earlier one' % (p, m))
+        for c in cubes:
+            out.append((c, t, m))
+    return out
+
+
+def _match(pattern, op):
+    for i, c in enumerate(pattern):
+        if c == '-':
+            continue
+        if ((op >> (15 - i)) & 1) != int(c):
+            return False
+    return True
+
+
+def check_disjoint(ordered, disjoint):
+    """The two tables agree over every opcode, and no two disjoint cubes overlap."""
+    bad = []
+    for op in range(65536):
+        a = None
+        for p, t, _ in ordered:
+            if _match(p, op):
+                a = t
+                break
+        hits = [t for p, t, _ in disjoint if _match(p, op)]
+        if len(hits) > 1:
+            bad.append('opcode $%04X matches %d disjoint patterns' % (op, len(hits)))
+            if len(bad) > 4:
+                break
+        b = hits[0] if hits else None
+        if a != b:
+            bad.append('opcode $%04X: ordered says %r, disjoint says %r'
+                       % (op, a, b))
+            if len(bad) > 4:
+                break
+    return bad
+
+
+def ucode_pkg():
+    lay, width = isa.layout()
+    out = [BANNER]
+    out.append("""// The microword: every field position and every encoding the microcode can use,
+// so that the RTL and the microcode cannot drift apart. tools/ucode/isa.py is the
+// only place any of this is decided.
+
+`ifndef RD68021_UCODE_PKG_SV
+`define RD68021_UCODE_PKG_SV
+
+package rd68021_ucode_pkg;
+""")
+    out.append('  localparam int UW    = %d;   // microword width' % width)
+    out.append('  localparam int UADDR = %d;   // micro-address width' % isa.UADDR_BITS)
+    out.append('')
+    for name, (lsb, w) in lay.items():
+        out.append('  localparam int U_%s_LSB = %d;' % (name.upper(), lsb))
+        out.append('  localparam int U_%s_W   = %d;' % (name.upper(), w))
+    out.append('')
+    for name, (w, e, _d) in isa.FIELDS.items():
+        if e is None:
+            continue
+        for k, v in e.items():
+            out.append("  localparam logic [%d:0] U_%s_%s = %d'd%d;"
+                       % (w - 1, name.upper(), k, w, v))
+        out.append('')
+    out.append('  // Named entry points.')
+    for lbl in ('reset', 'illegal'):
+        out.append('  localparam logic [UADDR-1:0] ENTRY_%s = %d\'d%d;'
+                   % (lbl.upper(), isa.UADDR_BITS, program.entry(lbl)))
+    out.append("""
+endpackage
+
+`endif""")
+    return '\n'.join(out) + '\n'
+
+
+def ucode_rom():
+    words, width = assemble_words()
+    out = [BANNER]
+    out.append("""// The microcode store.
+//
+// Read at `addr`, which the sequencer drives with the NEXT micro-address rather
+// than the current one, and registered: the same word arrives at the same time as
+// the micro-address it belongs to, with no clock lost and with a memory instead of
+// logic. The reset value is the word at the reset entry point, which is what makes
+// this a reset register like any other rather than an exemption from the rule.
+
+// The port widths are literals rather than rd68021_ucode_pkg::UADDR-1 and UW-1:
+// iverilog rejects a package-scoped constant in a port declaration with a bare
+// "syntax error" and no hint as to which token it minded. The generator knows
+// both numbers, so it writes them out. doc/coding-standard.md.
+module rd68021_ucode_rom (
+    input  logic          clk,
+    input  logic          rst_n,
+    input  logic [%d:0]   addr,
+    output logic [%d:0]   uw
+);
+
+  // Say which memory and stop it being a choice: Vivado's ROM inference in its
+  // own synthesis report is preliminary and timing optimisation may reverse it
+  // with no message, and Quartus honours ramstyle where Vivado honours rom_style.
+  (* rom_style = "block", ramstyle = "M9K" *)
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      uw <= %d'h%0*X;
+    end else begin
+      unique case (addr)""" % (isa.UADDR_BITS - 1, width - 1,
+                               width, (width + 3) // 4,
+                               words[program.entry('reset')]))
+    for i, w in enumerate(words):
+        _f, comment = program.WORDS[i]
+        out.append("        %d'd%-5d: uw <= %d'h%0*X;%s"
+                   % (isa.UADDR_BITS, i, width, (width + 3) // 4, w,
+                      ('   // ' + comment) if comment else ''))
+    out.append("""        default:      uw <= %d'h%0*X;   // the illegal entry
+      endcase
+    end
+  end
+
+endmodule""" % (width, (width + 3) // 4, words[program.entry('illegal')]))
+    return '\n'.join(out) + '\n'
+
+
+def decode_rom():
+    ordered = program.PATTERNS
+    disjoint = make_disjoint(ordered)
+    bad = check_disjoint(ordered, disjoint)
+    if bad:
+        raise SystemExit('assemble: the disjoint decode table does not agree with '
+                         'the ordered one:\n  ' + '\n  '.join(bad))
+    out = [BANNER]
+    out.append("""// The opcode decoder: an instruction word in, a micro-address out.
+//
+// The patterns in tools/ucode/program.py are ORDERED -- first match wins -- and
+// are emitted here as DISJOINT ones, because Quartus builds an ordered casez as a
+// priority chain and does not flatten it. assemble.py resolves the order once, in
+// Python, and proves the two tables agree over all 65536 opcodes.
+//
+// %d ordered patterns became %d disjoint ones.
+
+module rd68021_decode_rom (
+    input  logic [15:0]                         ir,
+    output logic [%d:0] entry,
+    output logic                                illegal
+);
+
+  always_comb begin
+    illegal = 1'b0;
+    casez (ir)""" % (len(ordered), len(disjoint), isa.UADDR_BITS - 1))
+    for p, t, m in disjoint:
+        out.append("      16'b%s: entry = %d'd%d;   // %s"
+                   % (p.replace('-', '?'), isa.UADDR_BITS, program.entry(t), m))
+    out.append("""      default: begin
+        entry   = rd68021_ucode_pkg::ENTRY_ILLEGAL;
+        illegal = 1'b1;
+      end
+    endcase
+  end
+
+endmodule""")
+    return '\n'.join(out) + '\n'
+
+
 OUTPUTS = {
     os.path.join(GEN, 'rd68021_frame_pkg.sv'): frame_pkg,
+    os.path.join(GEN, 'rd68021_ucode_pkg.sv'): ucode_pkg,
+    os.path.join(GEN, 'rd68021_ucode_rom.sv'): ucode_rom,
+    os.path.join(GEN, 'rd68021_decode_rom.sv'): decode_rom,
     os.path.join(ROOT, 'build', 'checkpoint-tables.md'): doc_tables,
 }
 
@@ -176,9 +417,9 @@ def main():
                     help='fail if the checked-in files are stale')
     args = ap.parse_args()
 
-    bad = frames.check()
+    bad = frames.check() + isa.check()
     if bad:
-        print('FAIL: the frame table is not self-consistent')
+        print('FAIL: the tables are not self-consistent')
         for b in bad:
             print('  %s' % b)
         return 1
@@ -206,12 +447,16 @@ def main():
                 print('  %s' % os.path.relpath(p, ROOT))
             return 1
         have, use, spare = frames.budget()
-        print('  ucode-check: frames consistent, %d of %d checkpoint bits used, '
-              '%d words spare' % (use, have, len(spare)))
+        print('  ucode-check: %d microwords, %d opcode patterns, %d of %d '
+              'checkpoint bits used' % (len(program.WORDS),
+                                        len(program.PATTERNS), use, have))
     else:
         have, use, spare = frames.budget()
-        print('  ucode: %d generated file(s); %d of %d checkpoint bits used, '
-              '%d words spare' % (len(OUTPUTS), use, have, len(spare)))
+        _lay, uww = isa.layout()
+        print('  ucode: %d files; %d microwords of %d bits, %d opcode patterns, '
+              '%d of %d checkpoint bits used, %d words spare'
+              % (len(OUTPUTS), len(program.WORDS), uww, len(program.PATTERNS),
+                 use, have, len(spare)))
     return 0
 
 

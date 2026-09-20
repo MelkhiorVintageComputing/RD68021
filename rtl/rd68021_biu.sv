@@ -178,6 +178,14 @@ module rd68021_biu #(
   logic        op_isfetch;   // the request came from the instruction fetch unit
   logic [39:0] op_data;      // write data, or the read accumulator, right justified
 
+  // The result of the last completed operand of each kind, held until the next
+  // one of that kind completes. op_data cannot serve: it is the accumulator of
+  // the operand in flight, and the instruction fetch unit refills the pipe by
+  // itself, so a prefetch starting in the clock after a data read would destroy
+  // the data before the sequencer had read it.
+  logic [39:0] rdata_q;
+  logic [31:0] frdata_q;
+
   // The cycle in flight, latched at the rising edge entering S0 so that every pin
   // is stable for the whole cycle whatever the operand state does.
   logic [31:0] cyc_addr;
@@ -692,6 +700,8 @@ module rd68021_biu #(
       cyc_rmc    <= 1'b0;
       req_ack    <= 1'b0;
       fetch_ack  <= 1'b0;
+      rdata_q    <= '0;
+      frdata_q   <= '0;
       req_fault    <= 1'b0;
       req_fault_wr <= 1'b0;
       fetch_fault  <= 1'b0;
@@ -735,10 +745,12 @@ module rd68021_biu #(
           if (op_isfetch) begin
             fetch_ack   <= 1'b1;
             fetch_fault <= term_err;
+            if (op_rw) frdata_q <= rd_merged[31:0];
           end else begin
             req_ack      <= 1'b1;
             req_fault    <= term_err;
             req_fault_wr <= term_err && !op_rw;
+            if (op_rw) rdata_q <= rd_merged;
           end
         end
       end
@@ -961,8 +973,8 @@ module rd68021_biu #(
   // ==========================================================================
   // Back to the sequencer
   // ==========================================================================
-  assign req_rdata   = op_data;
-  assign fetch_rdata = op_data[31:0];
+  assign req_rdata   = rdata_q;
+  assign fetch_rdata = frdata_q;
 
   always_comb begin
     if (term_err)                            req_end = rd68021_pkg::CE_BERR;

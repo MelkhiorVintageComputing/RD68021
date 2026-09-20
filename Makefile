@@ -28,8 +28,12 @@ APART           ?= 5CSEMA5F31C6
 # The file list. Dependency-ordered, packages first: Vivado needs a package read
 # before its users, and so does Questa.
 # ---------------------------------------------------------------------------
-PKGS := rtl/rd68021_pkg.sv
-GEN  := $(wildcard rtl/gen/*.sv)
+# Packages first -- Vivado and Questa need one read before its users, and so does
+# iverilog. The generated files are split the same way: a plain wildcard over
+# rtl/gen/ sorts rd68021_decode_rom.sv ahead of the package it depends on.
+PKGS    := rtl/rd68021_pkg.sv
+GENPKG  := $(wildcard rtl/gen/*_pkg.sv)
+GENSRC  := $(filter-out $(GENPKG),$(wildcard rtl/gen/*.sv))
 SRCS := rtl/rd68021_sync.sv \
         rtl/rd68021_dedge_ff.sv \
         rtl/rd68021_biu.sv \
@@ -37,7 +41,7 @@ SRCS := rtl/rd68021_sync.sv \
         rtl/rd68021_seq.sv \
         rtl/rd68021_top.sv
 
-RTL  := $(PKGS) $(GEN) $(SRCS)
+RTL  := $(PKGS) $(GENPKG) $(GENSRC) $(SRCS)
 VLT  := rtl/rd68021.vlt
 
 IVFLAGS := -g2012 -Wall -Wno-timescale

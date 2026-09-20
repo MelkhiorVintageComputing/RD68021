@@ -135,7 +135,8 @@ module rd68021_top #(
   logic  [1:0] pf_op;          // NONE / ADV / FILL / FLUSH
   logic [31:0] pf_addr;        // the new fetch address on FLUSH
   logic        pf_super;       // which program space to fetch in
-  logic        pf_busy;
+  logic        pf_ready;
+  logic        pf_dvalid;
   logic [15:0] stg_d;
   logic [15:0] stg_c;
   logic [15:0] stg_b;
@@ -145,13 +146,11 @@ module rd68021_top #(
   logic [31:0] pc_d;
   logic [31:0] stg_b_addr;
 
-  // The IFU's checkpoint port: everything above plus the cache holding register,
-  // marshalled into and out of a format $A or $B frame by the sequencer.
+  // The IFU's checkpoint port, marshalled into and out of a format $A or $B
+  // frame by the sequencer. The cache holding register is deliberately absent:
+  // doc/checkpoint.md records why it is not saved.
   logic        ckpt_save;
   logic        ckpt_load;
-  logic [31:0] ckpt_chr;
-  logic [31:0] ckpt_chr_addr;
-  logic  [1:0] ckpt_chr_st;    // valid, fault
   logic [31:0] ckpt_pc_fetch;
 
   // ==========================================================================
@@ -225,7 +224,8 @@ module rd68021_top #(
       .pf_op          (pf_op),
       .pf_addr        (pf_addr),
       .pf_super       (pf_super),
-      .pf_busy        (pf_busy),
+      .pf_ready       (pf_ready),
+      .pf_dvalid      (pf_dvalid),
       .stg_d          (stg_d),
       .stg_c          (stg_c),
       .stg_b          (stg_b),
@@ -236,9 +236,6 @@ module rd68021_top #(
       .stg_b_addr     (stg_b_addr),
       .ckpt_save      (ckpt_save),
       .ckpt_load      (ckpt_load),
-      .ckpt_chr       (ckpt_chr),
-      .ckpt_chr_addr  (ckpt_chr_addr),
-      .ckpt_chr_st    (ckpt_chr_st),
       .ckpt_pc_fetch  (ckpt_pc_fetch),
 
       .cacr           (cacr),
@@ -263,7 +260,8 @@ module rd68021_top #(
       .pf_op          (pf_op),
       .pf_addr        (pf_addr),
       .pf_super       (pf_super),
-      .pf_busy        (pf_busy),
+      .pf_ready       (pf_ready),
+      .pf_dvalid      (pf_dvalid),
       .stg_d          (stg_d),
       .stg_c          (stg_c),
       .stg_b          (stg_b),
@@ -274,9 +272,6 @@ module rd68021_top #(
       .stg_b_addr     (stg_b_addr),
       .ckpt_save      (ckpt_save),
       .ckpt_load      (ckpt_load),
-      .ckpt_chr       (ckpt_chr),
-      .ckpt_chr_addr  (ckpt_chr_addr),
-      .ckpt_chr_st    (ckpt_chr_st),
       .ckpt_pc_fetch  (ckpt_pc_fetch),
 
       .cacr           (cacr),

@@ -13,3 +13,11 @@
 // the numbers are written down once, in one place, with their citation -- so an
 // unused one is the normal case rather than a defect.
 lint_off -rule UNUSEDPARAM -file "*rtl/rd68021_pkg.sv"
+
+// The same, for the generated packages. rd68021_ucode_pkg names every encoding
+// the microcode may use, and a field the microcode does not happen to use yet is
+// the normal state of a design being built up -- the point of the package is
+// that the RTL and the microcode agree about every field position, whether or
+// not a given value has appeared in a microword.
+lint_off -rule UNUSEDPARAM -file "*rtl/gen/rd68021_ucode_pkg.sv"
+lint_off -rule UNUSEDPARAM -file "*rtl/gen/rd68021_frame_pkg.sv"

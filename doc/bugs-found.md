@@ -174,3 +174,113 @@ column.
 
 **Stops it coming back:** the four runs are the target; there is no single-log
 path. The clock period is a plusarg with no default other than 60 ns.
+
+---
+
+## M5 · The request handshake, three times over
+
+**What:** the same rule, missed in three places, and worth one entry because the
+third only became obvious once the first two had been found.
+
+The bus unit accepts a new request **on the very edge the previous operand
+finishes** — that is what makes back-to-back cycles possible at all. So a source
+must drop its request by that edge, and `req_last` / `fetch_last` are the
+combinational signals that say the edge is coming. But the acknowledge is
+*registered*, so the request is also still asserted for one clock after it, when
+the `*_last` signal has gone back low. Both terms are needed:
+
+```systemverilog
+assign req_valid   = bus_req       && !req_last   && !req_ack;
+assign fetch_valid = fetch_pend_q  && !fetch_last && !fetch_ack;
+```
+
+Miss `*_last` and the operand runs twice back to back; miss `*_ack` and it runs
+twice with a clock between. M1 found the first half on the fetch port, with a
+prefetch that reported zero bus cycles. M5 found the other half twice: the reset
+vector came back as the stack pointer *twice*, because the read of `$0` ran again
+while the microword that consumed it was still waiting to advance; and the pipe
+was served words from the wrong address, because the duplicate prefetch's data
+arrived labelled with wherever the queue had got to by then.
+
+**Found by:** the first by a bus-cycle count, the second by the wrong value in a
+register, the third by a trace of the instruction stream that showed the same two
+words being decoded over and over.
+
+**Stops it coming back:** `core_fetch_tb` runs a program whose branches skip
+instructions that would be visible if executed, so a pipe fed from the wrong
+place changes the answer rather than merely the timing.
+
+---
+
+## M5 · The read data was destroyed by the pipe refilling itself
+
+**What:** the bus unit kept the completed read in `op_data`, the accumulator of
+the operand in flight. The instruction fetch unit refills the pipe by itself, so
+a prefetch starting in the clock after a data read overwrote the data before the
+sequencer had read it. The reset sequence flushed the pipe to the *stack pointer*
+value rather than the program counter, and ran from there.
+
+**Fixed by:** `rdata_q` and `frdata_q` — one latch per kind of operand, each
+holding its result until the next operand of that kind completes.
+
+**Stops it coming back:** the reset sequence itself. Every run of `core_fetch_tb`
+reads two vectors and flushes to the second, and the program only runs at all if
+the second survived the prefetch that follows it.
+
+---
+
+## M5 · A microword that both flushed the pipe and decoded deadlocked
+
+**What:** the natural way to write a branch is one microword that computes the
+target, flushes the pipe to it and decodes what arrives. It hangs: the pipe
+operation is gated on the microword retiring, and a DECODE stalls the microword
+until stage D is valid — which is what the flush has just made false. The flush
+never happens, so the stall never lifts.
+
+**Fixed by:** a rule, written at the top of `tools/ucode/program.py`: a microword
+may not both FLUSH and DECODE. Every branch is a flush and then a separate
+decode.
+
+---
+
+## M5 · The decoder looked at the instruction that had just finished
+
+**What:** an instruction ends with one microword that advances the pipe and
+decodes. The decoder was wired to stage D — which at that instant still holds the
+opcode that is finishing, because the advance that replaces it has not happened
+yet. Every instruction decoded itself a second time.
+
+**Fixed by:** the decoder reads stage C when the microword also advances, and
+stage D otherwise. Stage C is the word the advance is about to move into D, which
+is what "decoded when it reaches stage D" means when both happen in one clock.
+
+---
+
+## M5 · The cache holding register was labelled with the wrong address
+
+**What:** `fetch_addr` was combinational from `fill_q`, the address the pipe wants
+next. The queue drains while a fetch is in flight, so by the time the long word
+came back, `fill_q` had moved on — and the cache holding register recorded *that*
+address against the data it had just received. It then answered a hit for an
+address it did not hold, and the pipe was served instruction words from somewhere
+else.
+
+**Found by:** a clock-by-clock dump showing the holding register's address change
+while its contents did not.
+
+**Fixed by:** latching the address when the fetch is issued, and using that
+register both to drive the bus and to label the result.
+
+---
+
+## M5 · A branch test that branched over nothing
+
+**What:** not a defect in the design. `core_fetch_tb` tested both shapes of BRA by
+branching over a NOP. Mutating the microcode so that the branch base was the
+instruction's own address rather than its address plus two — a real error, and one
+of the two the branch microcode can make — left the test passing: the branch
+landed one instruction short, on the NOP, and everything after it was the same.
+
+**Fixed by:** branching over instructions that would be *visible* if they ran —
+`MOVEQ` into registers nothing else touches, checked to be still zero. The
+mutation now fails on two of the three port widths.
