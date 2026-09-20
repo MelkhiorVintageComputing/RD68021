@@ -104,3 +104,73 @@ is never three-stated, so it is visible even when everything else has gone away 
 and sweeping the phase of BR across all sixteen positions of a four-cycle operand,
 because a single fixed delay does not reach the one edge that matters. The mutation
 now fails at three phases.
+
+---
+
+## M3 · The AC solver's "virtual source" was a constraint of its own
+
+**What:** a difference-constraint system is solved by Bellman-Ford from a source
+that reaches every node. The standard way to get one is to start every distance at
+zero — a source with a zero-weight edge to everything, *not present in the graph*.
+This implementation added those edges for real.
+
+An edge from the source to `x` of weight 0 asserts `d[x] − d[source] ≤ 0`: every
+pad delay is at most zero. Specification 9's minimum of 3 ns contradicts that
+immediately, so every grade reported INFEASIBLE.
+
+**Found by:** the answer being wrong in an obvious direction. The reported
+contradiction was one bound against itself, which no real design could produce.
+
+**Fixed by:** initialising every distance to zero instead of adding the edges.
+
+**Stops it coming back:** `python3 tools/timing/feasible.py` — the first
+known-answer case is a single bound of 3 to 30 ns, which the broken version called
+infeasible.
+
+---
+
+## M3 · A margin that was not a margin
+
+**What:** the first version reported, as the binding constraint, the smallest slack
+of any constraint *in the solution the solver returned*. Bellman-Ford returns an
+assignment sitting hard against some corner, so it reported "0.0 ns to spare" at
+every grade, on a pad-delay bound, whatever the design did.
+
+Two things were wrong. A slack in one solution is not a margin — the question is
+how far a limit could be tightened before *no* assignment exists, which is
+`c + shortest path back` for that constraint and is independent of any solution.
+And a **bound's** margin is `hi − lo`, the width the manual printed: it says
+nothing about the design, so quoting it as the binding constraint flatters or damns
+the design by accident.
+
+**Found by:** the number being suspiciously round and suspiciously constant.
+
+**Fixed by:** computing per-constraint margins with Floyd-Warshall, and reporting
+the tightest **separation** as the binding constraint with the tightest pad budget
+alongside, labelled as what it is.
+
+**Stops it coming back:** two of the solver's self-test cases check both margins of
+the same tiny system and their expected values, 45 ns and 30 ns, are arithmetic.
+
+---
+
+## M3 · One recording judged against four speed grades
+
+**What:** the separations this analysis measures are distances between clock edges,
+so they scale with the clock period. The first version simulated once, at 60 ns,
+and judged that one recording against all four columns of Section 10 — crediting
+the design at 33.33 MHz with half-clocks twice as long as it would have there.
+
+It reported *feasible* at every grade, which is the answer it would also have given
+if the design were right, and named the wrong binding constraint at three of the
+four.
+
+**Found by:** the binding constraint changing from a separation at 16.67 MHz to a
+pad bound at the other three, which made no physical sense.
+
+**Fixed by:** `make timing` running the testbench four times, at each grade's
+minimum cycle time from specification 1, and judging each log against its own
+column.
+
+**Stops it coming back:** the four runs are the target; there is no single-log
+path. The clock period is a plusarg with no default other than 60 ns.

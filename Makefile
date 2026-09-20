@@ -44,7 +44,7 @@ IVFLAGS := -g2012 -Wall -Wno-timescale
 
 .PHONY: all help dirs lint lint-iverilog lint-verilator lint-yosys \
         lint-quartus lint-questa synth audit ucode ucode-check sim sim-bus \
-        check clean
+        timing timing-verbose check clean
 
 all: lint
 
@@ -55,6 +55,7 @@ help:
 	@echo "  make sim       the directed testbenches"
 	@echo "  make sim-bus   ... just the bus-level ones"
 	@echo "  make audit     prove no register initialises outside reset"
+	@echo "  make timing    AC-specification feasibility, all four speed grades"
 	@echo "  make ucode     regenerate the microcode ROMs from tools/ucode/"
 	@echo "  make check     the gate: ucode-check, lint, audit"
 	@echo
@@ -160,9 +161,43 @@ sim-bus: dirs
 	@$(MAKE) --no-print-directory sim TBS="$(filter bus_%,$(TBS))"
 
 # ---------------------------------------------------------------------------
+# AC timing
+#
+# One run per speed grade. The analysis measures separations in clock edges, so a
+# recording made at one frequency is evidence about that frequency and nothing
+# else: judging a 60 ns recording against the 33.33 MHz limits would credit the
+# design with half-clocks it does not have there.
+#
+# Specification 1 gives each grade's minimum cycle time, and those are the four
+# periods below.
+# ---------------------------------------------------------------------------
+TIMGRADES := 60:16_67 50:20 40:25 30:33_33
+PADSKEW   ?= 0
+
+timing: dirs
+	@iverilog $(IVFLAGS) -I sim/tb -o $(BUILD)/rd68021_timing_tb.vvp \
+	    -s rd68021_timing_tb $(RTL) sim/models/*.sv sim/tb/rd68021_timing_tb.sv \
+	    > $(BUILD)/timing.build.log 2>&1 \
+	  || { grep -v $(NOTES) $(BUILD)/timing.build.log; exit 1; }
+	@ok=1; for g in $(TIMGRADES); do \
+	  p=$${g%%:*}; f=$${g##*:}; \
+	  vvp $(BUILD)/rd68021_timing_tb.vvp +period=$$p \
+	      +log=$(BUILD)/timing-$$f.log > $(BUILD)/timing-run-$$f.log 2>&1; \
+	  grep -q '^PASS' $(BUILD)/timing-run-$$f.log \
+	    || { echo "FAIL: the timing testbench did not complete at $$p ns"; ok=0; }; \
+	  python3 tools/timing/analyse.py --freq $$f --pad-skew $(PADSKEW) \
+	      $(BUILD)/timing-$$f.log || ok=0; \
+	done; \
+	test $$ok -eq 1 && echo "PASS: timing"
+
+timing-verbose: dirs
+	@$(MAKE) --no-print-directory timing 2>&1 | head -5
+	@python3 tools/timing/analyse.py --freq 16_67 --verbose $(BUILD)/timing-16_67.log
+
+# ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
-check: ucode-check lint audit sim
+check: ucode-check lint audit sim timing
 	@echo "PASS: check"
 
 # ---------------------------------------------------------------------------

@@ -21,8 +21,15 @@
 // This file is included inside a module, so it carries no `timescale of its own:
 // the directive is not allowed there, and the including testbench sets it.
 
-localparam real CLK_PERIOD = 60.0;
-localparam real SNAP       = 5.0;
+// The clock period, in nanoseconds. 60 ns -- 16.67 MHz -- is the slowest speed
+// grade in the manual's own clock table and the default here, but the AC analysis
+// needs one run per grade: the separations it measures are in clock edges, so a
+// 16.67 MHz recording is evidence about 16.67 MHz and nothing else.
+real CLK_PERIOD;
+
+// Pins are sampled this long after each edge: late enough that the edge has
+// settled, early enough that nothing else has happened.
+localparam real SNAP = 5.0;
 
 logic clk;
 logic rst_n;
@@ -198,6 +205,7 @@ rd68021_slave #(.PORT_BYTES (4), .WAITS (3), .BASE (32'h3000_0000),
 // Clock, reset, bookkeeping
 // ---------------------------------------------------------------------------
 initial begin
+  if (!$value$plusargs("period=%f", CLK_PERIOD)) CLK_PERIOD = 60.0;
   clk = 1'b0;
   forever #(CLK_PERIOD/2.0) clk = ~clk;
 end
