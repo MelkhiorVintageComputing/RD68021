@@ -161,6 +161,7 @@ module rd68021_top #(
   logic [31:0] fetch_addr;     // always long-word aligned (UM Table 5-6 note)
   logic  [2:0] fetch_fc;
   logic        fetch_ack;
+  logic        fetch_last;
   logic [31:0] fetch_rdata;
   logic        fetch_fault;
   logic        bus_abort;      // combinational, valid during S0 (UM 5.2.5)
@@ -287,6 +288,7 @@ module rd68021_top #(
       .fetch_addr     (fetch_addr),
       .fetch_fc       (fetch_fc),
       .fetch_ack      (fetch_ack),
+      .fetch_last     (fetch_last),
       .fetch_rdata    (fetch_rdata),
       .fetch_fault    (fetch_fault),
       .bus_abort      (bus_abort)
@@ -332,6 +334,7 @@ module rd68021_top #(
       .fetch_addr     (fetch_addr),
       .fetch_fc       (fetch_fc),
       .fetch_ack      (fetch_ack),
+      .fetch_last     (fetch_last),
       .fetch_rdata    (fetch_rdata),
       .fetch_fault    (fetch_fault),
       .bus_abort      (bus_abort),

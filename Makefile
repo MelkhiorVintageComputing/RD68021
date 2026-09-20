@@ -43,7 +43,8 @@ VLT  := rtl/rd68021.vlt
 IVFLAGS := -g2012 -Wall -Wno-timescale
 
 .PHONY: all help dirs lint lint-iverilog lint-verilator lint-yosys \
-        lint-quartus lint-questa synth audit ucode ucode-check check clean
+        lint-quartus lint-questa synth audit ucode ucode-check sim sim-bus \
+        check clean
 
 all: lint
 
@@ -51,6 +52,8 @@ help:
 	@echo "RD68021 -- SystemVerilog MC68020"
 	@echo
 	@echo "  make lint      elaborate every rtl module under iverilog, Verilator and yosys"
+	@echo "  make sim       the directed testbenches"
+	@echo "  make sim-bus   ... just the bus-level ones"
 	@echo "  make audit     prove no register initialises outside reset"
 	@echo "  make ucode     regenerate the microcode ROMs from tools/ucode/"
 	@echo "  make check     the gate: ucode-check, lint, audit"
@@ -70,29 +73,45 @@ dirs:
 lint: lint-iverilog lint-verilator lint-yosys
 	@echo "PASS: lint"
 
-# iverilog prints a "sorry: ... unique ... ignored" note for every unique case and
-# nothing can turn it off. Filter it, but keep the exit status: a pipe into grep
-# throws the status away along with the notes, and then a module that stopped
-# elaborating leaves the last output that did, and the next step runs that instead.
-define iverilog_quiet
-	set -o pipefail; iverilog $(IVFLAGS) $(1) 2>&1 | grep -v ': sorry: .*ignored\.$$' || test $$? -eq 1
-endef
+# Both of these run the tool into a log and decide from its exit status, rather
+# than piping it through a filter. `tool | grep -v ... || test $$? -eq 1` looks
+# like it keeps the status and does not: with pipefail the pipeline returns the
+# tool's 1, and `test 1 -eq 1` then succeeds, so a failing tool reports "ok".
+# Measured, on this Makefile, twice.
+#
+# iverilog prints a "sorry: ..." note for every unique case and for every variable
+# part-select in an always_ block, and nothing can turn them off. They are notes,
+# not diagnostics, so they are filtered out of what gets shown on a failure.
+NOTES := ': sorry: .*\(ignored\|all bits will be included\)\.$$'
 
 lint-iverilog: dirs
-	@$(call iverilog_quiet,-o $(BUILD)/$(TOP).vvp -s $(TOP) $(RTL))
+	@iverilog $(IVFLAGS) -o $(BUILD)/$(TOP).vvp -s $(TOP) $(RTL) \
+	    > $(BUILD)/iverilog.log 2>&1 \
+	  || { grep -v $(NOTES) $(BUILD)/iverilog.log; exit 1; }
 	@echo "  iverilog: ok"
 
-# The success banner goes to stdout and there is no flag for it, so filter it --
-# with pipefail, because the exit status is the whole point.
-lint-verilator:
-	@set -o pipefail; verilator --lint-only -Wall --top-module $(TOP) $(VLT) $(RTL) \
-	    2>&1 | grep -v '^- V e r i l a t i o n\|^- Verilator:' || test $$? -eq 1
+lint-verilator: dirs
+	@verilator --lint-only -Wall --top-module $(TOP) $(VLT) $(RTL) \
+	    > $(BUILD)/verilator.log 2>&1 \
+	  || { grep -v '^- V e r i l a t i o n\|^- Verilator:' $(BUILD)/verilator.log; exit 1; }
 	@echo "  verilator: ok"
 
 # Run the full synth pass, not just read_verilog, so that anything unsynthesisable
 # is caught here rather than in Vivado.
+#
+# yosys returns 0 on a warning, and two of its warnings are defects rather than
+# noise: a register driven from two processes ("multiple conflicting drivers"),
+# which is what a register written from both edge domains looks like, and an
+# inferred latch. Both are gates here, not the exit code -- measured: op_addr was
+# driven from both the posedge and the negedge block and `make lint` said PASS.
 lint-yosys: dirs
-	@yosys -q -p "read_verilog -sv $(RTL); synth -top $(TOP); write_verilog $(BUILD)/$(TOP)_yosys.v"
+	@set -o pipefail; yosys -p "read_verilog -sv $(RTL); synth -top $(TOP); \
+	    write_verilog $(BUILD)/$(TOP)_yosys.v" > $(BUILD)/yosys.log 2>&1 \
+	  || { tail -40 $(BUILD)/yosys.log; exit 1; }
+	@if grep -q 'multiple conflicting drivers\|Warning: Identifier .* is implicitly declared\|inferring latch' $(BUILD)/yosys.log; then \
+	    echo "FAIL: yosys"; \
+	    grep -n 'multiple conflicting drivers\|implicitly declared\|inferring latch' $(BUILD)/yosys.log | head -20; \
+	    exit 1; fi
 	@echo "  yosys: ok"
 
 # ---------------------------------------------------------------------------
@@ -113,9 +132,37 @@ ucode-check: dirs
 	 else echo "  ucode-check: nothing to check yet (M4)"; fi
 
 # ---------------------------------------------------------------------------
+# Directed testbenches
+#
+# Each one runs to completion and prints PASS or FAIL. The loop fails on a FAIL
+# and ALSO on a missing PASS: a testbench that stopped early without saying so is
+# not a testbench that passed.
+# ---------------------------------------------------------------------------
+TBS := $(patsubst sim/tb/%.sv,%,$(wildcard sim/tb/*_tb.sv))
+
+sim: dirs
+	@ok=1; for tb in $(TBS); do \
+	  iverilog $(IVFLAGS) -I sim/tb -o $(BUILD)/$$tb.vvp -s $$tb \
+	      $(RTL) sim/models/*.sv sim/tb/$$tb.sv > $(BUILD)/$$tb.build.log 2>&1 \
+	    || { echo "FAIL: $$tb did not elaborate"; \
+	         grep -v $(NOTES) $(BUILD)/$$tb.build.log; ok=0; continue; }; \
+	  vvp $(BUILD)/$$tb.vvp > $(BUILD)/$$tb.log 2>&1; \
+	  if grep -q '^FAIL' $(BUILD)/$$tb.log; then \
+	    echo "FAIL: $$tb"; grep -E '^  FAIL|^FAIL' $(BUILD)/$$tb.log | head -30; ok=0; \
+	  elif ! grep -q '^PASS' $(BUILD)/$$tb.log; then \
+	    echo "FAIL: $$tb reported no PASS"; tail -20 $(BUILD)/$$tb.log; ok=0; \
+	  else \
+	    echo "  $$(grep -E '^PASS' $(BUILD)/$$tb.log | head -1)"; \
+	  fi; \
+	done; test $$ok -eq 1
+
+sim-bus: dirs
+	@$(MAKE) --no-print-directory sim TBS="$(filter bus_%,$(TBS))"
+
+# ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
-check: ucode-check lint audit
+check: ucode-check lint audit sim
 	@echo "PASS: check"
 
 # ---------------------------------------------------------------------------

@@ -62,6 +62,7 @@ module rd68021_ifu #(
     output logic [31:0] fetch_addr,
     output logic  [2:0] fetch_fc,
     input  logic        fetch_ack,
+    input  logic        fetch_last,
     input  logic [31:0] fetch_rdata,
     input  logic        fetch_fault,
     output logic        bus_abort
@@ -156,7 +157,7 @@ module rd68021_ifu #(
                         pf_op, pf_addr, pf_super,
                         ckpt_save, ckpt_load,
                         cacr, caar, cach_op, cdis_sync_n,
-                        fetch_ack, fetch_rdata, fetch_fault,
+                        fetch_ack, fetch_last, fetch_rdata, fetch_fault,
                         ICACHE_ENTRIES == 0};
 
 endmodule

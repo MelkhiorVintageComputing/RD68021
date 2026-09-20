@@ -61,19 +61,20 @@ protocol seen from the coprocessor's side, before deciding.
 
 ---
 
-## 3. When DBEN is asserted on a write
+## 3. The write cycle's State 0 says the processor *negates* ECS
 
-**Not yet followed either way — decided in M1.**
+**Followed: asserted.** A typo, and an obvious one, but it is in the only paragraph
+that describes what a write cycle does first.
 
-§5.1.6 says DBEN "is asserted at the time AS is asserted" on a write cycle.
-Specifications 42 ("Clock Low to DBEN Asserted, Write") and 44 ("R/W Low to DBEN Asserted,
-Write") place it against different anchors, and figure 10-4 draws it starting at a
-different edge from AS.
+UM 5.3.2, State 0:
 
-DBEN exists to enable an external data buffer, so the conservative reading — assert it no
-later than the prose says and no earlier than the specifications allow — is the one to
-take, and `make timing` can decide whether a given choice is feasible at all four speed
-grades before any of it is committed to RTL.
+> MC68020 — The write cycle starts in S0. The processor negates ECS, indicating the
+> beginning of an external cycle.
+
+Three things say otherwise, and nothing else agrees with it: the read cycle's own
+State 0 ("the processor asserts ECS, indicating the beginning of an external
+cycle"), the write cycle flowchart in figure 5-24 ("ASSERT ECS/OCS FOR ONE-HALF
+CLOCK"), and specification 6A, "Clock High to ECS, OCS **Asserted**".
 
 ---
 
@@ -92,3 +93,25 @@ The cost of following the specification and being wrong is a wrapper that drives
 which a real MC68020 would also have driven, since `dben_oe` is negated only on bus
 relinquish and reset — occasions on which nothing is looking at DBEN anyway. The cost of
 following the prose and being wrong is a bus fight with the device that took the bus.
+
+---
+
+## Withdrawn
+
+Kept so that nobody spends the afternoon re-raising them.
+
+**When DBEN moves on a write.** UM 5.1.6 ("in a write operation, DBEN is asserted at
+the time AS is asserted and is held active for the duration of the cycle") reads at
+first like it disagrees with specifications 42 and 44, which measure DBEN from a
+clock edge and from R/W rather than from AS. It does not. AS is asserted on the
+falling edge entering S1 (specification 9, "Clock Low to AS, DS Asserted") and so is
+DBEN (specification 42, "Clock Low to DBEN Asserted, Write"); they are the same
+edge. UM 5.3.2 state 1 says so in words as well.
+
+The same paragraph's read-cycle sentence, "DBEN is asserted one clock cycle after
+the beginning of the bus cycle", is also exact rather than loose: S0 begins on a
+rising edge and S2 begins on the next rising edge, which is one clock period later,
+which is where UM 5.3.1 state 2 puts it.
+
+All four of this design's DBEN edges satisfy specifications 42, 43, 45 and 25A at
+the 16.67 MHz grade, and `sim/tb/bus_ruler_tb.sv` measures them.
