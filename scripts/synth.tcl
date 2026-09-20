@@ -1,0 +1,57 @@
+# Vivado out-of-context synthesis.
+#
+#   vivado -mode batch -source scripts/synth.tcl \
+#          -tclargs <build> <top> <part> <icache_entries> <coprocessor>
+#
+# Out of context because this is a processor core, not a board design: there are no
+# pads, no I/O buffers and no board constraints, and the numbers are about the logic.
+
+set build   [lindex $argv 0]
+set top     [lindex $argv 1]
+set part    [lindex $argv 2]
+set icache  [lindex $argv 3]
+set coproc  [lindex $argv 4]
+
+# A signal used before its declaration is only [Synth 8-6901], an *info* message, and
+# a design can carry one for months without anyone seeing it. Questa rejects the same
+# thing outright, so make Vivado agree.
+set_msg_config -id {Synth 8-6901} -new_severity ERROR
+
+# An implicitly declared net is likewise not an error by default.
+set_msg_config -id {Synth 8-3332} -new_severity ERROR
+
+set fp [open $build/rtl.f r]
+set files [split [string trim [read $fp]] "\n"]
+close $fp
+
+foreach f $files {
+    if {[string length [string trim $f]] > 0} {
+        read_verilog -sv $f
+    }
+}
+
+read_xdc scripts/rd68021.xdc
+
+synth_design -top $top -part $part -mode out_of_context \
+    -generic ICACHE_ENTRIES=$icache \
+    -generic COPROCESSOR=$coproc
+
+write_checkpoint -force $build/${top}_synth.dcp
+report_utilization -file $build/${top}_synth_util.rpt
+report_timing_summary -file $build/${top}_synth_timing.rpt
+
+# A one-line summary, so a run that is only being sanity-checked does not need the
+# reports opened. A skeleton with no logic between flops has no timing paths at all,
+# which is not an error -- it is what a design that has not been built yet looks
+# like -- so do not let reporting it fail the run.
+set paths [get_timing_paths -delay_type max -quiet]
+if {[llength $paths] > 0} {
+    puts [format "SYNTH: part %s  WNS %s ns" $part [get_property SLACK [lindex $paths 0]]]
+} else {
+    puts "SYNTH: part $part  no timing paths (nothing between flops yet)"
+}
+puts [format "SYNTH: LUT %s  FF %s  DSP %s  BRAM %s" \
+    [llength [get_cells -hier -filter {PRIMITIVE_GROUP == LUT}]] \
+    [llength [get_cells -hier -filter {PRIMITIVE_GROUP == FLOP_LATCH}]] \
+    [llength [get_cells -hier -filter {PRIMITIVE_GROUP == ARITHMETIC}]] \
+    [llength [get_cells -hier -filter {PRIMITIVE_GROUP == BLOCKRAM}]]]

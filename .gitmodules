@@ -1,0 +1,12 @@
+[submodule "Inputs/ref/qemu-sun3"]
+	path = Inputs/ref/qemu-sun3
+	url = https://github.com/MelkhiorVintageComputing/qemu-sun3
+[submodule "Inputs/doc/MC68030_Doc_More_Readable"]
+	path = Inputs/doc/MC68030_Doc_More_Readable
+	url = https://github.com/MelkhiorVintageComputing/MC68030_Doc_More_Readable
+[submodule "Inputs/ref/Musashi"]
+	path = Inputs/ref/Musashi
+	url = https://github.com/kstenerud/Musashi.git
+[submodule "Inputs/ref/Suska_Configware"]
+	path = Inputs/ref/Suska_Configware
+	url = https://github.com/MelkhiorVintageComputing/Suska_Configware.git
