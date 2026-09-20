@@ -4,9 +4,10 @@ The state-by-state behaviour of `rtl/rd68021_biu.sv`, with the citation for each
 edge and the test that checks it. This is the document to argue with when a
 behaviour is questioned.
 
-As of M1 it covers read and write cycles, wait states, dynamic bus sizing and
-misaligned operands. Bus exception control and arbitration are M2; the cache abort
-is M11; CPU-space cycles are M2 and M10.
+As of M2 it covers read and write cycles, wait states, dynamic bus sizing,
+misaligned operands, bus exception control and arbitration. The cache abort is
+M11; CPU-space cycles are M10 and M13; the RESET instruction's 512-clock pulse is
+M5.
 
 ## The ruler
 
@@ -103,15 +104,80 @@ decoded afterwards. Specification 31A allows 15 ns of skew between them at
 as an 8-bit one, and the operand engine would assemble the wrong bytes with no
 error anywhere.
 
-## Known gaps at M1
+## Bus exception control
+
+UM Table 5-8's six terminations, with the case numbers the manual gives them. The
+table indexes two samples by "the number of the current even bus state": n is S2,
+one clock after AS asserts, and n+2 is S4. Here those are the falling edge entering
+S3 — "as long as at least one of the DSACK signals is recognized by the end of S2"
+— and the falling edge entering S5.
+
+| Case | At state n | At state n+2 | Result |
+|---|---|---|---|
+| 1 | DSACK, no BERR, no HALT | — | normal terminate and continue |
+| 2 | HALT at or before DSACK | — | normal terminate, then halt |
+| 3 | BERR in lieu of / at / before DSACK | — | bus error |
+| 4 | DSACK | BERR | bus error, deferred |
+| 5 | BERR and HALT in lieu of / at / before | — | retry when HALT is negated |
+| 6 | DSACK | BERR and HALT | retry, deferred |
+
+Cases 4 and 6 are the late window, and they are the ones worth being careful
+about: on the MC68010 project the equivalent late assertion was detected and then
+never delivered, because the late path set an end code without raising the fault,
+and the exception was simply not taken. Here both samples write the same two
+registers.
+
+A faulted cycle **moves no bytes**. The residual the fault frame records has to be
+the state before the faulted access, because RTE reruns that access; and a retried
+cycle moves nothing either, because UM 5.5.2 reruns it "using the same access
+information". `req_fault` is raised with `req_ack`, `req_fault_wr` says it was a
+write, and `flt_addr`/`flt_bytes`/`flt_fc`/`flt_rw`/`flt_rmc` carry the residual.
+
+**Retry** terminates the cycle, waits for BERR *and* HALT to be negated, and
+reissues it unchanged. **Relinquish and retry** is the same with BR asserted, and
+falls out of the arbiter without a special case. **Halt** does not terminate a
+cycle (UM 5.5.3): the current one completes, the data bus goes high impedance, AS
+and DS are negated *but not released*, and the address, FC, SIZ and R/W "remain in
+the same state" — driven, which is the one thing that distinguishes a halted bus
+from an idle one. **A double bus fault** drives HALT out, per UM 5.5.4.
+
+## Arbitration
+
+UM 5.7.1's three steps — BR, then BG, then BGACK — and the state machine of
+5.7.1.4. `doc/divergences.md` records that two of figure 5-44's seven states cannot
+be read from the manual's text layer, and which five are implemented.
+
+Two rules that are easy to get wrong, and both are tested:
+
+- **"The BG output will not be asserted while RMC is asserted."** For the duration
+  of a locked sequence the BR input is ignored entirely. RMC is a qualifier held
+  across a run of ordinary cycles, raised by `req_rmc` on each request of the run
+  and negated at the start of the first cycle that is not one — which is UM 5.1.1's
+  "RMC is guaranteed to be negated before the end of state 0 for a bus cycle
+  following a read-modify-write operation" — or when the bus goes idle without one,
+  so that arbitration is not blocked indefinitely.
+- **The decision to start a cycle is taken from the arbiter's NEXT state.** "BG
+  indicates that the bus will become available at the end of the current bus
+  cycle", so once the arbiter has decided to grant, no further cycle may begin.
+  Taking that decision from the current state while the output enables follow the
+  next one is the MC68010 project's hardest bug, and `bus_arb_tb` sweeps the phase
+  of BR across all sixteen positions of a four-cycle operand to reach the single
+  edge where it shows. See `doc/bugs-found.md`.
+
+The grant itself is deferred by exactly one edge when the processor has already
+decided to run a cycle — "the assertion of BG is deferred until the bus cycle has
+begun". Writing that test as `st_p_nxt != ST_S0`, which is the direct
+transcription, is a combinational loop; it is written against the registered state
+instead, which says the same thing one expression earlier.
+
+## Known gaps at M2
 
 | | |
 |---|---|
-| Bus exception control — BERR, retry, halt, double bus fault | M2 |
-| Arbitration — BR, BG, BGACK, and RMC's inhibit of it | M2 |
-| RMC held across a run of cycles | M2, with CAS/CAS2 in M10 |
-| CPU-space cycles — interrupt and breakpoint acknowledge, coprocessor | M2, M10, M13 |
+| CPU-space cycles — interrupt and breakpoint acknowledge, coprocessor | M10, M13 |
+| The RESET instruction's 512-clock pulse | M5 |
 | The cycle aborted before AS on a cache hit | M11 |
+| Two of figure 5-44's seven arbiter states | `doc/divergences.md` |
 | One idle clock between operands | see below |
 
 **One idle clock between operands.** A new request is taken at the rising edge that

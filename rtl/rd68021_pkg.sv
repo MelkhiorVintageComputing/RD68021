@@ -82,10 +82,27 @@ package rd68021_pkg;
     ST_S0, ST_S1, ST_S2, ST_S3, ST_S4, ST_S5,
     ST_WH, ST_WL,          // wait: one whole clock, re-sampling at ST_WL
     ST_IDLE,               // no cycle in progress
-    ST_HALT,               // HALT asserted, bus released at the end of the cycle
-    ST_ARB,                // bus granted to another master
+    ST_HALT,               // HALT asserted: no new cycle until it negates
     ST_RETRY               // BERR+HALT: wait for both to negate, then rerun
   } bus_state_e;
+
+  // ==========================================================================
+  // Bus arbitration -- UM Figure 5-44 and 5.7.1.4
+  //
+  // The figure's seven states carry their G and T outputs as overbarred labels,
+  // and the overbars do not survive the manual's text layer, so states 5 and 6
+  // cannot be read from it. What 5.7.1.4's prose states completely is the normal
+  // sequence 0-1-2-3-4-0, and that is what these five states are; the re-grant
+  // arc is 5.7.1.3's requirement rather than a state read off the diagram. See
+  // doc/divergences.md.
+  // ==========================================================================
+  typedef enum logic [2:0] {
+    ARB_IDLE,    // state 0: G and T negated, the processor is bus master
+    ARB_GRANT,   // state 1: G and T asserted
+    ARB_WAIT,    // state 2: held, until A is asserted or R is negated
+    ARB_DROP,    // state 3: G negated, T held
+    ARB_HELD     // state 4: the external master has the bus
+  } arb_state_e;
 
   // ==========================================================================
   // Cycle kinds and terminations

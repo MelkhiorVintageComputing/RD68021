@@ -17,8 +17,10 @@ set coproc  [lindex $argv 4]
 # thing outright, so make Vivado agree.
 set_msg_config -id {Synth 8-6901} -new_severity ERROR
 
-# An implicitly declared net is likewise not an error by default.
-set_msg_config -id {Synth 8-3332} -new_severity ERROR
+# [Synth 8-3332] is NOT promoted. It reads like an implicit-declaration warning
+# and is not: it is "sequential element ... is unused and will be removed", which
+# is ordinary optimisation and is the normal state of a design whose upper units
+# are still stubs. Promoting it failed a perfectly good synthesis run.
 
 set fp [open $build/rtl.f r]
 set files [split [string trim [read $fp]] "\n"]

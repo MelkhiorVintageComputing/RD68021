@@ -153,6 +153,7 @@ module rd68021_biu #(
 
   logic br_sync_n;
   logic bgack_sync_n;
+  logic hiz_q;
 
   rd68021_sync #(.WIDTH (1), .RESET_VAL (1'b1)) u_sync_br (
       .clk (clk), .rst_n (rst_n), .d (br_n_i), .q (br_sync_n));
@@ -202,6 +203,46 @@ module rd68021_biu #(
 
   logic [1:0] dsack_q;       // the port size sampled at the end of S2
   logic       term_q;        // ... and whether it terminated the cycle at all
+  logic       term_err;      // ... as a bus error (Table 5-8 cases 3 and 4)
+  logic       term_rty;      // ... as a retry (cases 5 and 6)
+  logic       term_hlt;      // ... normally, but with HALT asserted (case 2)
+
+  // RMC is a qualifier held across a run of ordinary cycles, not a cycle kind
+  // (UM 5.5.2). It is raised by the first request of the run and stays up until
+  // a request without it starts a cycle -- which is exactly UM 5.1.1's "RMC is
+  // guaranteed to be negated before the end of state 0 for a bus cycle following
+  // a read-modify-write operation" -- or until the bus goes idle without one.
+  logic rmc_hold;
+
+  // UM 5.5.3: HALT alone does not terminate a cycle; it stops the next one. While
+  // halted the data bus goes high impedance and AS, DS, ECS and OCS are negated,
+  // but the address, FC, SIZ and R/W "remain in the same state" -- driven, not
+  // released, which is what distinguishes this from an ordinary idle bus.
+  logic halt_hold;
+
+  // ---------------------------------------------------------------------------
+  // Bus arbitration -- UM 5.7.1.4
+  // ---------------------------------------------------------------------------
+  rd68021_pkg::arb_state_e arb, arb_nxt;
+
+  logic arb_r;   // BR, synchronised and in positive logic
+  logic arb_a;   // BGACK, likewise
+  assign arb_r = ~br_sync_n;
+  assign arb_a = ~bgack_sync_n;
+
+  // "The BG output will not be asserted while RMC is asserted" -- the note under
+  // figure 5-44, and 5.7.1.4: "for the duration of this sequence, the MC68020
+  // ignores the BR input".
+  logic arb_req;
+  assign arb_req = arb_r && !rmc_hold;
+
+  function automatic logic arb_g_of(input rd68021_pkg::arb_state_e st);
+    arb_g_of = (st == rd68021_pkg::ARB_GRANT) || (st == rd68021_pkg::ARB_WAIT);
+  endfunction
+
+  function automatic logic arb_t_of(input rd68021_pkg::arb_state_e st);
+    arb_t_of = (st != rd68021_pkg::ARB_IDLE);
+  endfunction
 
   // The operand finishes with the cycle that is ending now. This is the signal the
   // whole handshake turns on: req_last exports it, and the sequencer is expected
@@ -212,15 +253,48 @@ module rd68021_biu #(
 
   // A request is available to start a bus cycle. Data beats instruction fetch:
   // the sequencer is stalled on a data operand and the pipe is not.
+  //
+  // The arbiter's NEXT state decides whether a cycle may start, not its current
+  // one. Reading the current state there is a real bug with a real failure mode:
+  // on the single edge where the arbiter reaches its granting state, a cycle
+  // begins anyway and then runs with its address bus already in high impedance,
+  // which on the MC68010 project cost a long-word read one of its two words every
+  // few thousand DMA transfers.
+  logic want_cycle;
+  assign want_cycle = op_continuing || req_valid || fetch_valid;
+
+  logic bus_is_idle;
+  assign bus_is_idle = (st_p == rd68021_pkg::ST_IDLE)
+                       && (st_n == rd68021_pkg::ST_IDLE);
+
   logic start_ok;
-  assign start_ok = op_continuing || req_valid || fetch_valid;
+  assign start_ok = want_cycle && !arb_t_of(arb_nxt);
+
+  // Retry clears when BOTH BERR and HALT have been negated -- UM 5.5.2, "does not
+  // begin another bus cycle until the BERR and HALT signals have been negated by
+  // external logic". These are the raw pins: they are the same inputs the
+  // termination sample uses, and putting a synchroniser here would delay the
+  // restart by two clocks for no reason.
+  logic retry_clear;
+  assign retry_clear = berr_n_i && halt_n_i;
 
   // The if/else inside each case item is not a style choice: iverilog rejects a
   // ternary of two enum values assigned to an enum variable with "This assignment
   // requires an explicit cast" (doc/coding-standard.md, measured).
   always_comb begin
     st_p_nxt = st_p;
-    unique case (st_n)
+    if (st_p == rd68021_pkg::ST_RETRY) begin
+      // UM 5.5.2: "after a synchronization delay, the processor retries the
+      // previous cycle using the same access information". Nothing in cyc_* or
+      // op_* was updated by the faulted cycle, so re-entering S0 reissues it.
+      if (retry_clear && !arb_t_of(arb_nxt)) st_p_nxt = rd68021_pkg::ST_S0;
+      else                                   st_p_nxt = rd68021_pkg::ST_RETRY;
+    end else if (st_p == rd68021_pkg::ST_HALT) begin
+      if (!halt_sync_n)                st_p_nxt = rd68021_pkg::ST_HALT;
+      else if (start_ok)               st_p_nxt = rd68021_pkg::ST_S0;
+      else                             st_p_nxt = rd68021_pkg::ST_IDLE;
+    end else begin
+      unique case (st_n)
       rd68021_pkg::ST_IDLE: begin
         if (start_ok) st_p_nxt = rd68021_pkg::ST_S0;
         else          st_p_nxt = rd68021_pkg::ST_IDLE;
@@ -234,12 +308,69 @@ module rd68021_biu #(
         if (term_q) st_p_nxt = rd68021_pkg::ST_S4;
         else        st_p_nxt = rd68021_pkg::ST_WH;
       end
-      // The rising edge that ends S5 either starts the next cycle or goes idle.
+      // The rising edge that ends S5. Table 5-8 decides where it goes.
       rd68021_pkg::ST_S5: begin
-        if (start_ok) st_p_nxt = rd68021_pkg::ST_S0;
-        else          st_p_nxt = rd68021_pkg::ST_IDLE;
+        if (term_rty)                st_p_nxt = rd68021_pkg::ST_RETRY;
+        else if (term_hlt || !halt_sync_n)
+                                     st_p_nxt = rd68021_pkg::ST_HALT;
+        else if (start_ok)           st_p_nxt = rd68021_pkg::ST_S0;
+        else                         st_p_nxt = rd68021_pkg::ST_IDLE;
       end
       default: st_p_nxt = rd68021_pkg::ST_IDLE;
+      endcase
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // The arbiter's next state -- UM 5.7.1.4, in the prose's own words
+  // ---------------------------------------------------------------------------
+  always_comb begin
+    arb_nxt = arb;
+    unique case (arb)
+      // "Request R and acknowledge A keep the arbiter in state 0 as long as they
+      // are both negated. When a request R is received, both grant G and signal T
+      // are asserted."
+      //
+      // ... "except when the MC68020 has made an internal decision to execute a
+      // bus cycle. Then, the assertion of BG is deferred until the bus cycle has
+      // begun."
+      //
+      // That deferral is exactly one edge: the edge on which an idle bus with a
+      // request pending enters S0. Testing st_p_nxt for it would be the direct
+      // transcription and is a combinational loop -- st_p_nxt depends on
+      // start_ok, which depends on this state -- so the test is on the registered
+      // state instead, which says the same thing one expression earlier.
+      rd68021_pkg::ARB_IDLE: begin
+        if (arb_req && !(bus_is_idle && want_cycle))
+             arb_nxt = rd68021_pkg::ARB_GRANT;
+        else arb_nxt = rd68021_pkg::ARB_IDLE;
+      end
+      // "The next clock causes a change to state 2."
+      rd68021_pkg::ARB_GRANT: arb_nxt = rd68021_pkg::ARB_WAIT;
+      // "The bus arbiter remains in that state until acknowledge A is asserted or
+      // request R is negated."
+      rd68021_pkg::ARB_WAIT: begin
+        if (arb_a || !arb_r) arb_nxt = rd68021_pkg::ARB_DROP;
+        else                 arb_nxt = rd68021_pkg::ARB_WAIT;
+      end
+      // "The next clock takes the arbiter to state 4."
+      rd68021_pkg::ARB_DROP: arb_nxt = rd68021_pkg::ARB_HELD;
+      // "With acknowledge A asserted, the arbiter remains in state 4 until A is
+      // negated or request R is again asserted. When A is negated, the arbiter
+      // returns to the original state."
+      //
+      // The re-grant arc is 5.7.1.3's requirement rather than a state read off
+      // figure 5-44: "if another BR is still pending after the assertion of
+      // BGACK, another BG is asserted within a few clocks of the negation of the
+      // first BG", and "the processor does not perform any external bus cycle
+      // before it reasserts BG" -- which is why it goes to ARB_GRANT, where T is
+      // still asserted, and not through ARB_IDLE.
+      rd68021_pkg::ARB_HELD: begin
+        if (arb_req)  arb_nxt = rd68021_pkg::ARB_GRANT;
+        else if (!arb_a) arb_nxt = rd68021_pkg::ARB_IDLE;
+        else          arb_nxt = rd68021_pkg::ARB_HELD;
+      end
+      default: arb_nxt = rd68021_pkg::ARB_IDLE;
     endcase
   end
 
@@ -293,6 +424,16 @@ module rd68021_biu #(
     if (xfer_n > cyc_n) xfer_n = cyc_n;
   end
 
+  // What the cycle actually moved. A bus error moves nothing -- the frame has to
+  // record the residual as it was BEFORE the faulted access, because RTE reruns
+  // that access -- and a retried cycle moves nothing either, because UM 5.5.2
+  // reruns it "using the same access information".
+  logic [2:0] xfer_done;
+  always_comb begin
+    if (term_err || term_rty) xfer_done = 3'd0;
+    else                      xfer_done = xfer_n;
+  end
+
   // ==========================================================================
   // Read: which lane each byte arrives on -- UM Table 5-4
   //
@@ -335,7 +476,7 @@ module rd68021_biu #(
     rd_sel  = '0;
     rd_lane = '0;
     for (i_rd = 0; i_rd < 4; i_rd = i_rd + 1) begin
-      if (i_rd < xfer_n) begin
+      if (i_rd < xfer_done) begin
         // Byte i_rd of this cycle is the (op_rem-1-i_rd)-th byte of the operand,
         // counting up from the least significant.
         rd_sel  = op_rem - 3'd1 - i_rd[2:0];
@@ -413,6 +554,25 @@ module rd68021_biu #(
   end
 
   // ==========================================================================
+  // Two pin windows, declared here because the rising-edge block below uses
+  // as_win and Questa and Vivado both reject a variable read above its own
+  // declaration -- (vlog-2730) and [Synth 8-6901], which scripts/synth.tcl
+  // promotes from an info to an error for exactly this reason. The two lint
+  // front-ends invent an implicit net instead and say nothing.
+  //
+  // ECS: one half clock at the start of every bus cycle. Asserted on the rising
+  // edge entering S0 (specification 6A) and negated on the falling edge entering
+  // S1 (specification 12A), which is the whole of specification 10's width.
+  logic ecs_win;
+  assign ecs_win = (st_p == rd68021_pkg::ST_S0) && (st_n != rd68021_pkg::ST_S1);
+
+  // AS: asserted on the falling edge entering S1, negated on the falling edge
+  // entering S5. Purely a function of the negative-edge state.
+  logic as_win;
+  assign as_win = (st_n == rd68021_pkg::ST_S1) || (st_n == rd68021_pkg::ST_S3)
+               || (st_n == rd68021_pkg::ST_WL);
+
+  // ==========================================================================
   // Starting a cycle, and starting an operand
   // ==========================================================================
   logic        take_req;
@@ -457,12 +617,24 @@ module rd68021_biu #(
       next_fc   = fetch_fc;
       next_rw   = 1'b1;
       next_rmc  = 1'b0;
+    end else if (st_n == rd68021_pkg::ST_S5) begin
+      // Continuing a multi-cycle operand on the edge that ends S5. op_addr and
+      // op_rem are updated by this same edge, so what the next cycle must carry
+      // is the residual *after* this transfer, not before it.
+      next_addr = op_addr + {29'd0, xfer_done};
+      next_rem  = op_rem - xfer_done;
+      next_fc   = op_fc;
+      next_rw   = op_rw;
+      next_rmc  = op_rmc;
     end else begin
-      // Continuing a multi-cycle operand. The residual is updated by the same
-      // rising edge that latches these, so what the next cycle must carry is the
-      // residual *after* this transfer, not before it.
-      next_addr = op_addr + {29'd0, xfer_n};
-      next_rem  = op_rem - xfer_n;
+      // Re-entering S0 from anywhere else -- which means a retry (UM 5.5.2,
+      // "retries the previous cycle using the same access information"). The
+      // residual is already whatever the faulted cycle left it as, and it must
+      // NOT be advanced again: xfer_done is only meaningful while the cycle that
+      // produced it is still current, and by now term_rty has been cleared, so
+      // adding it here would retry at the wrong address with a residual of zero.
+      next_addr = op_addr;
+      next_rem  = op_rem;
       next_fc   = op_fc;
       next_rw   = op_rw;
       next_rmc  = op_rmc;
@@ -484,8 +656,11 @@ module rd68021_biu #(
     endcase
   end
 
+  // A faulted operand finishes too: the sequencer has to be unstalled either way,
+  // and req_fault is what tells it which happened.
   assign op_finishing  = op_active && (st_n == rd68021_pkg::ST_S5)
-                         && (op_rem == xfer_n);
+                         && !term_rty
+                         && ((op_rem == xfer_done) || term_err);
   assign op_continuing = op_active && !op_finishing;
 
   // Combinational, and true throughout S5: the operand completes at the rising
@@ -517,10 +692,32 @@ module rd68021_biu #(
       cyc_rmc    <= 1'b0;
       req_ack    <= 1'b0;
       fetch_ack  <= 1'b0;
+      req_fault    <= 1'b0;
+      req_fault_wr <= 1'b0;
+      fetch_fault  <= 1'b0;
+      arb        <= rd68021_pkg::ARB_IDLE;
+      hiz_q      <= 1'b0;
+      rmc_hold   <= 1'b0;
+      halt_hold  <= 1'b0;
     end else begin
       st_p      <= st_p_nxt;
       req_ack   <= 1'b0;
       fetch_ack <= 1'b0;
+      req_fault    <= 1'b0;
+      req_fault_wr <= 1'b0;
+      fetch_fault  <= 1'b0;
+
+      arb <= arb_nxt;
+
+      // "If T is true, the address, data, and control buses are placed in the
+      // high-impedance state after the next rising edge following the negation of
+      // AS and RMC" -- UM 5.7.1.4. Registered on the way up, so the release waits
+      // for that edge; combinational on the way down, because "the bus control
+      // signals are driven by the processor immediately following a state change
+      // when bus mastership is returned".
+      hiz_q <= arb_t_of(arb_nxt) && !as_win && !rmc_hold;
+
+      halt_hold <= (st_p_nxt == rd68021_pkg::ST_HALT);
 
       // The rising edge that ends S5. The cycle is over: take the bytes it moved
       // and advance the residual. Every register the operand owns is written
@@ -530,13 +727,19 @@ module rd68021_biu #(
       if (st_n == rd68021_pkg::ST_S5) begin
         op_first <= 1'b0;
         if (op_rw) op_data <= rd_merged;
-        op_addr <= op_addr + {29'd0, xfer_n};
-        op_rem  <= op_rem - xfer_n;
+        op_addr <= op_addr + {29'd0, xfer_done};
+        op_rem  <= op_rem - xfer_done;
         if (op_finishing) begin
           op_active <= 1'b0;
           op_first  <= 1'b1;
-          if (op_isfetch) fetch_ack <= 1'b1;
-          else            req_ack   <= 1'b1;
+          if (op_isfetch) begin
+            fetch_ack   <= 1'b1;
+            fetch_fault <= term_err;
+          end else begin
+            req_ack      <= 1'b1;
+            req_fault    <= term_err;
+            req_fault_wr <= term_err && !op_rw;
+          end
         end
       end
 
@@ -546,6 +749,7 @@ module rd68021_biu #(
       // which is why next_addr and next_rem are written to see the post-transfer
       // residual.
       if (st_p_nxt == rd68021_pkg::ST_S0) begin
+        rmc_hold <= next_rmc;
         cyc_addr <= next_addr;
         cyc_fc   <= next_fc;
         cyc_siz  <= this_siz;
@@ -565,6 +769,10 @@ module rd68021_biu #(
           if (take_fetch) op_data <= '0;
           else            op_data <= req_wdata;
         end
+      end else if ((st_p_nxt == rd68021_pkg::ST_IDLE) && !req_rmc) begin
+        // Nothing locked is pending and the bus is going idle, so let go of RMC
+        // rather than blocking arbitration until the next cycle happens along.
+        rmc_hold <= 1'b0;
       end
     end
   end
@@ -583,26 +791,77 @@ module rd68021_biu #(
   // transiently as an 8-bit one, and the operand engine would assemble the wrong
   // bytes with no error anywhere.
   // ==========================================================================
+  // The six acceptable terminations -- UM Table 5-8, with the case numbers the
+  // manual gives them. The table indexes on two samples a clock apart, "asserted
+  // on rising edge of state n" and "n+2"; here those are the falling edge
+  // entering S3 (the end of S2) and the falling edge entering S5 (the end of S4).
+  //
+  //   1  DSACK, no BERR, no HALT          normal
+  //   2  HALT at or before DSACK          normal, then halt
+  //   3  BERR in lieu of / at / before    bus error
+  //   4  BERR one state pair after DSACK  bus error, deferred -- the late window
+  //   5  BERR and HALT in lieu of / at / before   retry
+  //   6  BERR and HALT after DSACK        retry, deferred
+  //
+  // Cases 4 and 6 are the ones worth being careful about. On the MC68010 project
+  // the equivalent late assertion was detected and then never delivered, because
+  // the late path set an end code without raising the fault; the exception was
+  // simply not taken. Here the late sample writes term_err and term_rty, which is
+  // the same place the early sample writes them.
+  logic berr_s, halt_s;
+  assign berr_s = ~berr_n_i;
+  assign halt_s = ~halt_n_i;
+
   always_ff @(negedge clk or negedge rst_n) begin
     if (!rst_n) begin
       st_n      <= rd68021_pkg::ST_IDLE;
       dsack_q   <= rd68021_pkg::DSACK_WAIT;
       term_q    <= 1'b0;
+      term_err  <= 1'b0;
+      term_rty  <= 1'b0;
+      term_hlt  <= 1'b0;
       d_latched <= '0;
+      bg_n_o    <= 1'b1;
     end else begin
       st_n <= st_n_nxt;
+
+      // "The BG signal transitions on the falling edge of the clock after a state
+      // is reached during which G changes" -- UM 5.7.1.4.
+      bg_n_o <= ~arb_g_of(arb);
 
       // The sample: entering S3, and again at every ST_WL while waiting.
       if (st_n_nxt == rd68021_pkg::ST_S3 || st_n_nxt == rd68021_pkg::ST_WL) begin
         dsack_q <= dsack_n_i;
-        term_q  <= (dsack_n_i != rd68021_pkg::DSACK_WAIT);
+        if (berr_s && halt_s) begin
+          term_q   <= 1'b1;  term_rty <= 1'b1;               // case 5
+        end else if (berr_s) begin
+          term_q   <= 1'b1;  term_err <= 1'b1;               // case 3
+        end else if (dsack_n_i != rd68021_pkg::DSACK_WAIT) begin
+          term_q   <= 1'b1;  term_hlt <= halt_s;             // cases 1 and 2
+        end else begin
+          term_q   <= 1'b0;
+        end
       end
 
-      // Entering S5: latch the read data. dsack_q is held past here so that the
-      // rising edge that ends S5 can still see which port answered.
+      // Entering S5: latch the read data, and take the second of Table 5-8's two
+      // samples. It applies only to a cycle that terminated normally -- a cycle
+      // already in error does not get a second verdict.
       if (st_n_nxt == rd68021_pkg::ST_S5) begin
         d_latched <= d_i;
-        term_q    <= 1'b0;
+        if (!term_err && !term_rty) begin
+          if (berr_s && halt_s)   term_rty <= 1'b1;          // case 6
+          else if (berr_s)        term_err <= 1'b1;          // case 4
+        end
+      end
+
+      // The rising edge that ends S5 has consumed the verdict; clear it for the
+      // next cycle. A retried cycle keeps nothing either: UM 5.5.2 reruns it from
+      // the same access information, and the rerun takes its own samples.
+      if (st_n == rd68021_pkg::ST_S5) begin
+        term_q   <= 1'b0;
+        term_err <= 1'b0;
+        term_rty <= 1'b0;
+        term_hlt <= 1'b0;
       end
     end
   end
@@ -615,21 +874,11 @@ module rd68021_biu #(
   // exactly one edge.
   // ==========================================================================
 
-  // ECS: one half clock at the start of every bus cycle. Asserted on the rising
-  // edge entering S0 (specification 6A) and negated on the falling edge entering
-  // S1 (specification 12A), which is the whole of specification 10's width.
-  logic ecs_win;
-  assign ecs_win = (st_p == rd68021_pkg::ST_S0) && (st_n != rd68021_pkg::ST_S1);
   assign ecs_n_o = ~ecs_win;
 
   // OCS: identical, but only for the first bus cycle of an operand (UM 5.1.1).
   assign ocs_n_o = ~(ecs_win && op_first);
 
-  // AS: asserted on the falling edge entering S1, negated on the falling edge
-  // entering S5. Purely a function of the negative-edge state.
-  logic as_win;
-  assign as_win = (st_n == rd68021_pkg::ST_S1) || (st_n == rd68021_pkg::ST_S3)
-               || (st_n == rd68021_pkg::ST_WL);
   assign as_n_o = ~as_win;
 
   // DS: on a read it follows AS (UM 5.3.1 state 1, "the processor also asserts DS
@@ -663,43 +912,66 @@ module rd68021_biu #(
   assign rmc_n_o = ~cyc_rmc;
   assign d_o     = wr_lanes;
 
-  // Output enables. The address group is driven from S0 and released at the rising
-  // edge that ends S5 (specification 7); the control group is driven always, and
-  // is released only on bus relinquish and during RESET, which are M2.
+  // Bus relinquish. Combinational on the way down so that the processor drives
+  // again "immediately following a state change when bus mastership is returned".
+  assign bus_granted = hiz_q && arb_t_of(arb);
+
+  // Output enables.
+  //
+  // The address group is driven from S0 and released at the rising edge that ends
+  // S5 (specification 7) -- except while halted, where UM 5.5.3 says A31-A0,
+  // FC2-FC0, SIZ1/SIZ0 and R/W "remain in the same state", driven rather than
+  // released. That is the one thing that distinguishes a halted bus from an idle
+  // one on these pins.
   logic cyc_drive;
   assign cyc_drive = (st_p != rd68021_pkg::ST_IDLE);
 
-  assign a_oe   = ADDR_HIZ_BETWEEN_CYCLES ? cyc_drive : 1'b1;
+  logic addr_drive;
+  assign addr_drive = ADDR_HIZ_BETWEEN_CYCLES ? (cyc_drive || halt_hold) : 1'b1;
+
+  assign a_oe   = addr_drive && !bus_granted;
   assign fc_oe  = a_oe;
   assign siz_oe = a_oe;
   assign rmc_oe = a_oe;
 
   // Write data is driven from the rising edge entering S2 and held through S5.
-  assign d_oe = !cyc_rw && ((st_p == rd68021_pkg::ST_S2)
-                            || (st_p == rd68021_pkg::ST_S4)
-                            || (st_p == rd68021_pkg::ST_WH));
+  // "When the processor completes a bus cycle with the HALT signal asserted, the
+  // data bus is placed in the high-impedance state" -- so no halt term here.
+  assign d_oe = !cyc_rw && !bus_granted
+                && ((st_p == rd68021_pkg::ST_S2)
+                    || (st_p == rd68021_pkg::ST_S4)
+                    || (st_p == rd68021_pkg::ST_WH));
 
-  assign as_oe   = 1'b1;
-  assign ds_oe   = 1'b1;
-  assign rw_oe   = 1'b1;
-  assign dben_oe = 1'b1;
+  // The control group is driven except on relinquish. UM 5.5.3 is explicit that
+  // halting negates these rather than releasing them, and 5.7.1.4's T is what
+  // releases them.
+  assign as_oe   = !bus_granted;
+  assign ds_oe   = !bus_granted;
+  assign rw_oe   = !bus_granted;
+  assign dben_oe = !bus_granted;
 
-  assign bg_n_o     = 1'b1;
-  assign reset_n_o  = 1'b0;   // open drain: the enable is what asserts it
-  assign reset_n_oe = 1'b0;
+  // RESET and HALT are open drain: the output value is a constant zero and the
+  // enable is what asserts them. UM 5.5.4: on a double bus fault "the processor
+  // halts and asserts HALT", and only an external reset restarts it.
+  assign reset_n_o  = 1'b0;
+  assign reset_n_oe = 1'b0;   // the RESET instruction's 512 clocks are M5
   assign halt_n_o   = 1'b0;
-  assign halt_n_oe  = 1'b0;
+  assign halt_n_oe  = dbf;
 
   // ==========================================================================
   // Back to the sequencer
   // ==========================================================================
   assign req_rdata   = op_data;
   assign fetch_rdata = op_data[31:0];
-  assign req_end      = rd68021_pkg::CE_DSACK;
-  assign req_fault    = 1'b0;   // M2
-  assign req_fault_wr = 1'b0;   // M2
+
+  always_comb begin
+    if (term_err)                            req_end = rd68021_pkg::CE_BERR;
+    else if (term_rty)                       req_end = rd68021_pkg::CE_RETRY;
+    else if (term_hlt)                       req_end = rd68021_pkg::CE_HALT;
+    else if (term_q)                         req_end = rd68021_pkg::CE_DSACK;
+    else                                     req_end = rd68021_pkg::CE_NONE;
+  end
   assign req_dsack    = dsack_q;
-  assign fetch_fault  = 1'b0;   // M2
 
   assign flt_addr  = op_addr;
   assign flt_bytes = op_rem;
@@ -709,10 +981,8 @@ module rd68021_biu #(
   assign flt_dob   = op_data[31:0];
   assign flt_dib   = op_data[31:0];
 
-  assign reset_busy  = 1'b0;    // M2
-  assign bus_idle    = (st_p == rd68021_pkg::ST_IDLE)
-                       && (st_n == rd68021_pkg::ST_IDLE);
-  assign bus_granted = 1'b0;    // M2
+  assign reset_busy  = 1'b0;    // the RESET instruction is M5
+  assign bus_idle    = bus_is_idle;
 
   // ==========================================================================
   // Inputs this unit does not consume yet. The list shrinks visibly as the design
@@ -724,8 +994,7 @@ module rd68021_biu #(
                         rst_rmc, rst_dob,
                         fetch_addr[1:0], bus_abort,
                         reset_req, dbf,
-                        avec_n_i, berr_n_i,
-                        br_sync_n, bgack_sync_n,
+                        avec_n_i,
                         op_data[39:32]};
 
 endmodule

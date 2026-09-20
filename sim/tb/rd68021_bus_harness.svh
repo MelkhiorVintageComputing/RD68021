@@ -94,6 +94,18 @@ logic  [2:0] ipl_sync_n;
 logic        reset_sync_n, halt_sync_n, cdis_sync_n;
 logic        bus_idle, bus_granted, reset_busy;
 
+// Bus exception and arbitration inputs, driven by the test. UM 5.5 asks for BERR,
+// HALT and DSACK to be "asserted and negated with the rising edge of the
+// MC68020/EC020 clock ... this ensures that when two signals are asserted
+// simultaneously, the required setup time (#47A) and hold time (#47B) for both of
+// them is met for the same falling edge of the processor clock", so every task
+// below drives them from a rising edge.
+logic berr_drv;   // active high here; inverted onto the pin
+logic halt_drv;
+logic br_drv;
+logic bgack_drv;
+logic dbf_drv;
+
 // The three-state data bus.
 wire [31:0] dbus;
 assign dbus = d_oe ? d_o : 32'bz;
@@ -121,7 +133,7 @@ rd68021_biu dut (
     .fetch_valid (fetch_valid), .fetch_addr (fetch_addr), .fetch_fc (fetch_fc),
     .fetch_ack (fetch_ack), .fetch_last (fetch_last), .fetch_rdata (fetch_rdata),
     .fetch_fault (fetch_fault), .bus_abort (1'b0),
-    .reset_req (1'b0), .reset_busy (reset_busy), .dbf (1'b0),
+    .reset_req (1'b0), .reset_busy (reset_busy), .dbf (dbf_drv),
     .ipl_sync_n (ipl_sync_n), .reset_sync_n (reset_sync_n),
     .halt_sync_n (halt_sync_n), .cdis_sync_n (cdis_sync_n),
     .bus_idle (bus_idle), .bus_granted (bus_granted),
@@ -137,10 +149,10 @@ rd68021_biu dut (
     .dben_o (dben_o), .dben_oe (dben_oe),
     .dsack_n_i (dsack_n_i),
     .ipl_n_i (3'b111), .avec_n_i (1'b1),
-    .br_n_i (1'b1), .bg_n_o (bg_n_o), .bgack_n_i (1'b1),
-    .berr_n_i (1'b1),
+    .br_n_i (~br_drv), .bg_n_o (bg_n_o), .bgack_n_i (~bgack_drv),
+    .berr_n_i (~berr_drv),
     .reset_n_i (1'b1), .reset_n_o (reset_n_o), .reset_n_oe (reset_n_oe),
-    .halt_n_i (1'b1), .halt_n_o (halt_n_o), .halt_n_oe (halt_n_oe),
+    .halt_n_i (~halt_drv), .halt_n_o (halt_n_o), .halt_n_oe (halt_n_oe),
     .cdis_n_i (1'b1)
 );
 
@@ -218,6 +230,11 @@ task automatic reset_dut();
   req_cpuspace = 4'd0;
   req_cpuaddr  = 8'd0;
   fetch_pending = 1'b0;
+  berr_drv     = 1'b0;
+  halt_drv     = 1'b0;
+  br_drv       = 1'b0;
+  bgack_drv    = 1'b0;
+  dbf_drv      = 1'b0;
   fetch_addr   = 32'd0;
   fetch_fc     = 3'b110;
   repeat (4) @(posedge clk);
@@ -282,3 +299,67 @@ task automatic op_fetch(input logic [31:0] addr,
   cycles      = as_count - c0;
   @(negedge clk);
 endtask
+
+// ---------------------------------------------------------------------------
+// Bus exception injection
+//
+// Table 5-8 indexes its two samples by "the number of the current even bus
+// state": n is S2, whose rising edge is one clock after AS asserts, and n+2 is
+// S4. These two tasks put a signal exactly there.
+// ---------------------------------------------------------------------------
+task automatic assert_at_n(input bit berr, input bit halt);
+  @(negedge as_n_o);      // the falling edge that enters S1
+  @(posedge clk);         // the rising edge that enters S2 -- state n
+  berr_drv = berr;
+  halt_drv = halt;
+endtask
+
+task automatic assert_at_n2(input bit berr, input bit halt);
+  @(negedge as_n_o);
+  @(posedge clk);         // S2
+  @(posedge clk);         // S4 -- state n+2
+  berr_drv = berr;
+  halt_drv = halt;
+endtask
+
+task automatic release_exc();
+  @(posedge clk);
+  berr_drv = 1'b0;
+  halt_drv = 1'b0;
+endtask
+
+// ---------------------------------------------------------------------------
+// Two standing properties, checked on every clock edge for the whole run.
+//
+// The first: the core must never drive AS low while the address bus is released.
+//
+// The second is the one that matters here, and it took a wrong first attempt to
+// find. The MC68010 project's hardest arbitration bug was that the bus state
+// machine decided whether to START a cycle from the arbiter's CURRENT state while
+// the output enables followed its NEXT one, so on the single edge where the
+// arbiter reached its granting state a cycle began anyway -- and then ran with
+// its buses in high impedance. In THIS design that cycle does not drive AS
+// either, because as_oe follows the same release; so a monitor that looks for
+// "AS low and the address released" never fires. What is externally observable
+// is that the cycle SILENTLY VANISHES: no slave sees it, nothing answers, and
+// the operand either hangs or comes back wrong. bus_arb_tb sweeps the phase of
+// BR across a multi-cycle operand to make that happen.
+//
+// Kept anyway, because it costs nothing and covers the other shape of the bug.
+// ---------------------------------------------------------------------------
+int unsigned drive_violations;
+initial drive_violations = 0;
+
+always @(posedge clk or negedge clk) begin
+  if (rst_n && as_oe && !as_n_o && !a_oe) begin
+    drive_violations = drive_violations + 1;
+    $display("  FAIL: AS asserted at %0t with the address bus released", $time);
+  end
+  // A cycle that begins while the bus is being handed over drives nothing at
+  // all. ECS marks the beginning of every bus cycle and is never three-stated,
+  // so it is visible even then.
+  if (rst_n && !ecs_n_o && bus_granted) begin
+    drive_violations = drive_violations + 1;
+    $display("  FAIL: a bus cycle began at %0t with the bus relinquished", $time);
+  end
+end

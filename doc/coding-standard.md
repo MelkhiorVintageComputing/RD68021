@@ -153,6 +153,10 @@ The rule in practice: **do not name that tool at the start of a comment line, in
 file.** Name the warning, or reword. The other five front-ends have nothing to say about
 it, so lint is where it is caught and nowhere else.
 
+This has now been hit three times in two milestones, each time in an ordinary comment
+that happened to wrap onto a line beginning with the word. `grep -rn '^\s*//\s*<name>'
+rtl/ sim/` finds them all in one go and is worth running before a commit.
+
 ## The function-in-a-continuous-assignment trap *(measured)*
 
 This one cost real debugging time on the MC68010 project and no lint run catches it.
@@ -199,7 +203,9 @@ A function whose result depends only on its arguments is still fine anywhere.
 | Quartus | `project_new` and `project_open` **change the working directory** to the project's, so every relative path taken from the command line silently stops resolving after that line | record `[pwd]` first and `file join` it onto every path — the file list, the SDC file and each source |
 | Quartus | `$quartus(args)` is a global array and is not visible inside a proc | `$::quartus(args)` |
 | Vivado | `get_timing_paths` on a design with nothing between flops returns an empty list, and `get_property` on it is `[Common 17-55] 'get_property' expects at least one object` — an *error*, which fails an otherwise successful synthesis of a skeleton | ask for `-quiet` and test `llength` before reporting |
-| all of them | a pipe into `tee` or `grep` throws the exit status away, so a gate that pipes its tool's output **cannot fail** | `set -o pipefail` on every recipe line that pipes. Measured here: a Tcl error inside `quartus_sh` reported `quartus: ok` |
+| all of them | a pipe into `tee` or `grep` throws the exit status away, so a gate that pipes its tool's output **cannot fail** | `set -o pipefail` on every recipe line that pipes. Measured here: a Tcl error inside `quartus_sh` reported `quartus: ok`. Better still, run the tool into a log and decide from its exit status — `tool \| grep -v … \|\| test $? -eq 1` hands the *tool's* status to `test`, which then succeeds |
+| yosys | returns 0 on a warning, and two of its warnings are defects: "multiple conflicting drivers" (a register written from two processes — which is what a register written from both edge domains looks like) and an inferred latch | grep the log; the exit code will not tell you. Measured: `op_addr` was driven from both the posedge and the negedge block and `make lint` said PASS |
+| Vivado | `[Synth 8-3332]` reads like an implicit-declaration message and is not — it is "sequential element … is unused and will be removed", ordinary optimisation, and the normal state of a design whose upper units are still stubs | do **not** promote it. Promoting it failed a perfectly good synthesis run. `[Synth 8-6901]`, used-before-declaration, is the one worth promoting, and it has already earned its keep |
 | all of them | a testbench that samples an instruction boundary just after the rising edge misses the end of a bus-cycle microword, because the bus unit's output stage is negedge-clocked and the acknowledge only settles in the second half of the clock | sample instruction boundaries on the *falling* edge |
 
 Add to this table whenever a tool surprises you. It is cheaper than rediscovering it.
