@@ -64,7 +64,7 @@ package rd68021_frame_pkg;
   // ==========================================================================
   // This design's own state, in the long frame's internal words
   //
-  // 492 bits available, 279 used, 12 words spare. Recompute this whenever
+  // 492 bits available, 296 used, 11 words spare. Recompute this whenever
   // something is added: doc/checkpoint.md carries the same table, printed from
   // the same source.
   // ==========================================================================
@@ -80,6 +80,9 @@ package rd68021_frame_pkg;
   localparam int OFF_I_RR_PENDING = 'h08;   //  1 bits, a rerun flag out of the frame is still to be applied
   localparam int I_RR_PENDING_HI = 5;
   localparam int I_RR_PENDING_LO = 5;
+  localparam int OFF_I_EAPC      = 'h08;   //  1 bits, the base of the effective address under way is the PC
+  localparam int I_EAPC_HI       = 6;
+  localparam int I_EAPC_LO       = 6;
   localparam int OFF_I_UPC       = 'h14;   // 16 bits, the micro-address to resume at
   localparam int I_UPC_HI        = 15;
   localparam int I_UPC_LO        = 0;
@@ -113,6 +116,9 @@ package rd68021_frame_pkg;
   localparam int OFF_I_PC_FETCH  = 'h40;   // 32 bits, the next long word the pipe will fetch
   localparam int I_PC_FETCH_HI   = 31;
   localparam int I_PC_FETCH_LO   = 0;
+  localparam int OFF_I_LINK      = 'h44;   // 16 bits, the return address of the subroutine under way
+  localparam int I_LINK_HI       = 15;
+  localparam int I_LINK_LO       = 0;
 
 endpackage
 

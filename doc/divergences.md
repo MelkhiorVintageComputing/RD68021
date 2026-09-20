@@ -102,6 +102,29 @@ the cycle counts. `doc/checkpoint.md` records the budget it bought.
 
 ---
 
+## The reserved index/indirect encodings stop the processor
+
+PRM table 2-2 leaves two groups of the full extension word's IS and I/IS fields
+**Reserved**: `IS = 0, I/IS = 100`, and `IS = 1, I/IS = 100` through `111`. PRM
+table 2-1 also reserves a BD SIZE of `00`. The manual says what they are called
+and nothing about what the part does with them.
+
+**This design sends all of them to a defined micro-address that stops.** Until
+exception processing exists (M8) that is all it can do; afterwards it should
+become an illegal-instruction exception, which is what the F-line and A-line
+encodings get and the nearest thing the architecture offers.
+
+**What could differ:** whatever a real MC68020 does, which is not written down.
+
+**How it is checked:** it is not. `tools/ucode/assemble.py` forces the decision by
+requiring every one of the 131072 extension-word-and-base-bit combinations to
+land somewhere named, so the encodings cannot fall through into a routine meant
+for something else; and `tools/cosim/musashi_ea.c` deliberately does **not**
+generate them, because Musashi's answer for them would be Musashi's guess rather
+than the manual's.
+
+---
+
 ## The address group is released between bus cycles
 
 Specification 7, "Clock High to Address, Data, FC, Size, RMC High Impedance",
@@ -137,3 +160,42 @@ The first of them names an operand byte that is not among the bytes still to be
 sent, so this design drives the most significant one that is. The other two are
 driven as the table names them. Nothing can observe the difference, and if
 something did, it would be observing a byte the manual says is meaningless.
+
+---
+
+## Musashi calls a program-counter-relative indirection a data reference
+
+Not a divergence in this core: a place where the oracle is wrong and the sweep
+had to be told so.
+
+PRM 2.2.14 and 2.2.15, on the two program-counter memory-indirect modes:
+
+> The processor calculates an intermediate indirect memory address by adding a
+> base displacement to the PC contents. **The processor accesses a long word at
+> that address** and adds the scaled contents of the index register and the
+> optional outer displacement to yield the effective address. ... **This is a
+> program reference allowed only for reads.**
+
+The sentence covers the whole access, the intermediate long word included. This
+core drives the program function code for it, and for the final operand fetch of
+every PC-relative mode, which is what section 2's opening paragraph requires:
+"Data items in the instruction stream can be accessed with the program counter
+relative addressing modes; these accesses classify as program references."
+
+Musashi has no function code pins. What it has is `M68K_SEPARATE_READS`, which
+routes the *final* operand fetch of a PC-relative mode to
+`m68k_read_pcrelative_xx` and everything else to `m68k_read_memory_xx`. The
+intermediate indirection goes through the latter, so taking the space from the
+callback would call it a data reference.
+
+**What is done about it:** `tools/cosim/musashi_ea.c` takes the space from the
+addressing mode the test was built with, not from the callback Musashi used. The
+mode is in the opcode it wrote, so this is our reading of PRM 2 and not
+Musashi's silence — and it is worth saying plainly that for this one field the
+sweep checks the core against the manual rather than against an independent
+implementation.
+
+**What still checks it independently:** nothing yet. `make sun3` is where it
+becomes checkable for real, because the Sun-3 MMU maps program and data space
+separately and a wrong function code there is a fault rather than a difference
+of opinion. Noted in the M12 work.

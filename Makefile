@@ -48,7 +48,7 @@ IVFLAGS := -g2012 -Wall -Wno-timescale
 
 .PHONY: all help dirs lint lint-iverilog lint-verilator lint-yosys \
         lint-quartus lint-questa synth audit ucode ucode-check sim sim-bus \
-        timing timing-verbose check clean
+        timing timing-verbose ea check clean
 
 all: lint
 
@@ -60,6 +60,7 @@ help:
 	@echo "  make sim-bus   ... just the bus-level ones"
 	@echo "  make audit     prove no register initialises outside reset"
 	@echo "  make timing    AC-specification feasibility, all four speed grades"
+	@echo "  make ea        every addressing mode against Musashi"
 	@echo "  make ucode     regenerate rtl/gen/ from tools/ucode/"
 	@echo "  make check     the gate: ucode-check, lint, audit"
 	@echo
@@ -143,7 +144,9 @@ ucode-check: dirs
 # and ALSO on a missing PASS: a testbench that stopped early without saying so is
 # not a testbench that passed.
 # ---------------------------------------------------------------------------
-TBS := $(patsubst sim/tb/%.sv,%,$(wildcard sim/tb/*_tb.sv))
+# core_ea_tb is not here: it needs a vector file that `make ea` generates from
+# Musashi first, and it runs for minutes. It has its own target.
+TBS := $(filter-out core_ea_tb,$(patsubst sim/tb/%.sv,%,$(wildcard sim/tb/*_tb.sv)))
 
 sim: dirs
 	@ok=1; for tb in $(TBS); do \
@@ -163,6 +166,52 @@ sim: dirs
 
 sim-bus: dirs
 	@$(MAKE) --no-print-directory sim TBS="$(filter bus_%,$(TBS))"
+
+# ---------------------------------------------------------------------------
+# Musashi, the instruction-level oracle
+#
+# Inputs/ is immutable, so Musashi is built out of tree into build/musashi/, and
+# tools/cosim/m68kconf.h is force-included with -include rather than put on the
+# include path: Musashi includes its own with quotes, which searches its own
+# directory first.
+# ---------------------------------------------------------------------------
+MUSASHI  := Inputs/ref/Musashi
+MBUILD   := $(BUILD)/musashi
+MCFLAGS  := -O2 -w -I$(MUSASHI) -include tools/cosim/m68kconf.h
+
+$(MBUILD)/m68kmake: $(MUSASHI)/m68kmake.c
+	@mkdir -p $(MBUILD)
+	@cc -O2 -w -o $@ $<
+
+$(MBUILD)/m68kops.c: $(MBUILD)/m68kmake $(MUSASHI)/m68k_in.c
+	@cd $(MBUILD) && ./m68kmake . $(CURDIR)/$(MUSASHI)/m68k_in.c > /dev/null
+
+$(MBUILD)/musashi_ea: tools/cosim/musashi_ea.c $(MBUILD)/m68kops.c \
+                      tools/cosim/m68kconf.h
+	@# m68kfpu.c is #included by m68kcpu.c, not compiled beside it: listing it
+	@# too is "multiple definition of m68040_fpu_op1". softfloat.c is compiled
+	@# separately, because m68kfpu.c only declares what it uses from it.
+	@cc $(MCFLAGS) -I$(MBUILD) -I$(MUSASHI)/softfloat -o $@ $< \
+	    $(MBUILD)/m68kops.c $(MUSASHI)/m68kcpu.c $(MUSASHI)/m68kdasm.c \
+	    $(MUSASHI)/softfloat/softfloat.c -lm \
+	    > $(BUILD)/musashi.log 2>&1 \
+	  || { tail -20 $(BUILD)/musashi.log; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Effective addresses, against Musashi
+# ---------------------------------------------------------------------------
+ea: dirs $(MBUILD)/musashi_ea
+	@$(MBUILD)/musashi_ea > $(BUILD)/ea-vectors.hex
+	@echo "  ea: $$(head -1 $(BUILD)/ea-vectors.hex | tr -d ' ') vectors from Musashi"
+	@iverilog $(IVFLAGS) -I sim/tb -o $(BUILD)/core_ea_tb.vvp -s core_ea_tb \
+	    $(RTL) sim/models/*.sv sim/tb/core_ea_tb.sv \
+	    > $(BUILD)/core_ea_tb.build.log 2>&1 \
+	  || { grep -v $(NOTES) $(BUILD)/core_ea_tb.build.log; exit 1; }
+	@vvp $(BUILD)/core_ea_tb.vvp +vec=$(BUILD)/ea-vectors.hex \
+	    > $(BUILD)/core_ea_tb.log 2>&1; \
+	 grep -E '^  FAIL' $(BUILD)/core_ea_tb.log | head -20; \
+	 grep -q '^PASS' $(BUILD)/core_ea_tb.log || { tail -3 $(BUILD)/core_ea_tb.log; exit 1; }
+	@tail -2 $(BUILD)/core_ea_tb.log
 
 # ---------------------------------------------------------------------------
 # AC timing

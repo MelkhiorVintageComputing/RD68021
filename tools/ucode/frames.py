@@ -115,6 +115,7 @@ INTERNAL = [
     (0x08,  3,  3, 'g0',         1,  'inside group-0 exception processing'),
     (0x08,  4,  4, 'notrace',    1,  'the trace pending for this instruction was cancelled'),
     (0x08,  5,  5, 'rr_pending', 1,  'a rerun flag out of the frame is still to be applied'),
+    (0x08,  6,  6, 'eapc',       1,  'the base of the effective address under way is the PC'),
     (0x14, 15,  0, 'upc',       16,  'the micro-address to resume at'),
     (0x16, 15,  0, 'stage_d',   16,  'the instruction word being decoded'),
     (0x1C, 31,  0, 't0',        32,  'working register'),
@@ -126,6 +127,7 @@ INTERNAL = [
     (0x38, 31,  0, 'ea_latch',  32,  'the address output buffer'),
     (0x3C, 31,  0, 'ea_save',   32,  'the copy of it taken at the fault'),
     (0x40, 31,  0, 'pc_fetch',  32,  'the next long word the pipe will fetch'),
+    (0x44, 15,  0, 'link',      16,  'the return address of the subroutine under way'),
 ]
 
 # --------------------------------------------------------------------------
@@ -160,6 +162,7 @@ CHECKPOINT = [
     ('biu', 'flt_rw',            1, 'ssw',           'SSW RW'),
     ('biu', 'flt_fc',            3, 'ssw',           'SSW FC2-FC0'),
     ('seq', 'upc',              16, 'upc',           ''),
+    ('seq', 'link',             16, 'link',          'seq = RET returns here'),
     ('seq', 't0',               32, 't0',            ''),
     ('seq', 't1',               32, 't1',            ''),
     ('seq', 't2',               32, 't2',            ''),
@@ -170,6 +173,7 @@ CHECKPOINT = [
     ('seq', 'g0',                1, 'g0',            ''),
     ('seq', 'notrace',           1, 'notrace',       ''),
     ('seq', 'rr_pending',        1, 'rr_pending',    ''),
+    ('seq', 'eapc',              1, 'eapc',          'seq = EADEC latches it; EABASE reads it'),
     ('seq', 'sr',               16, 'sr',            'frame +$00'),
 ]
 

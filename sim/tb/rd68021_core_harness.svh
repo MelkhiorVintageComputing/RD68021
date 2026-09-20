@@ -69,19 +69,19 @@ assign dbus = oe8  ? d8  : 32'bz;
 assign dsack_n_i = dsack32 & dsack16 & dsack8;
 
 rd68021_slave #(.PORT_BYTES (4), .WAITS (0), .BASE (32'h0000_0000),
-                .MASK (32'hF000_0000), .ABITS (13)) s32 (
+                .MASK (32'hF000_0000), .ABITS (16)) s32 (
     .clk (clk), .rst_n (rst_n), .a_i (a_o), .siz_i (siz_o), .fc_i (fc_o),
     .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus),
     .d_o (d32), .d_oe (oe32), .dsack_n_o (dsack32));
 
 rd68021_slave #(.PORT_BYTES (2), .WAITS (0), .BASE (32'h1000_0000),
-                .MASK (32'hF000_0000), .ABITS (13)) s16 (
+                .MASK (32'hF000_0000), .ABITS (16)) s16 (
     .clk (clk), .rst_n (rst_n), .a_i (a_o), .siz_i (siz_o), .fc_i (fc_o),
     .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus),
     .d_o (d16), .d_oe (oe16), .dsack_n_o (dsack16));
 
 rd68021_slave #(.PORT_BYTES (1), .WAITS (0), .BASE (32'h2000_0000),
-                .MASK (32'hF000_0000), .ABITS (13)) s8 (
+                .MASK (32'hF000_0000), .ABITS (16)) s8 (
     .clk (clk), .rst_n (rst_n), .a_i (a_o), .siz_i (siz_o), .fc_i (fc_o),
     .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus),
     .d_o (d8), .d_oe (oe8), .dsack_n_o (dsack8));
@@ -106,18 +106,28 @@ task automatic check(input bit ok, input string what);
   end
 endtask
 
+// Reset is released on a FALLING edge, and never on the edge the design samples.
+// Releasing it on a rising edge is a race: whether the always_ff blocks for that
+// edge run before or after the testbench's blocking assignment is up to the
+// simulator, so the reset branch may still fire and its non-blocking writes land
+// after anything the testbench deposited. It cost an afternoon here, and adding
+// a $display to find it made it go away.
 task automatic reset_dut();
   rst_n = 1'b0;
   repeat (4) @(posedge clk);
+  @(negedge clk);
   rst_n = 1'b1;
+  @(negedge clk);
 endtask
 
-// Write one word into whichever slave owns the address.
+// Write one word into whichever slave owns the address. The index must be the
+// same width the slave uses, or a poke lands somewhere the core will not read --
+// and 64 KB is enough that nothing a test uses wraps onto the vector table.
 task automatic poke_w(input logic [31:0] a, input logic [15:0] v);
   case (a[31:28])
-    4'h0: begin s32.mem[a[12:0]] = v[15:8]; s32.mem[a[12:0] + 1] = v[7:0]; end
-    4'h1: begin s16.mem[a[12:0]] = v[15:8]; s16.mem[a[12:0] + 1] = v[7:0]; end
-    4'h2: begin s8.mem[a[12:0]]  = v[15:8]; s8.mem[a[12:0] + 1]  = v[7:0]; end
+    4'h0: begin s32.mem[a[15:0]] = v[15:8]; s32.mem[a[15:0] + 1] = v[7:0]; end
+    4'h1: begin s16.mem[a[15:0]] = v[15:8]; s16.mem[a[15:0] + 1] = v[7:0]; end
+    4'h2: begin s8.mem[a[15:0]]  = v[15:8]; s8.mem[a[15:0] + 1]  = v[7:0]; end
     default: $display("  FAIL: poke_w to unmapped %08h", a);
   endcase
 endtask
@@ -190,3 +200,53 @@ task automatic run_until(input logic [31:0] spin, input int limit,
     n = n + 1;
   end
 endtask
+
+// ---------------------------------------------------------------------------
+// Operand accesses, for comparison against an oracle's own list.
+//
+// An instruction prefetch is not an operand access, and the two cores do not
+// fetch alike -- this one reads long words through a holding register and an
+// interpreter reads whatever it needs. What both must agree about is the
+// accesses an instruction makes because the program said so.
+//
+// The space is NOT the discriminator. PRM 2: "Data items in the instruction
+// stream can be accessed with the program counter relative addressing modes;
+// these accesses classify as program references", so a perfectly ordinary
+// operand read comes out on the function code pins as program space. What
+// separates the two is who asked, and the bus unit already knows -- op_isfetch
+// tells its fault path which of its two requesters to report to.
+// ---------------------------------------------------------------------------
+localparam int MAXACC = 16;
+int unsigned nacc;
+logic [31:0] acc_addr [0:MAXACC-1];
+logic        acc_rw   [0:MAXACC-1];
+logic        acc_prog [0:MAXACC-1];
+
+// The unit recorded is the OPERAND, not the bus cycle. The two are not the same
+// on this part: table 5-6 splits one misaligned operand across up to four
+// cycles, so a long word read at an address ending in 10 is two cycles and one
+// access. An interpreter has no notion of either, and what it reports is the
+// operand.
+//
+// UM 5.1.1 names exactly this distinction in hardware -- ECS marks every bus
+// cycle, OCS only the first cycle of an operand -- so the recorder triggers on
+// OCS and nothing has to be inferred from the addresses.
+//
+// OCS is asserted for the half clock of S0 only, so there is no clock edge
+// inside it to sample on. Sample a settled quarter-period after the rising edge
+// that starts S0 instead: the address, function code and R/W are driven on that
+// same edge, and a testbench may use a delay where the design may not.
+initial nacc = 0;
+
+always @(posedge clk) begin
+  #(CLK_PERIOD / 4.0);
+  if (rst_n && !ocs_n_o && !dut.u_biu.op_isfetch) begin
+    if (nacc < MAXACC) begin
+      acc_addr[nacc] = a_o;
+      acc_rw[nacc]   = rw_o;
+      acc_prog[nacc] = (fc_o == rd68021_pkg::FC_SUPER_PROG
+                        || fc_o == rd68021_pkg::FC_USER_PROG);
+    end
+    nacc = nacc + 1;
+  end
+end

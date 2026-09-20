@@ -12,7 +12,7 @@
 // priority chain and does not flatten it. assemble.py resolves the order once, in
 // Python, and proves the two tables agree over all 65536 opcodes.
 //
-// 5 ordered patterns became 12 disjoint ones.
+// 21 ordered patterns became 28 disjoint ones.
 
 module rd68021_decode_rom (
     input  logic [15:0]                         ir,
@@ -35,6 +35,22 @@ module rd68021_decode_rom (
       16'b01100000000001??: entry = 13'd13;   // BRA.B
       16'b011000000000001?: entry = 13'd13;   // BRA.B
       16'b0110000000000001: entry = 13'd13;   // BRA.B
+      16'b0100???111010???: entry = 13'd16;   // LEA (An)
+      16'b0100???111101???: entry = 13'd18;   // LEA (d16,An)
+      16'b0100???111110???: entry = 13'd20;   // LEA (An,Xn)
+      16'b0100???111111000: entry = 13'd22;   // LEA (xxx).W
+      16'b0100???111111001: entry = 13'd24;   // LEA (xxx).L
+      16'b0100???111111010: entry = 13'd26;   // LEA (d16,PC)
+      16'b0100???111111011: entry = 13'd28;   // LEA (PC,Xn)
+      16'b0010???000010???: entry = 13'd30;   // MOVE.L (An),Dn
+      16'b0010???000011???: entry = 13'd33;   // MOVE.L (An)+,Dn
+      16'b0010???000100???: entry = 13'd36;   // MOVE.L -(An),Dn
+      16'b0010???000101???: entry = 13'd39;   // MOVE.L (d16,An),Dn
+      16'b0010???000110???: entry = 13'd42;   // MOVE.L (An,Xn),Dn
+      16'b0010???000111000: entry = 13'd45;   // MOVE.L (xxx).W,Dn
+      16'b0010???000111001: entry = 13'd48;   // MOVE.L (xxx).L,Dn
+      16'b0010???000111010: entry = 13'd51;   // MOVE.L (d16,PC),Dn
+      16'b0010???000111011: entry = 13'd54;   // MOVE.L (PC,Xn),Dn
       default: begin
         entry   = rd68021_ucode_pkg::ENTRY_ILLEGAL;
         illegal = 1'b1;

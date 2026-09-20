@@ -131,6 +131,7 @@ This is a cycle-count divergence, measured and justified in
 | `+$08` | 3 | `g0` | inside group-0 exception processing |
 | `+$08` | 4 | `notrace` | the trace pending for this instruction was cancelled |
 | `+$08` | 5 | `rr_pending` | a rerun flag out of the frame is still to be applied |
+| `+$08` | 6 | `eapc` | the base of the effective address under way is the PC |
 | `+$14` | 15:0 | `upc` | the micro-address to resume at |
 | `+$16` | 15:0 | `stage_d` | the instruction word being decoded |
 | `+$1C` | 31:0 | `t0` | working register |
@@ -142,8 +143,9 @@ This is a cycle-count divergence, measured and justified in
 | `+$38` | 31:0 | `ea_latch` | the address output buffer |
 | `+$3C` | 31:0 | `ea_save` | the copy of it taken at the fault |
 | `+$40` | 31:0 | `pc_fetch` | the next long word the pipe will fetch |
+| `+$44` | 15:0 | `link` | the return address of the subroutine under way |
 
-**492 bits available, 279 used, 12 words spare** (`+$44`, `+$46`, `+$48`, `+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
+**492 bits available, 296 used, 11 words spare** (`+$46`, `+$48`, `+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
 
 ### The frozen set
 
@@ -173,6 +175,7 @@ This is a cycle-count divergence, measured and justified in
 | `biu` | `flt_rw` | 1 | `ssw` | SSW RW |
 | `biu` | `flt_fc` | 3 | `ssw` | SSW FC2-FC0 |
 | `seq` | `upc` | 16 | `upc` |  |
+| `seq` | `link` | 16 | `link` | seq = RET returns here |
 | `seq` | `t0` | 32 | `t0` |  |
 | `seq` | `t1` | 32 | `t1` |  |
 | `seq` | `t2` | 32 | `t2` |  |
@@ -183,6 +186,7 @@ This is a cycle-count divergence, measured and justified in
 | `seq` | `g0` | 1 | `g0` |  |
 | `seq` | `notrace` | 1 | `notrace` |  |
 | `seq` | `rr_pending` | 1 | `rr_pending` |  |
+| `seq` | `eapc` | 1 | `eapc` | seq = EADEC latches it; EABASE reads it |
 | `seq` | `sr` | 16 | `sr` | frame +$00 |
 
 ### Not checkpointed, and why

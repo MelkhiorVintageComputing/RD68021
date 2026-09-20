@@ -117,6 +117,24 @@ module rd68021_seq #(
   rd68021_decode_rom u_decode (
       .ir (dec_ir), .entry (dec_entry), .illegal (dec_illegal));
 
+  // The extension-word decoder. It reads stage C -- the extension word, latched
+  // but not yet consumed -- plus the microword's own bit saying whether the base
+  // is the program counter, which is in the opcode and not in the word.
+  logic [rd68021_ucode_pkg::UADDR-1:0] ea_entry;
+  logic                                ea_reserved;
+
+  // The base bit goes through a named signal rather than straight into the port.
+  // Quartus does not resolve a package-scoped part-select inside a port
+  // connection: it reads U_EAPC_LSB and U_EAPC_W as undeclared identifiers,
+  // creates implicit nets for them and builds a netlist that does not match the
+  // source -- with a zero exit code. doc/coding-standard.md has the rule.
+  logic ea_pc_base;
+  assign ea_pc_base = `UF(EAPC);
+
+  rd68021_eadec_rom u_eadec (
+      .pc_base (ea_pc_base), .xw (stg_c),
+      .entry (ea_entry), .reserved (ea_reserved));
+
   // ==========================================================================
   // Architectural state
   //
@@ -136,6 +154,20 @@ module rd68021_seq #(
   logic [31:0] t_q [0:3];
   logic [15:0] xw_q;
   logic [31:0] ea_q;
+
+  // The return address of an effective-address routine. One level, because such
+  // a routine is called from an instruction and calls nothing itself.
+  logic [rd68021_ucode_pkg::UADDR-1:0] link_q;
+
+  // Whether the base of the effective address under way is the program counter.
+  // The microword's own `eapc` bit cannot answer that once the routine has been
+  // entered: the brief format has one routine per base, but the twenty-one full
+  // format routines are shared between the two, because the full extension word
+  // behaves identically either way (PRM 2.5) and duplicating them would double
+  // the table to carry a single bit. So the bit is latched out of the microword
+  // that dispatched -- the only one that knows, since the base is named by the
+  // opcode and not by the extension word -- and read back by EABASE.
+  logic eapc_q;
 
   logic super_mode;
   logic master_mode;
@@ -157,6 +189,54 @@ module rd68021_seq #(
   logic [2:0] rsel, wsel;
   assign rsel = stg_d[2:0];
   assign wsel = stg_d[11:9];
+
+  // The index register an extension word names, sized and scaled -- PRM 2.5 and
+  // table 2-1. D/A is bit 15, the register number bits 14:12, W/L bit 11 (a
+  // sign-extended word or a long word) and SCALE bits 10:9 (1, 2, 4 or 8).
+  logic [2:0]  xw_ix;
+  logic [31:0] xw_ixval;
+  logic [31:0] xw_index;
+
+  assign xw_ix = xw_q[14:12];
+
+  always_comb begin
+    if (xw_q[15]) xw_ixval = (xw_ix == 3'd7) ? sp_read : areg[xw_ix];
+    else          xw_ixval = dreg[xw_ix];
+  end
+
+  // Bit 8 selects the format: 0 brief, 1 full. In a full extension word bit 6
+  // is IS, which suppresses the index, and bit 7 is BS, which suppresses the
+  // base -- PRM table 2-1. Both are done here rather than by having a separate
+  // microcode routine for each, which would double the table for nothing.
+  logic xw_full;
+  assign xw_full = xw_q[8];
+
+  always_comb begin
+    logic [31:0] sized;
+    sized = xw_q[11] ? xw_ixval : {{16{xw_ixval[15]}}, xw_ixval[15:0]};
+    if (xw_full && xw_q[6]) xw_index = 32'd0;
+    else                    xw_index = sized << xw_q[10:9];
+  end
+
+  // The base of an indexed effective address.
+  logic [31:0] ea_base;
+  always_comb begin
+    if (xw_full && xw_q[7])      ea_base = 32'd0;
+    else if (eapc_q)             ea_base = stg_b_addr - 32'd2;
+    else if (rsel == 3'd7)       ea_base = sp_read;
+    else                         ea_base = areg[rsel];
+  end
+
+  // The operand size in bytes. PRM 2: a byte access through A7 steps it by two,
+  // so that the stack pointer stays even.
+  logic [31:0] opsize_bytes;
+  always_comb begin
+    unique case (`UF(SIZE))
+      rd68021_ucode_pkg::U_SIZE_BYTE: opsize_bytes = (rsel == 3'd7) ? 32'd2 : 32'd1;
+      rd68021_ucode_pkg::U_SIZE_WORD: opsize_bytes = 32'd2;
+      default:                        opsize_bytes = 32'd4;
+    endcase
+  end
 
   // ==========================================================================
   // The datapath
@@ -182,6 +262,12 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_ASRC_IMM8:  a_bus = {{24{stg_d[7]}}, stg_d[7:0]};
       rd68021_ucode_pkg::U_ASRC_DISP8: a_bus = {{24{stg_d[7]}}, stg_d[7:0]};
       rd68021_ucode_pkg::U_ASRC_SP:    a_bus = sp_read;
+      rd68021_ucode_pkg::U_ASRC_STG_C_HI: a_bus = {stg_c, 16'd0};
+      rd68021_ucode_pkg::U_ASRC_XW_HI: a_bus = {xw_q, 16'd0};
+      rd68021_ucode_pkg::U_ASRC_EA:    a_bus = ea_q;
+      // PRM 2.5: "the value of the PC is the address of the extension word".
+      rd68021_ucode_pkg::U_ASRC_PC_C:  a_bus = stg_b_addr - 32'd2;
+      rd68021_ucode_pkg::U_ASRC_EABASE: a_bus = ea_base;
       default:                         a_bus = 32'd0;
     endcase
   end
@@ -198,7 +284,13 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_BSRC_AREG:  b_bus = (rsel == 3'd7) ? sp_read
                                                               : areg[rsel];
       rd68021_ucode_pkg::U_BSRC_RDATA: b_bus = req_rdata[31:0];
-      default:                         b_bus = 32'd0;
+      rd68021_ucode_pkg::U_BSRC_STG_C_U: b_bus = {16'd0, stg_c};
+      rd68021_ucode_pkg::U_BSRC_STG_C_S: b_bus = {{16{stg_c[15]}}, stg_c};
+      rd68021_ucode_pkg::U_BSRC_OPSIZE:  b_bus = opsize_bytes;
+      rd68021_ucode_pkg::U_BSRC_INDEX:   b_bus = xw_index;
+      rd68021_ucode_pkg::U_BSRC_XWDISP8: b_bus = {{24{xw_q[7]}}, xw_q[7:0]};
+      rd68021_ucode_pkg::U_BSRC_EA:      b_bus = ea_q;
+      default:                           b_bus = 32'd0;
     endcase
   end
 
@@ -251,7 +343,13 @@ module rd68021_seq #(
   assign bus_req = (`UF(BUS) != rd68021_ucode_pkg::U_BUS_NONE);
   assign needs_c = (`UF(PF) == rd68021_ucode_pkg::U_PF_ADV)
                 || (`UF(PF) == rd68021_ucode_pkg::U_PF_CONSUME)
-                || (`UF(ASRC) == rd68021_ucode_pkg::U_ASRC_STG_C);
+                || (`UF(ASRC) == rd68021_ucode_pkg::U_ASRC_STG_C)
+                || (`UF(ASRC) == rd68021_ucode_pkg::U_ASRC_STG_C_HI)
+                || (`UF(ASRC) == rd68021_ucode_pkg::U_ASRC_PC_C)
+                || (`UF(ASRC) == rd68021_ucode_pkg::U_ASRC_EABASE)
+                || (`UF(BSRC) == rd68021_ucode_pkg::U_BSRC_STG_C_U)
+                || (`UF(BSRC) == rd68021_ucode_pkg::U_BSRC_STG_C_S)
+                || (`UF(SEQ)  == rd68021_ucode_pkg::U_SEQ_EADEC);
 
   assign stall = (bus_req && !req_ack)
               || (needs_c && !pf_ready)
@@ -284,6 +382,14 @@ module rd68021_seq #(
                                              ? rd68021_pkg::FC_SUPER_PROG
                                              : rd68021_pkg::FC_USER_PROG;
       rd68021_ucode_pkg::U_FC_CPU:  req_fc = rd68021_pkg::FC_CPU;
+      // The space of the effective address under way. PRM 2 classifies every
+      // program-counter-relative access as a program reference, and the same
+      // latched bit that chose the base chooses the space.
+      rd68021_ucode_pkg::U_FC_EASP: req_fc = super_mode
+                                             ? (eapc_q ? rd68021_pkg::FC_SUPER_PROG
+                                                       : rd68021_pkg::FC_SUPER_DATA)
+                                             : (eapc_q ? rd68021_pkg::FC_USER_PROG
+                                                       : rd68021_pkg::FC_USER_DATA);
       default:                      req_fc = super_mode
                                              ? rd68021_pkg::FC_SUPER_DATA
                                              : rd68021_pkg::FC_USER_DATA;
@@ -326,6 +432,8 @@ module rd68021_seq #(
     end else begin
       unique case (`UF(SEQ))
         rd68021_ucode_pkg::U_SEQ_DECODE: upc_nxt = dec_entry;
+        rd68021_ucode_pkg::U_SEQ_EADEC:  upc_nxt = ea_entry;
+        rd68021_ucode_pkg::U_SEQ_RET:    upc_nxt = link_q;
         rd68021_ucode_pkg::U_SEQ_COND:   upc_nxt = `UF(NEXT);
         default:                         upc_nxt = `UF(NEXT);
       endcase
@@ -351,6 +459,8 @@ module rd68021_seq #(
       msp_q  <= '0;
       xw_q   <= '0;
       ea_q   <= '0;
+      link_q <= '0;
+      eapc_q <= 1'b0;
       for (i_r = 0; i_r < 8; i_r = i_r + 1) dreg[i_r] <= '0;
       for (i_r = 0; i_r < 7; i_r = i_r + 1) areg[i_r] <= '0;
       for (i_r = 0; i_r < 4; i_r = i_r + 1) t_q[i_r]  <= '0;
@@ -358,6 +468,14 @@ module rd68021_seq #(
       upc <= upc_nxt;
 
       if (retire) begin
+        // `call` latches the microword after this one, which is where seq = RET
+        // comes back to.
+        if (`UF(CALL)) link_q <= upc + 1'b1;
+
+        // The dispatch into an extension-word routine is the one place the base
+        // is still known.
+        if (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_EADEC) eapc_q <= `UF(EAPC);
+
         unique case (`UF(DST))
           rd68021_ucode_pkg::U_DST_T0: t_q[0] <= y;
           rd68021_ucode_pkg::U_DST_T1: t_q[1] <= y;
@@ -390,6 +508,17 @@ module rd68021_seq #(
             if (!super_mode)      usp_q <= y;
             else if (master_mode) msp_q <= y;
             else                  isp_q <= y;
+          end
+          rd68021_ucode_pkg::U_DST_AREG_EA: begin
+            // The register the effective address field names, for (An)+ and
+            // -(An), which step the register they address through.
+            if (rsel == 3'd7) begin
+              if (!super_mode)      usp_q <= y;
+              else if (master_mode) msp_q <= y;
+              else                  isp_q <= y;
+            end else begin
+              areg[rsel] <= y;
+            end
           end
           default: ;
         endcase
@@ -435,7 +564,7 @@ module rd68021_seq #(
                         stg_b_addr, ckpt_pc_fetch,
                         ipl_sync_n, reset_sync_n, halt_sync_n, bus_idle,
                         bus_granted, reset_busy,
-                        dec_illegal, vbr_q, sfc_q, dfc_q,
+                        dec_illegal, ea_reserved, vbr_q, sfc_q, dfc_q,
                         `UF(COND),
                         COPROCESSOR};
 

@@ -215,12 +215,13 @@ def assemble_words():
 # --------------------------------------------------------------------------
 def cube_minus(a, b):
     """The cubes covering a but not b."""
-    for i in range(16):
+    n = len(a)
+    for i in range(n):
         if a[i] != '-' and b[i] != '-' and a[i] != b[i]:
             return [a]                      # disjoint already
     out = []
     cur = list(a)
-    for i in range(16):
+    for i in range(n):
         if b[i] != '-' and a[i] == '-':
             piece = list(cur)
             piece[i] = '1' if b[i] == '0' else '0'
@@ -247,18 +248,19 @@ def make_disjoint(pats):
 
 
 def _match(pattern, op):
+    n = len(pattern)
     for i, c in enumerate(pattern):
         if c == '-':
             continue
-        if ((op >> (15 - i)) & 1) != int(c):
+        if ((op >> (n - 1 - i)) & 1) != int(c):
             return False
     return True
 
 
-def check_disjoint(ordered, disjoint):
-    """The two tables agree over every opcode, and no two disjoint cubes overlap."""
+def check_disjoint(ordered, disjoint, width=16):
+    """The two tables agree over every input, and no two disjoint cubes overlap."""
     bad = []
-    for op in range(65536):
+    for op in range(1 << width):
         a = None
         for p, t, _ in ordered:
             if _match(p, op):
@@ -266,12 +268,12 @@ def check_disjoint(ordered, disjoint):
                 break
         hits = [t for p, t, _ in disjoint if _match(p, op)]
         if len(hits) > 1:
-            bad.append('opcode $%04X matches %d disjoint patterns' % (op, len(hits)))
+            bad.append('input $%05X matches %d disjoint patterns' % (op, len(hits)))
             if len(bad) > 4:
                 break
         b = hits[0] if hits else None
         if a != b:
-            bad.append('opcode $%04X: ordered says %r, disjoint says %r'
+            bad.append('input $%05X: ordered says %r, disjoint says %r'
                        % (op, a, b))
             if len(bad) > 4:
                 break
@@ -402,8 +404,60 @@ endmodule""")
     return '\n'.join(out) + '\n'
 
 
+def eadec_rom():
+    ordered = program.EAPATTERNS
+    disjoint = make_disjoint(ordered)
+    bad = check_disjoint(ordered, disjoint, width=17)
+    if bad:
+        raise SystemExit('assemble: the disjoint extension-word table does not '
+                         'agree with the ordered one:\n  ' + '\n  '.join(bad))
+    out = [BANNER]
+    out.append("""// The extension-word decoder: the shape of an effective address in, a
+// micro-address out.
+//
+// A full extension word decides how many words of base and outer displacement
+// follow and whether a memory indirection happens -- five bus-steering decisions
+// taken from a word that has only just been read. Branching on them microword by
+// microword would put all five into the bus request's fan-in, which is the one
+// thing the microcode may not do. Resolving them once, in hardware, into a
+// micro-address puts none of them there. It is the opcode decoder's trick on a
+// different word.
+//
+// The seventeenth bit is not part of the extension word. It says whether the
+// base of the address is the program counter or an address register, which is in
+// the OPCODE -- so the microword supplies it.
+//
+// %d ordered patterns became %d disjoint ones.
+
+module rd68021_eadec_rom (
+    input  logic        pc_base,
+    input  logic [15:0] xw,
+    output logic [UA:0] entry,
+    output logic        reserved
+);
+
+  always_comb begin
+    reserved = 1'b0;
+    casez ({pc_base, xw})
+""" % (len(ordered), len(disjoint)))
+    out[-1] = out[-1].replace('[UA:0]', '[%d:0]' % (isa.UADDR_BITS - 1))
+    for p, t, m in disjoint:
+        out.append("      17'b%s: entry = %d'd%d;   // %s"
+                   % (p.replace('-', '?'), isa.UADDR_BITS, program.entry(t), m))
+    out.append("""      default: begin
+        entry    = rd68021_ucode_pkg::ENTRY_ILLEGAL;
+        reserved = 1'b1;
+      end
+    endcase
+  end
+
+endmodule""")
+    return '\n'.join(out) + '\n'
+
+
 OUTPUTS = {
     os.path.join(GEN, 'rd68021_frame_pkg.sv'): frame_pkg,
+    os.path.join(GEN, 'rd68021_eadec_rom.sv'): eadec_rom,
     os.path.join(GEN, 'rd68021_ucode_pkg.sv'): ucode_pkg,
     os.path.join(GEN, 'rd68021_ucode_rom.sv'): ucode_rom,
     os.path.join(GEN, 'rd68021_decode_rom.sv'): decode_rom,

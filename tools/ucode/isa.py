@@ -50,6 +50,8 @@ SEQ = enc(
     'NEXT',      # go to the address in the `next` field
     'DECODE',    # end of instruction: the opcode decoder supplies the address
     'COND',      # `next`, with bit 0 set if the selected condition holds
+    'EADEC',     # the extension-word decoder supplies the address
+    'RET',       # return to the micro-address in the link register
 )
 
 # Conditions the COND arm can test. M5 needs none of them yet; the field exists
@@ -85,6 +87,14 @@ FC = enc(
     'PROG',      # program space at the current privilege level
     'DATA',      # data space likewise
     'CPU',
+    # The space the effective address under way belongs to: program if its base
+    # is the program counter, data otherwise. PRM 2: "Data items in the
+    # instruction stream can be accessed with the program counter relative
+    # addressing modes; these accesses classify as program references." The
+    # twenty-one full-extension-word routines are shared between the two bases,
+    # so the space cannot be written into the microword and has to follow the
+    # same latched bit the base does.
+    'EASP',
 )
 
 # --------------------------------------------------------------------------
@@ -92,6 +102,14 @@ FC = enc(
 # --------------------------------------------------------------------------
 ASRC = enc(
     'ZERO',
+    'STG_C_HI',  # the next word, shifted into bits 31:16: a long displacement
+    'XW_HI',     # the extension-word latch, likewise
+    'EA',        # the address output buffer
+    'PC_C',      # the address of stage C -- "the value of the PC is the address
+                 # of the extension word" (PRM 2.5)
+    'EABASE',    # the base of an indexed effective address: the program counter
+                 # or an address register, as the microword's `eapc` bit says,
+                 # and zero when a full extension word suppresses it (BS)
     'T0', 'T1', 'T2', 'T3',
     'RDATA',     # what the last bus read returned
     'STG_D',     # the instruction word
@@ -113,6 +131,12 @@ ASRC = enc(
 
 BSRC = enc(
     'ZERO',
+    'STG_C_U',   # the next word, zero extended: the low half of a long word
+    'STG_C_S',   # ... or sign extended: a word displacement
+    'OPSIZE',    # the operand size in bytes, for (An)+ and -(An)
+    'INDEX',     # the index register the extension word names, sized and scaled
+    'XWDISP8',   # bits 7:0 of the extension-word latch, sign extended
+    'EA',
     'TWO',       # the constant 2, for stepping the program counter
     'T0', 'T1',
     'XW',        # a fetched displacement, sign extended from 16 bits
@@ -141,6 +165,7 @@ DST = enc(
     'SP',
     'SR',
     'EA',
+    'AREG_EA',   # the address register the EA field names, for (An)+ and -(An)
 )
 
 # How wide the destination write is. A write to a data register of size byte or
@@ -170,20 +195,28 @@ PF = enc(
 UADDR_BITS = 13
 
 FIELDS = OrderedDict([
-    ('seq',   (2,  SEQ,   'NEXT')),
+    ('seq',   (3,  SEQ,   'NEXT')),
     ('cond',  (2,  COND,  'NEVER')),
     ('next',  (UADDR_BITS, None, 0)),
     ('bus',   (2,  BUS,   'NONE')),
     ('asel',  (3,  ASEL,  'ZERO')),
     ('fc',    (2,  FC,    'DATA')),
     ('bytes', (3,  None,  0)),      # operand size in bytes, 0 when bus is NONE
-    ('asrc',  (4,  ASRC,  'ZERO')),
-    ('bsrc',  (4,  BSRC,  'ZERO')),
+    ('asrc',  (5,  ASRC,  'ZERO')),
+    ('bsrc',  (5,  BSRC,  'ZERO')),
     ('alu',   (3,  ALU,   'A')),
     ('dst',   (4,  DST,   'NONE')),
     ('size',  (2,  SIZE,  'LONG')),
     ('ccr',   (1,  CCR,   'NONE')),
     ('pf',    (2,  PF,    'NONE')),
+    # Latch the return address. One level is enough: an effective-address
+    # routine is called from an instruction and calls nothing itself.
+    ('call',  (1,  None,  0)),
+    # Whether the base of an indexed effective address is the program counter or
+    # an address register. It is in the OPCODE, not the extension word, so the
+    # extension-word decoder cannot see it: this bit is prepended to the word it
+    # decodes, which is why its patterns are seventeen characters and not sixteen.
+    ('eapc',  (1,  None,  0)),
 ])
 
 
