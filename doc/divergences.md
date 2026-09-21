@@ -199,3 +199,193 @@ implementation.
 becomes checkable for real, because the Sun-3 MMU maps program and data space
 separately and a wrong function code there is a fault rather than a difference
 of opinion. Noted in the M12 work.
+
+---
+
+## Musashi splits MOVE.L to a predecrement address the way an MC68000 does
+
+Not a divergence in this core: a second place where the oracle models a
+different processor and the sweep had to be told so.
+
+`Inputs/ref/Musashi/m68k_in.c`, for `MOVE.L <ea>,-(An)`:
+
+```c
+uint ea = EA_AX_PD_32();
+m68ki_write_16(ea+2, res & 0xFFFF );
+m68ki_write_16(ea,  (res >> 16) & 0xFFFF );
+```
+
+Two word writes, **low half first**, unconditionally -- it is not even behind
+`M68K_SIMULATE_PD_WRITES`, which is off. That is the MC68000's behaviour and a
+consequence of its sixteen-bit bus: writing the low word first leaves a
+recoverable stack if the second write bus-errors.
+
+The MC68020 has no such case. UM 5.2.2 and table 5-6 split an operand by its
+**address**, not by the instruction that made it, and 5.1.2 puts the most
+significant byte at the address on the bus. So `MOVE.L D3,-(A3)` with A3 landing
+on an address whose low bits are `10` is **one long-word operand** that the bus
+controller happens to run as two cycles, most significant half first -- the
+opposite order from Musashi, and one operand rather than two.
+
+**What is done about it:** `tools/vectors/gen.c` puts the two halves back
+together into the one long-word access the MC68020 makes. The merge is gated on
+the opcode being exactly `MOVE.L <ea>,-(An)`, because MOVEM to a predecrement
+address also writes descending words and must not be merged.
+
+**What still checks it independently:** `sim/tb/bus_sizing_tb.sv` already proves
+every row of table 5-6 at the pins, including this one, so what the sweep would
+have added is only that this instruction reaches that row -- which it now does.
+
+---
+
+## The condition codes the manual leaves undefined
+
+PRM 4 marks some condition codes **undefined** after some instructions. A real
+MC68020 puts *something* there, and what it puts is not written down. So does
+this core, and so does Musashi -- and matching Musashi's choice would be reading
+a reference implementation as a specification, which `CLAUDE.md` forbids.
+
+What this design does, and what the sweep therefore does not compare:
+
+| Instruction | Undefined | What this core does |
+|---|---|---|
+| ABCD, SBCD, NBCD | N, V | N from the result's top bit, V cleared |
+| DIVU, DIVS **when V is set** | N, Z | left as they were |
+| CHK, when it does **not** trap | N, Z, V, C | left as they were |
+| MULU.L, MULS.L into one register | — | nothing is undefined; V says whether the product fitted |
+
+The first is the common one, and the choice is the cheap one: N and V fall out of
+the same wires every other instruction uses, so making them undefined would cost
+logic to produce a *worse* answer.
+
+The third is worth a sentence. PRM 4 defines N for CHK only in the two cases
+that trap -- "set if Dn is less than zero, cleared if Dn is greater than the
+upper bound" -- and both of those take an exception, so a CHK that returns
+normally has no defined codes at all. Leaving them alone is the only behaviour
+that costs nothing.
+
+**How it is checked:** `tools/vectors/gen.c` emits a `srmask` per test saying
+which bits of the status register are worth comparing, and clears the undefined
+ones. The mask for a divide is decided **after** the run, because a divide only
+leaves N and Z undefined when it actually overflowed.
+
+**What could differ:** a program that branches on one of these bits. No compiler
+emits such a branch, because the manual says not to.
+
+---
+
+## Musashi leaves C alone when a divide overflows
+
+The third place the oracle has to be corrected, and the clearest of the three,
+because the manual's own text is asymmetric on purpose.
+
+PRM 4's condition-code table for DIVU and DIVS:
+
+> **N** — Set if the quotient is negative; cleared otherwise; **undefined if
+> overflow** or divide by zero occurs.
+> **Z** — Set if the quotient is zero; cleared otherwise; **undefined if
+> overflow** or divide by zero occurs.
+> **V** — Set if division overflow occurs; undefined if divide by zero occurs;
+> cleared otherwise.
+> **C** — Always cleared.
+
+Three rows carry an overflow qualifier and the fourth does not. "Always cleared"
+with nothing after it means cleared on the overflow path too.
+
+`Inputs/ref/Musashi/m68k_in.c` does not:
+
+```c
+if(quotient < 0x10000)
+{
+    ... FLAG_C = CFLAG_CLEAR; ...
+    return;
+}
+FLAG_V = VFLAG_SET;
+return;                     /* C is whatever the last instruction left */
+```
+
+so an overflowing divide leaves C at whatever it happened to be.
+
+**What is done about it:** `tools/vectors/gen.c` clears C in the state it
+records when a divide overflowed. The alternative was to stop comparing C for
+those vectors, which would have given up a bit the manual defines in order to
+accommodate an oracle that does not implement it.
+
+**What could differ:** a program that branches on C after a divide that
+overflowed. The manual says what happens; nothing else does.
+
+---
+
+## The condition codes after reset
+
+UM 6.1.1 says what the reset exception does to the status register: it sets the
+supervisor bit, clears the trace bits and puts the interrupt mask at 7. It says
+nothing about the condition codes, and neither does anything else.
+
+**This design clears them**, which is what `SR_RESET = $2700` means. Musashi
+leaves Z set, because it keeps its flags in separate variables and the one
+standing for Z reads back as set when it is zero.
+
+Both are allowed. What is not allowed is a program that depends on either, so
+`sim/programs/crt0.S` establishes the codes with `ANDI #0,CCR` before it does
+anything else -- which is also what lets `make cosim` compare from a state the
+two sides agree on.
+
+**How it is checked:** it is not, and cannot be. What is checked is that nothing
+depends on it.
+
+---
+
+## A decimal instruction given a digit above nine
+
+PRM 4 defines ABCD, SBCD and NBCD on **binary-coded decimal** operands: two
+decimal digits in a byte. It says nothing about what happens when a nibble holds
+$A to $F, because such a byte is not a BCD number.
+
+A real MC68020 produces something definite, and so does this core, and the two
+have no reason to agree. What this core does is the textbook correction applied
+to the whole byte:
+
+> add the operands and the extend bit; if the low digits summed past nine, add
+> six; then if the byte passed $99, subtract $A0 and carry.
+
+with the subtraction mirrored. For valid operands that is exactly decimal
+arithmetic. For a digit above nine it is *a* defined answer and not necessarily
+the part's: a low-digit sum above fifteen carries two tens into the digit above,
+and a single six cannot say so.
+
+Musashi does something different, and differently again for NBCD, which it
+computes as `$9A - operand - X` with a fix-up for a low digit that comes out as
+$A. That is one reading; it is not one this project may adopt, because a
+reference implementation is never a source here.
+
+**What is done about it:** `tools/vectors/gen.c` gives the decimal instructions
+decimal operands -- the registers and the whole data block are reduced to digits
+-- and does not sweep the undefined region at all. What is compared is the
+instruction doing its job.
+
+**What could differ:** a program that feeds invalid BCD to ABCD and depends on
+the answer. There is no such program; the operation has no meaning there.
+
+---
+
+## The control registers reset does not name
+
+UM 6.1.1 lists what the reset exception does in nine numbered steps. It
+initialises **VBR** to zero and clears **E and F in CACR**, and it says nothing
+at all about SFC, DFC, CAAR, MSP or USP.
+
+So those are undefined after a reset, in the same way the condition codes are,
+and for the same reason: the manual defines the machine's behaviour, not its
+initial state. **This design clears them**; Musashi has its own answer; both are
+allowed and neither is checkable.
+
+MOVEC makes the difference visible, because MOVEC Rc,Rn reads them.
+
+**What is done about it:** `tools/vectors/gen.c` gives every test a definite
+value for each -- SFC 3, DFC 5, VBR `$0000A000`, CAAR `$12345670`, MSP below the
+stack -- and the testbench deposits the same. What is then compared is the
+instruction, not what a reset happened to leave behind.
+
+**What could differ:** nothing a program can rely on. A supervisor that reads
+SFC before writing it is reading an undefined register on any MC68020.

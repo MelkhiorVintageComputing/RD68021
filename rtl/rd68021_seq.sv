@@ -131,6 +131,28 @@ module rd68021_seq #(
   logic ea_pc_base;
   assign ea_pc_base = `UF(EAPC);
 
+  // The addressing-mode decoder. One opcode pattern per instruction instead of
+  // one per instruction and mode.
+  logic [rd68021_ucode_pkg::UADDR-1:0] eam_entry;
+  logic                                eam_illegal;
+
+  // PRM 8: MOVE writes its destination's mode and register into bits 8:6 and
+  // 11:9, register first, which is the reverse of every other effective
+  // address. Putting them back in the usual order costs a mux and saves a
+  // second decoder.
+  logic [5:0] eam_mr;
+  assign eam_mr = `UF(EADST) ? {stg_d[8:6], stg_d[11:9]} : stg_d[5:0];
+
+  rd68021_eamode_rom u_eamode (
+      .mr (eam_mr), .entry (eam_entry), .illegal (eam_illegal));
+
+  // Whether that mode's base is the program counter. PRM 2: modes 111/010 and
+  // 111/011 are the program-counter-relative ones, and every access they make
+  // is a program reference. Four gates off the instruction word, so it does not
+  // need a column in the decoder.
+  logic eam_pc_base;
+  assign eam_pc_base = (eam_mr[5:3] == 3'b111) && (eam_mr[2:1] == 2'b01);
+
   rd68021_eadec_rom u_eadec (
       .pc_base (ea_pc_base), .xw (stg_c),
       .entry (ea_entry), .reserved (ea_reserved));
@@ -169,6 +191,11 @@ module rd68021_seq #(
   // opcode and not by the extension word -- and read back by EABASE.
   logic eapc_q;
 
+  // Which field the effective address under way came out of. The shared
+  // routines carry their own microword bits, so this has to be latched at the
+  // dispatch for the same reason eapc_q is.
+  logic eadst_q;
+
   logic super_mode;
   logic master_mode;
   assign super_mode  = sr_q[rd68021_pkg::SR_S];
@@ -186,8 +213,12 @@ module rd68021_seq #(
   // reads the register bits 2:0 of the instruction word name, and a destination
   // writes the one bits 11:9 name. That is the direction MOVE and MOVEQ both go.
   // ==========================================================================
+  // The register an effective address names. For MOVE's destination that is
+  // bits 11:9, so it follows the same mux the decoder does -- otherwise (An)+
+  // as a MOVE destination would step whichever register bits 2:0 happened to
+  // name, which is the source's.
   logic [2:0] rsel, wsel;
-  assign rsel = stg_d[2:0];
+  assign rsel = eadst_q ? stg_d[11:9] : stg_d[2:0];
   assign wsel = stg_d[11:9];
 
   // The index register an extension word names, sized and scaled -- PRM 2.5 and
@@ -227,11 +258,56 @@ module rd68021_seq #(
     else                         ea_base = areg[rsel];
   end
 
+  // ==========================================================================
+  // The effective operand size
+  //
+  // Most instructions carry their size in the opcode, and an effective-address
+  // routine that read the microword's own size field would have to exist once
+  // per size. `szsel` says where to read it from instead, and every one of its
+  // sources is a field of stage D -- a register, so nothing a bus request
+  // depends on is being discovered here.
+  // ==========================================================================
+  logic [1:0] eff_size;
+  logic [1:0] size_q;     // what the dispatching microword resolved
+  always_comb begin
+    unique case (`UF(SZSEL))
+      // Bits 7:6, and the opmode field's low two bits, which are the same
+      // encoding: 00 byte, 01 word, 10 long.
+      rd68021_ucode_pkg::U_SZSEL_IR76,
+      rd68021_ucode_pkg::U_SZSEL_IR86:
+        unique case (stg_d[7:6])
+          2'b00:   eff_size = rd68021_ucode_pkg::U_SIZE_BYTE;
+          2'b01:   eff_size = rd68021_ucode_pkg::U_SIZE_WORD;
+          default: eff_size = rd68021_ucode_pkg::U_SIZE_LONG;
+        endcase
+      // MOVE alone encodes its size in bits 13:12, and not in the same order as
+      // anything else -- PRM 8.
+      rd68021_ucode_pkg::U_SZSEL_MOVE:
+        unique case (stg_d[13:12])
+          2'b01:   eff_size = rd68021_ucode_pkg::U_SIZE_BYTE;
+          2'b11:   eff_size = rd68021_ucode_pkg::U_SIZE_WORD;
+          default: eff_size = rd68021_ucode_pkg::U_SIZE_LONG;
+        endcase
+      rd68021_ucode_pkg::U_SZSEL_IR6:
+        eff_size = stg_d[6] ? rd68021_ucode_pkg::U_SIZE_LONG
+                            : rd68021_ucode_pkg::U_SIZE_WORD;
+      rd68021_ucode_pkg::U_SZSEL_IR8:
+        eff_size = stg_d[8] ? rd68021_ucode_pkg::U_SIZE_LONG
+                            : rd68021_ucode_pkg::U_SIZE_WORD;
+      rd68021_ucode_pkg::U_SZSEL_LATCHED:
+        eff_size = size_q;
+      rd68021_ucode_pkg::U_SZSEL_CHK:
+        eff_size = stg_d[7] ? rd68021_ucode_pkg::U_SIZE_WORD
+                            : rd68021_ucode_pkg::U_SIZE_LONG;
+      default: eff_size = `UF(SIZE);
+    endcase
+  end
+
   // The operand size in bytes. PRM 2: a byte access through A7 steps it by two,
   // so that the stack pointer stays even.
   logic [31:0] opsize_bytes;
   always_comb begin
-    unique case (`UF(SIZE))
+    unique case (eff_size)
       rd68021_ucode_pkg::U_SIZE_BYTE: opsize_bytes = (rsel == 3'd7) ? 32'd2 : 32'd1;
       rd68021_ucode_pkg::U_SIZE_WORD: opsize_bytes = 32'd2;
       default:                        opsize_bytes = 32'd4;
@@ -240,8 +316,30 @@ module rd68021_seq #(
 
   // ==========================================================================
   // The datapath
+  //
+  // The source multiplexers below read signals that the units producing them
+  // declare further down -- the register file MOVEM walks, the control
+  // registers, the multiplier and the divider. iverilog, Verilator and yosys
+  // accept a use before its declaration inside a module; Quartus creates an
+  // IMPLICIT NET for it and builds a netlist that does not match the source,
+  // and Questa refuses outright. So they are declared here, above their first
+  // use, and driven where they belong. doc/coding-standard.md has the rule.
   // ==========================================================================
+  logic [31:0] regn_val, regnr_val;
+  logic [31:0] creg_read;
+  logic [31:0] xreg_read;
+  logic [63:0] mul_full;
+  logic [31:0] div_q, div_r;
+  logic [31:0] bit_mask;
+
   logic [31:0] a_bus, b_bus, y;
+
+  // What an address-register destination actually stores. PRM 2: the whole
+  // register is written whatever the operation size, and a word result is sign
+  // extended to get there.
+  logic [31:0] y_areg;
+  assign y_areg = (eff_size == rd68021_ucode_pkg::U_SIZE_WORD)
+                  ? {{16{y[15]}}, y[15:0]} : y;
 
   always_comb begin
     unique case (`UF(ASRC))
@@ -259,9 +357,25 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_ASRC_DREG:  a_bus = dreg[rsel];
       rd68021_ucode_pkg::U_ASRC_AREG:  a_bus = (rsel == 3'd7) ? sp_read
                                                               : areg[rsel];
+      rd68021_ucode_pkg::U_ASRC_DREGW: a_bus = dreg[wsel];
+      rd68021_ucode_pkg::U_ASRC_AREGW: a_bus = (wsel == 3'd7) ? sp_read
+                                                              : areg[wsel];
       rd68021_ucode_pkg::U_ASRC_IMM8:  a_bus = {{24{stg_d[7]}}, stg_d[7:0]};
       rd68021_ucode_pkg::U_ASRC_DISP8: a_bus = {{24{stg_d[7]}}, stg_d[7:0]};
       rd68021_ucode_pkg::U_ASRC_SP:    a_bus = sp_read;
+      rd68021_ucode_pkg::U_ASRC_CCRW:  a_bus = {27'd0, sr_q[4:0]};
+      rd68021_ucode_pkg::U_ASRC_REGN:  a_bus = regn_val;
+      rd68021_ucode_pkg::U_ASRC_REGNR: a_bus = regnr_val;
+      rd68021_ucode_pkg::U_ASRC_MULLO: a_bus = mul_full[31:0];
+      rd68021_ucode_pkg::U_ASRC_MULHI: a_bus = mul_full[63:32];
+      rd68021_ucode_pkg::U_ASRC_DIVQ:  a_bus = div_q;
+      rd68021_ucode_pkg::U_ASRC_DIVR:  a_bus = div_r;
+      // PRM 8 puts the long forms' register numbers in the extension word:
+      // Dq or Dl in bits 14:12, Dr or Dh in bits 2:0.
+      rd68021_ucode_pkg::U_ASRC_DREG_XQ: a_bus = dreg[xw_q[14:12]];
+      rd68021_ucode_pkg::U_ASRC_DREG_XR: a_bus = dreg[xw_q[2:0]];
+      rd68021_ucode_pkg::U_ASRC_CREG:  a_bus = creg_read;
+      rd68021_ucode_pkg::U_ASRC_XREG:  a_bus = xreg_read;
       rd68021_ucode_pkg::U_ASRC_STG_C_HI: a_bus = {stg_c, 16'd0};
       rd68021_ucode_pkg::U_ASRC_XW_HI: a_bus = {xw_q, 16'd0};
       rd68021_ucode_pkg::U_ASRC_EA:    a_bus = ea_q;
@@ -276,8 +390,13 @@ module rd68021_seq #(
     unique case (`UF(BSRC))
       rd68021_ucode_pkg::U_BSRC_ZERO:  b_bus = 32'd0;
       rd68021_ucode_pkg::U_BSRC_TWO:   b_bus = 32'd2;
+      rd68021_ucode_pkg::U_BSRC_FOUR:  b_bus = 32'd4;
+      rd68021_ucode_pkg::U_BSRC_BITMASK: b_bus = bit_mask;
+      rd68021_ucode_pkg::U_BSRC_DIVQ:    b_bus = div_q;
       rd68021_ucode_pkg::U_BSRC_T0:    b_bus = t_q[0];
       rd68021_ucode_pkg::U_BSRC_T1:    b_bus = t_q[1];
+      rd68021_ucode_pkg::U_BSRC_T2:    b_bus = t_q[2];
+      rd68021_ucode_pkg::U_BSRC_T3:    b_bus = t_q[3];
       rd68021_ucode_pkg::U_BSRC_XW:    b_bus = {{16{xw_q[15]}}, xw_q};
       rd68021_ucode_pkg::U_BSRC_DISP8: b_bus = {{24{stg_d[7]}}, stg_d[7:0]};
       rd68021_ucode_pkg::U_BSRC_DREG:  b_bus = dreg[rsel];
@@ -290,19 +409,431 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_BSRC_INDEX:   b_bus = xw_index;
       rd68021_ucode_pkg::U_BSRC_XWDISP8: b_bus = {{24{xw_q[7]}}, xw_q[7:0]};
       rd68021_ucode_pkg::U_BSRC_EA:      b_bus = ea_q;
+      rd68021_ucode_pkg::U_BSRC_DREGW:   b_bus = dreg[wsel];
+      rd68021_ucode_pkg::U_BSRC_AREGW:   b_bus = (wsel == 3'd7) ? sp_read
+                                                                : areg[wsel];
+      rd68021_ucode_pkg::U_BSRC_ONE:     b_bus = 32'd1;
+      // PRM 4: the quick forms take a value of one to eight, and zero in the
+      // field means eight.
+      rd68021_ucode_pkg::U_BSRC_IMMQ:    b_bus = (stg_d[11:9] == 3'd0)
+                                                 ? 32'd8 : {29'd0, stg_d[11:9]};
       default:                           b_bus = 32'd0;
     endcase
   end
+
+  // ==========================================================================
+  // MOVEM's register counter
+  //
+  // Sixteen registers walked once, with the mask shifted a place each time.
+  // REGN names them in the order D0..D7, A0..A7; REGNR the other way, because
+  // PRM 4 reverses the mask for the predecrement form -- "bit 0 selects A7".
+  // ==========================================================================
+  logic  [4:0] cnt_q;
+  logic  [3:0] regn, regnr;
+
+  assign regn  = cnt_q[3:0];
+  assign regnr = 4'd15 - cnt_q[3:0];
+
+  // Written out twice rather than as a function called from two continuous
+  // assignments. doc/coding-standard.md's rule: a function that reads module
+  // state is re-evaluated when its ARGUMENTS change and not when the state it
+  // reads does, and the tools disagree about even that.
+  //
+  // It cost a real bug. MOVEM's first register is number zero, and the index
+  // never changes from the value it starts at -- so the read of D0 was never
+  // re-evaluated and every MOVEM stored a zero in place of it, while the other
+  // eleven registers came out right because their index moved.
+  always_comb begin
+    if (!regn[3])               regn_val = dreg[regn[2:0]];
+    else if (regn[2:0] == 3'd7) regn_val = sp_read;
+    else                        regn_val = areg[regn[2:0]];
+  end
+
+  always_comb begin
+    if (!regnr[3])               regnr_val = dreg[regnr[2:0]];
+    else if (regnr[2:0] == 3'd7) regnr_val = sp_read;
+    else                         regnr_val = areg[regnr[2:0]];
+  end
+
+  // Which of the two the destination names. Worked out HERE and not inside the
+  // clocked block: a variable declared inside an always_ff and assigned with a
+  // blocking assignment reads like a temporary and infers storage in yosys --
+  // four flip-flops with no reset, which make_audit refuses.
+  logic [3:0] movem_wn;
+  assign movem_wn = (`UF(DST) == rd68021_ucode_pkg::U_DST_REGN) ? regn : regnr;
+
+  // ==========================================================================
+  // The bit instructions' mask
+  //
+  // PRM 4: the bit number is modulo 32 when the operand is a data register and
+  // modulo 8 when it is a byte in memory. The operand size already says which,
+  // so the mask follows it rather than the microword.
+  // ==========================================================================
+  logic [5:0]  bit_num;
+  logic [4:0]  bit_sel;
+
+  // A static bit number has been LATCHED by then, not left in stage C: the
+  // effective address's extension words follow it, so the address routine has
+  // already eaten past it. See the note in program.py's bitop.
+  assign bit_num = `UF(BITIMM) ? xw_q[5:0] : dreg[wsel][5:0];
+  assign bit_sel = (eff_size == rd68021_ucode_pkg::U_SIZE_BYTE)
+                   ? {2'd0, bit_num[2:0]} : bit_num[4:0];
+  assign bit_mask = 32'd1 << bit_sel;
+
+  // ==========================================================================
+  // The shifter
+  //
+  // PRM 8 lays the same instruction out two ways. The register forms put a
+  // count of one to eight in bits 11:9, or the number of a data register whose
+  // low six bits are the count, and the kind in bits 4:3. The memory forms
+  // shift one bit of a word and put the kind in bits 10:9. Both are fields of
+  // stage D, so the microword picks the layout and carries nothing.
+  // ==========================================================================
+  logic [5:0] sh_count;
+  logic [1:0] sh_kind;
+  logic [1:0] sh_size;
+  logic       sh_left;
+  logic       sh_by_reg;
+
+  assign sh_by_reg = stg_d[5];
+
+  always_comb begin
+    if (`UF(SHOP) == rd68021_ucode_pkg::U_SHOP_MEM) begin
+      sh_count = 6'd1;
+      sh_kind  = stg_d[10:9];
+      sh_size  = rd68021_ucode_pkg::U_SIZE_WORD;
+      sh_left  = stg_d[8];
+    end else begin
+      // PRM 4: the count in a register is taken modulo 64, and the immediate
+      // count is one to eight with zero meaning eight.
+      sh_count = sh_by_reg ? dreg[stg_d[11:9]][5:0]
+                           : ((stg_d[11:9] == 3'd0) ? 6'd8
+                                                    : {3'd0, stg_d[11:9]});
+      sh_kind  = stg_d[4:3];
+      sh_size  = eff_size;
+      sh_left  = stg_d[8];
+    end
+  end
+
+  logic [31:0] sh_res;
+  logic        sh_c, sh_v, sh_x, sh_xwr;
+
+  // The extend bit goes through a named signal rather than straight into the
+  // port. A PACKAGE-SCOPED name inside a port connection is read by Quartus as
+  // an undeclared identifier: it creates an implicit net and builds a netlist
+  // that does not match the source, with a zero exit code. The same trap took
+  // `UF(EAPC)` in M6; the rule is in doc/coding-standard.md and this is the
+  // second time it has been broken in this file.
+  logic sh_x_in;
+  assign sh_x_in = sr_q[rd68021_pkg::SR_X];
+
+  rd68021_shifter u_shifter (
+      .op (a_bus), .count (sh_count), .size (sh_size), .kind (sh_kind),
+      .left (sh_left), .x_in (sh_x_in),
+      .res (sh_res), .c_out (sh_c), .v_out (sh_v), .x_out (sh_x),
+      .x_write (sh_xwr));
+
+  // ==========================================================================
+  // MOVEC's control registers -- PRM 6
+  //
+  // "This is always a 32-bit transfer, even though the control register may be
+  // implemented with fewer bits. Unimplemented bits are read as zeros." The
+  // codes are the ones PRM 6 lists for the MC68020; the MC68040's are not here,
+  // and an unimplemented code is a format error that M8 will raise.
+  //
+  // USP is the one that is NOT simply whichever stack pointer is active: MOVEC
+  // names it explicitly, which is the whole point of the instruction in a
+  // kernel that has to reach a user stack while running on its own.
+  // ==========================================================================
+  logic [11:0] creg_sel;
+  assign creg_sel = xw_q[11:0];
+
+  always_comb begin
+    unique case (creg_sel)
+      12'h000: creg_read = {29'd0, sfc_q};
+      12'h001: creg_read = {29'd0, dfc_q};
+      12'h002: creg_read = cacr_q;
+      12'h800: creg_read = usp_q;
+      12'h801: creg_read = vbr_q;
+      12'h802: creg_read = caar_q;
+      12'h803: creg_read = msp_q;
+      12'h804: creg_read = isp_q;
+      default: creg_read = 32'd0;
+    endcase
+  end
+
+  // The general register the extension word names: bit 15 says which file, bits
+  // 14:12 which register.
+  always_comb begin
+    if (!xw_q[15])               xreg_read = dreg[xw_q[14:12]];
+    else if (xw_q[14:12] == 3'd7) xreg_read = sp_read;
+    else                         xreg_read = areg[xw_q[14:12]];
+  end
+
+  // ==========================================================================
+  // The binary-coded decimal adjust -- PRM 4
+  //
+  // ABCD, SBCD and NBCD. A byte holds two decimal digits, and "store the result
+  // in binary-coded decimal form" means: do the binary arithmetic, then correct
+  // it. The correction is the textbook one, and it is applied to the WHOLE BYTE
+  // rather than digit by digit:
+  //
+  //     add:       if the low digits summed past nine, add six;
+  //                then if the byte passed $99, subtract $A0 and carry.
+  //     subtract:  if the low digits borrowed, subtract six;
+  //                then if the byte went below zero or past $99, add $A0 and
+  //                borrow.
+  //
+  // Doing it per digit -- carry out of the low digit, then adjust the high one
+  // -- is the obvious decomposition and is WRONG whenever a low-digit sum
+  // exceeds fifteen, because the six then carries TWO into the digit above and
+  // a one-bit carry cannot say so. That only happens when a digit is greater
+  // than nine, which the manual calls an invalid operand and does not define;
+  // the part still produces a definite answer and so does this.
+  //
+  // NBCD is SBCD with a zero minuend, which is why there is no third case.
+  //
+  // PRM 4 leaves N and V undefined for all three. This design sets N from the
+  // result and clears V -- doc/divergences.md records it as the choice it is,
+  // and the sweep does not compare either bit for these instructions.
+  // ==========================================================================
+  logic        bcd_sub;
+  logic  [7:0] bcd_a, bcd_b;
+  logic        bcd_x;
+  logic  [4:0] bcd_lo;        // one digit, with room for the carry or borrow
+  logic        bcd_six;
+  logic  [9:0] bcd_raw, bcd_tmp;
+  logic  [7:0] bcd_res;
+  logic        bcd_c;
+
+  assign bcd_sub = (`UF(ALU) == rd68021_ucode_pkg::U_ALU_SBCD);
+  assign bcd_a   = a_bus[7:0];
+  assign bcd_b   = b_bus[7:0];
+  assign bcd_x   = sr_q[rd68021_pkg::SR_X];
+
+  always_comb begin
+    if (!bcd_sub) begin
+      bcd_lo  = {1'b0, bcd_a[3:0]} + {1'b0, bcd_b[3:0]} + {4'd0, bcd_x};
+      bcd_six = (bcd_lo > 5'd9);
+      bcd_raw = {2'd0, bcd_a} + {2'd0, bcd_b} + {9'd0, bcd_x};
+      bcd_tmp = bcd_raw + (bcd_six ? 10'd6 : 10'd0);
+      bcd_c   = (bcd_tmp > 10'h099);
+      bcd_res = bcd_c ? (bcd_tmp[7:0] - 8'hA0) : bcd_tmp[7:0];
+    end else begin
+      bcd_lo  = {1'b0, bcd_a[3:0]} - {1'b0, bcd_b[3:0]} - {4'd0, bcd_x};
+      bcd_six = bcd_lo[4];                      // the low digit borrowed
+      bcd_raw = {2'd0, bcd_a} - {2'd0, bcd_b} - {9'd0, bcd_x};
+      bcd_tmp = bcd_raw - (bcd_six ? 10'd6 : 10'd0);
+      // Below zero -- which shows as the top bits of a ten-bit two's complement
+      // -- or above $99. Either is a decimal borrow.
+      bcd_c   = bcd_tmp[9] || (bcd_tmp[8:0] > 9'h099);
+      bcd_res = bcd_c ? (bcd_tmp[7:0] + 8'hA0) : bcd_tmp[7:0];
+    end
+  end
+
+  // ==========================================================================
+  // The multiplier and the divider -- PRM 4
+  //
+  // The signedness and the register numbers of the WORD forms are in the
+  // opcode; of the LONG forms, in the extension word. `mdext` says which, and
+  // the extension word has been latched into xw by then.
+  //
+  //     MULU.W  <ea>,Dn      16 x 16 -> 32
+  //     MULU.L  <ea>,Dl      32 x 32 -> 32, V set if the product did not fit
+  //     MULU.L  <ea>,Dh:Dl   32 x 32 -> 64
+  //
+  // One multiplier serves all of them: the operands are widened to thirty-two
+  // bits according to the size and the product taken at sixty-four.
+  // ==========================================================================
+  logic md_signed;
+  assign md_signed = `UF(MDEXT) ? xw_q[11] : stg_d[8];
+
+  logic signed [32:0] mul_a, mul_b;
+  logic signed [65:0] mul_full66;
+
+  // The operands are T0 and T1, not the A and B buses. They cannot be the
+  // buses: MULLO and MULHI are A-bus SOURCES, so a multiplier fed from the A
+  // bus closes a combinational loop through the source mux. It is a false loop
+  // -- only one arm is ever selected -- but it is a real one structurally, and
+  // the linter is right to refuse it.
+  // Always thirty-two by thirty-two. The word forms reach it with their operands
+  // ALREADY widened -- the microcode does that with alu = XSZ, which extends the
+  // way the instruction's own signedness says -- so the multiplier needs no size
+  // input and a 16-by-16 product simply has a top half that is the sign
+  // extension of its bottom, which is what makes the overflow test below work
+  // for both forms without a special case.
+  always_comb begin
+    mul_a = md_signed ? {t_q[0][31], t_q[0]} : {1'b0, t_q[0]};
+    mul_b = md_signed ? {t_q[1][31], t_q[1]} : {1'b0, t_q[1]};
+  end
+
+  assign mul_full66 = mul_a * mul_b;
+  assign mul_full   = mul_full66[63:0];
+
+  // PRM 4: MULx.L into a single register sets V when the product does not fit
+  // in thirty-two bits -- which for a signed product means the top half is not
+  // the sign extension of the bottom, and for an unsigned one that it is not
+  // zero.
+  logic mul_ovf;
+  assign mul_ovf = md_signed ? (mul_full[63:32] != {32{mul_full[31]}})
+                             : (mul_full[63:32] != 32'd0);
+
+  logic        div_start, div_busy, div_zero, div_ovf_wide, div_qneg;
+  logic [31:0] div_qmag;
+  logic [63:0] div_num;
+
+  // The dividend. A word form divides a long word; the long forms divide a long
+  // word or a quad word, and the microcode has put the halves in T2 and T3.
+  // The dividend and the divisor are registers for the same reason: DIVQ and
+  // DIVR are A-bus sources. A word form divides the long word in T2; the long
+  // forms divide the quad word in T3:T2.
+  assign div_num = {t_q[3], t_q[2]};
+
+
+  rd68021_divider u_divider (
+      .clk (clk), .rst_n (rst_n),
+      .start (div_start), .dividend (div_num), .divisor (t_q[1]),
+      .is_signed (md_signed),
+      .busy (div_busy), .quotient (div_q), .remainder (div_r),
+      .div_zero (div_zero), .overflow (div_ovf_wide),
+      .q_mag (div_qmag), .q_neg (div_qneg));
+
+  // Whether the quotient fits where it is going. The divider only knows about
+  // thirty-two bits; a word form has sixteen to put it in, and a signed long
+  // has thirty-one and a sign.
+  logic div_fit_ovf, div_ovf;
+  always_comb begin
+    if (eff_size == rd68021_ucode_pkg::U_SIZE_WORD) begin
+      if (md_signed)
+        // -32768 is representable and 32768 is not, which is why the negative
+        // case is allowed one more.
+        div_fit_ovf = div_qneg ? (div_qmag > 32'h0000_8000)
+                               : (div_qmag > 32'h0000_7FFF);
+      else
+        div_fit_ovf = (div_qmag > 32'h0000_FFFF);
+    end else if (md_signed) begin
+      div_fit_ovf = div_qneg ? (div_qmag > 32'h8000_0000)
+                             : (div_qmag > 32'h7FFF_FFFF);
+    end else begin
+      div_fit_ovf = 1'b0;
+    end
+  end
+  assign div_ovf = div_ovf_wide | div_fit_ovf;
+
+  // ==========================================================================
+  // The adder
+  //
+  // ONE 33-bit adder serves ADD, ADDX, SUB, SUBX, CMP, NEG and NEGX at all
+  // three sizes. Two things make that possible.
+  //
+  // Subtraction is a + ~b + 1. The carry out then means "no borrow", so C is
+  // its complement, and the same overflow expression works for both.
+  //
+  // The byte and word carries and every overflow come out of the carry CHAIN
+  // rather than out of two more adders: in a ripple adder the carry into bit n
+  // is sum[n] ^ a[n] ^ b[n], so the carry out of bit 7 is sum[8]^a[8]^b[8], and
+  // overflow at a width is the carry out of the sign bit exclusive-ored with
+  // the carry into it. Three adders would have been the obvious way to write
+  // this and would have cost three times the logic on the path that already
+  // sets the clock.
+  // ==========================================================================
+  logic        alu_sub, alu_usex;
+  logic [31:0] add_a, add_b;
+  logic        add_cin;
+  logic [32:0] add_sum;
+  logic        cin7, cin15, cin31, cout7, cout15, cout31;
+  logic        alu_cout, alu_v, alu_c;
+
+  assign alu_sub  = (`UF(ALU) == rd68021_ucode_pkg::U_ALU_SUB)
+                 || (`UF(ALU) == rd68021_ucode_pkg::U_ALU_SUBX);
+  assign alu_usex = (`UF(ALU) == rd68021_ucode_pkg::U_ALU_ADDX)
+                 || (`UF(ALU) == rd68021_ucode_pkg::U_ALU_SUBX);
+
+  assign add_a   = a_bus;
+  assign add_b   = alu_sub ? ~b_bus : b_bus;
+  assign add_cin = alu_sub ? ~(alu_usex & sr_q[rd68021_pkg::SR_X])
+                           :  (alu_usex & sr_q[rd68021_pkg::SR_X]);
+  assign add_sum = {1'b0, add_a} + {1'b0, add_b} + {32'd0, add_cin};
+
+  assign cin7   = add_sum[7]  ^ add_a[7]  ^ add_b[7];
+  assign cout7  = add_sum[8]  ^ add_a[8]  ^ add_b[8];
+  assign cin15  = add_sum[15] ^ add_a[15] ^ add_b[15];
+  assign cout15 = add_sum[16] ^ add_a[16] ^ add_b[16];
+  assign cin31  = add_sum[31] ^ add_a[31] ^ add_b[31];
+  assign cout31 = add_sum[32];
+
+  always_comb begin
+    unique case (eff_size)
+      rd68021_ucode_pkg::U_SIZE_BYTE: begin
+        alu_cout = cout7;
+        alu_v    = cout7 ^ cin7;
+      end
+      rd68021_ucode_pkg::U_SIZE_WORD: begin
+        alu_cout = cout15;
+        alu_v    = cout15 ^ cin15;
+      end
+      default: begin
+        alu_cout = cout31;
+        alu_v    = cout31 ^ cin31;
+      end
+    endcase
+  end
+
+  assign alu_c = alu_sub ? ~alu_cout : alu_cout;
 
   always_comb begin
     unique case (`UF(ALU))
       rd68021_ucode_pkg::U_ALU_A:   y = a_bus;
       rd68021_ucode_pkg::U_ALU_B:   y = b_bus;
-      rd68021_ucode_pkg::U_ALU_ADD: y = a_bus + b_bus;
-      rd68021_ucode_pkg::U_ALU_SUB: y = a_bus - b_bus;
+      rd68021_ucode_pkg::U_ALU_ADD,
+      rd68021_ucode_pkg::U_ALU_ADDX,
+      rd68021_ucode_pkg::U_ALU_SUB,
+      rd68021_ucode_pkg::U_ALU_SUBX: y = add_sum[31:0];
       rd68021_ucode_pkg::U_ALU_AND: y = a_bus & b_bus;
       rd68021_ucode_pkg::U_ALU_OR:  y = a_bus | b_bus;
       rd68021_ucode_pkg::U_ALU_EOR: y = a_bus ^ b_bus;
+      rd68021_ucode_pkg::U_ALU_NOT: y = ~a_bus;
+      rd68021_ucode_pkg::U_ALU_SWAP: y = {a_bus[15:0], a_bus[31:16]};
+      rd68021_ucode_pkg::U_ALU_EXTW: y = {{24{a_bus[7]}},  a_bus[7:0]};
+      rd68021_ucode_pkg::U_ALU_EXTL: y = {{16{a_bus[15]}}, a_bus[15:0]};
+      rd68021_ucode_pkg::U_ALU_EXTB: y = {{24{a_bus[7]}},  a_bus[7:0]};
+      rd68021_ucode_pkg::U_ALU_SHIFT:  y = sh_res;
+      rd68021_ucode_pkg::U_ALU_ANDNOT: y = a_bus & ~b_bus;
+      rd68021_ucode_pkg::U_ALU_LSR1:   y = {1'b0, a_bus[31:1]};
+      // Widen to thirty-two bits the way the multiply or divide under way
+      // says: sign extended for the signed forms, zero extended for the
+      // unsigned ones. It is what lets one 32-by-32 multiplier and one 64-by-32
+      // divider serve all eight instructions.
+      rd68021_ucode_pkg::U_ALU_XSZ:
+        unique case (eff_size)
+          rd68021_ucode_pkg::U_SIZE_BYTE:
+            y = md_signed ? {{24{a_bus[7]}},  a_bus[7:0]}  : {24'd0, a_bus[7:0]};
+          rd68021_ucode_pkg::U_SIZE_WORD:
+            y = md_signed ? {{16{a_bus[15]}}, a_bus[15:0]} : {16'd0, a_bus[15:0]};
+          default: y = a_bus;
+        endcase
+      // The top half of that same widening. A 32-bit dividend reaches the
+      // 64-bit divider as itself over this.
+      rd68021_ucode_pkg::U_ALU_XSZHI: y = md_signed ? {32{a_bus[31]}} : 32'd0;
+      // PRM 4: the word divide puts its remainder in the high word of the
+      // destination and its quotient in the low one.
+      rd68021_ucode_pkg::U_ALU_ABCD,
+      rd68021_ucode_pkg::U_ALU_SBCD:    y = {24'd0, bcd_res};
+      // MOVEP moves a word or a long word through every other byte of memory,
+      // most significant first -- PRM 4 -- so it needs to walk a register a
+      // byte at a time in each direction.
+      rd68021_ucode_pkg::U_ALU_SHR8:    y = {8'd0, a_bus[31:8]};
+      rd68021_ucode_pkg::U_ALU_SHL8OR:  y = {a_bus[23:0], b_bus[7:0]};
+      rd68021_ucode_pkg::U_ALU_ROL8:    y = {a_bus[23:0], a_bus[31:24]};
+      rd68021_ucode_pkg::U_ALU_SETB7:   y = a_bus | 32'h0000_0080;
+      rd68021_ucode_pkg::U_ALU_SHL16:   y = {a_bus[15:0], 16'd0};
+      rd68021_ucode_pkg::U_ALU_ORLOW16: y = {a_bus[31:16], b_bus[15:0]};
+      rd68021_ucode_pkg::U_ALU_SX:
+        unique case (eff_size)
+          rd68021_ucode_pkg::U_SIZE_BYTE: y = {{24{a_bus[7]}},  a_bus[7:0]};
+          rd68021_ucode_pkg::U_SIZE_WORD: y = {{16{a_bus[15]}}, a_bus[15:0]};
+          default:                        y = a_bus;
+        endcase
       default:                      y = a_bus;
     endcase
   end
@@ -312,7 +843,7 @@ module rd68021_seq #(
   // of the register alone.
   logic        res_n, res_z;
   always_comb begin
-    unique case (`UF(SIZE))
+    unique case (eff_size)
       rd68021_ucode_pkg::U_SIZE_BYTE: begin
         res_n = y[7];
         res_z = (y[7:0] == 8'd0);
@@ -325,6 +856,91 @@ module rd68021_seq #(
         res_n = y[31];
         res_z = (y == 32'd0);
       end
+    endcase
+  end
+
+  // ==========================================================================
+  // Running the divider
+  //
+  // A microword with mdop = DIV starts it on its first clock and stalls until
+  // it is done, which is the same shape as a bus request and for the same
+  // reason: the sequencer does not count clocks.
+  // ==========================================================================
+  logic div_req, div_go_q, div_fin_q;
+  assign div_req = (`UF(MDOP) == rd68021_ucode_pkg::U_MDOP_DIV);
+
+  assign div_start = div_req && !div_go_q && !div_fin_q;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      div_go_q  <= 1'b0;
+      div_fin_q <= 1'b0;
+    end else if (!div_req) begin
+      div_go_q  <= 1'b0;
+      div_fin_q <= 1'b0;
+    end else if (div_start) begin
+      div_go_q  <= 1'b1;
+    end else if (div_go_q && !div_busy) begin
+      div_go_q  <= 1'b0;
+      div_fin_q <= 1'b1;
+    end
+  end
+
+  logic div_stall;
+  assign div_stall = div_req && !div_fin_q;
+
+  // ==========================================================================
+  // The conditional tests -- PRM table 3-19
+  //
+  // Sixteen conditions on four flags, written out rather than factored: the
+  // table is the specification, and every attempt to be clever about it loses
+  // the ability to check it line by line against the manual.
+  // ==========================================================================
+  logic flag_n, flag_z, flag_v, flag_c;
+  assign flag_n = sr_q[rd68021_pkg::SR_N];
+  assign flag_z = sr_q[rd68021_pkg::SR_Z];
+  assign flag_v = sr_q[rd68021_pkg::SR_V];
+  assign flag_c = sr_q[rd68021_pkg::SR_C];
+
+  logic cc_true;
+  always_comb begin
+    unique case (stg_d[11:8])
+      4'b0000: cc_true = 1'b1;                          // T
+      4'b0001: cc_true = 1'b0;                          // F
+      4'b0010: cc_true = ~flag_c & ~flag_z;             // HI
+      4'b0011: cc_true =  flag_c |  flag_z;             // LS
+      4'b0100: cc_true = ~flag_c;                       // CC / HS
+      4'b0101: cc_true =  flag_c;                       // CS / LO
+      4'b0110: cc_true = ~flag_z;                       // NE
+      4'b0111: cc_true =  flag_z;                       // EQ
+      4'b1000: cc_true = ~flag_v;                       // VC
+      4'b1001: cc_true =  flag_v;                       // VS
+      4'b1010: cc_true = ~flag_n;                       // PL
+      4'b1011: cc_true =  flag_n;                       // MI
+      4'b1100: cc_true = ~(flag_n ^ flag_v);            // GE
+      4'b1101: cc_true =  (flag_n ^ flag_v);            // LT
+      4'b1110: cc_true = ~(flag_n ^ flag_v) & ~flag_z;  // GT
+      default: cc_true =  (flag_n ^ flag_v) |  flag_z;  // LE
+    endcase
+  end
+
+  logic cond_true;
+  always_comb begin
+    unique case (`UF(COND))
+      rd68021_ucode_pkg::U_COND_CC:    cond_true = cc_true;
+      rd68021_ucode_pkg::U_COND_NCC:   cond_true = ~cc_true;
+      rd68021_ucode_pkg::U_COND_RESM1: cond_true = (y[15:0] == 16'hFFFF);
+      rd68021_ucode_pkg::U_COND_MASK0: cond_true = t_q[0][0];
+      rd68021_ucode_pkg::U_COND_CNT16: cond_true = (cnt_q == 5'd16);
+      // Bit 10 of the extension word: the long forms' 64-bit selector.
+      rd68021_ucode_pkg::U_COND_XW10:  cond_true = xw_q[10];
+      // Tested on the result the CURRENT microword is computing, not on the
+      // status register, which it has not written yet.
+      rd68021_ucode_pkg::U_COND_RESNEG: cond_true = res_n;
+      rd68021_ucode_pkg::U_COND_GTZ:    cond_true = ~res_z & ~(res_n ^ alu_v);
+      rd68021_ucode_pkg::U_COND_MDOVF: cond_true =
+          (`UF(MDOP) == rd68021_ucode_pkg::U_MDOP_DIV) ? div_ovf : mul_ovf;
+      default:                         cond_true = 1'b0;
     endcase
   end
 
@@ -349,13 +965,28 @@ module rd68021_seq #(
                 || (`UF(ASRC) == rd68021_ucode_pkg::U_ASRC_EABASE)
                 || (`UF(BSRC) == rd68021_ucode_pkg::U_BSRC_STG_C_U)
                 || (`UF(BSRC) == rd68021_ucode_pkg::U_BSRC_STG_C_S)
-                || (`UF(SEQ)  == rd68021_ucode_pkg::U_SEQ_EADEC);
+                || (`UF(SEQ)  == rd68021_ucode_pkg::U_SEQ_EADEC)
+                || (`UF(SEQ)  == rd68021_ucode_pkg::U_SEQ_EAMODE);
 
-  assign stall = (bus_req && !req_ack)
-              || (needs_c && !pf_ready)
-              || ((`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE)
-                  && (`UF(PF) != rd68021_ucode_pkg::U_PF_ADV)
-                  && !pf_dvalid);
+  // Everything a microword waits for EXCEPT the bus. The distinction matters:
+  // the bus request may not be presented while any of these holds, because the
+  // bus unit takes an operand the moment it can and latches its address and its
+  // write data then -- so a microword that asks for a bus cycle AND reads
+  // something not yet valid would send the stale value.
+  //
+  // JSR (d16,An) is what found it. The push reads PC_C, which is only right
+  // once the pipe has refilled past the displacement the address routine ate;
+  // the microword stalled for exactly that reason, and the write had already
+  // gone out carrying the address of the displacement instead of the address of
+  // the next instruction.
+  logic other_stall;
+  assign other_stall = div_stall
+                    || (needs_c && !pf_ready)
+                    || ((`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE)
+                        && (`UF(PF) != rd68021_ucode_pkg::U_PF_ADV)
+                        && !pf_dvalid);
+
+  assign stall = (bus_req && !req_ack) || other_stall;
 
   logic retire;
   assign retire = !stall;
@@ -406,13 +1037,29 @@ module rd68021_seq #(
   // more clock after the operand completes, with req_last back low: without the
   // second term the same read runs twice, which is how the reset vectors came
   // back as the stack pointer twice over.
-  assign req_valid    = bus_req && !req_last && !req_ack;
+  assign req_valid    = bus_req && !other_stall && !req_last && !req_ack;
   assign req_kind     = (`UF(BUS) == rd68021_ucode_pkg::U_BUS_WRITE)
                         ? rd68021_pkg::CT_WRITE : rd68021_pkg::CT_READ;
   assign req_addr     = req_addr_sel;
-  assign req_bytes    = `UF(BYTES);
+  // A `bytes` of zero on a microword that asks for a bus cycle means "the
+  // effective operand size". Without it every effective-address routine that
+  // moves an operand would exist once per size, which is the duplication szsel
+  // is here to remove.
+  logic [2:0] size_bytes;
+  always_comb begin
+    unique case (eff_size)
+      rd68021_ucode_pkg::U_SIZE_BYTE: size_bytes = 3'd1;
+      rd68021_ucode_pkg::U_SIZE_WORD: size_bytes = 3'd2;
+      default:                        size_bytes = 3'd4;
+    endcase
+  end
+
+  assign req_bytes    = (`UF(BYTES) == 3'd0) ? size_bytes : `UF(BYTES);
   assign req_wdata    = {8'd0, y};
-  assign req_rmc      = 1'b0;
+  // UM 5.5.2: RMC is held across the whole read-modify-write, and each cycle
+  // inside it is an ordinary one that is retried on its own. TAS is the only
+  // instruction in this milestone that asserts it; CAS and CAS2 join it in M10.
+  assign req_rmc      = `UF(RMC);
   assign req_cpuspace = rd68021_pkg::CPUS_IACK;
   assign req_cpuaddr  = 8'd0;
 
@@ -433,8 +1080,11 @@ module rd68021_seq #(
       unique case (`UF(SEQ))
         rd68021_ucode_pkg::U_SEQ_DECODE: upc_nxt = dec_entry;
         rd68021_ucode_pkg::U_SEQ_EADEC:  upc_nxt = ea_entry;
+        rd68021_ucode_pkg::U_SEQ_EAMODE: upc_nxt = eam_entry;
         rd68021_ucode_pkg::U_SEQ_RET:    upc_nxt = link_q;
-        rd68021_ucode_pkg::U_SEQ_COND:   upc_nxt = `UF(NEXT);
+        // Branch when the condition holds, fall through when it does not.
+        rd68021_ucode_pkg::U_SEQ_COND:   upc_nxt = cond_true ? `UF(NEXT)
+                                                             : upc + 1'b1;
         default:                         upc_nxt = `UF(NEXT);
       endcase
     end
@@ -460,7 +1110,10 @@ module rd68021_seq #(
       xw_q   <= '0;
       ea_q   <= '0;
       link_q <= '0;
-      eapc_q <= 1'b0;
+      eapc_q  <= 1'b0;
+      eadst_q <= 1'b0;
+      cnt_q   <= 5'd0;
+      size_q  <= rd68021_ucode_pkg::U_SIZE_LONG;
       for (i_r = 0; i_r < 8; i_r = i_r + 1) dreg[i_r] <= '0;
       for (i_r = 0; i_r < 7; i_r = i_r + 1) areg[i_r] <= '0;
       for (i_r = 0; i_r < 4; i_r = i_r + 1) t_q[i_r]  <= '0;
@@ -472,9 +1125,29 @@ module rd68021_seq #(
         // comes back to.
         if (`UF(CALL)) link_q <= upc + 1'b1;
 
+        unique case (`UF(CNT))
+          rd68021_ucode_pkg::U_CNT_ZERO: cnt_q <= 5'd0;
+          rd68021_ucode_pkg::U_CNT_INC:  cnt_q <= cnt_q + 5'd1;
+          default: ;
+        endcase
+
         // The dispatch into an extension-word routine is the one place the base
         // is still known.
-        if (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_EADEC) eapc_q <= `UF(EAPC);
+        if (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_EADEC)  eapc_q <= `UF(EAPC);
+        if (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_EAMODE) begin
+          eapc_q  <= eam_pc_base;
+          eadst_q <= `UF(EADST);
+          size_q  <= eff_size;
+        end
+        // ... and they do not outlive the instruction that set them. eadst_q
+        // steers `rsel`, so a MOVE to memory that left it set made the NEXT
+        // instruction read the register bits 11:9 name wherever it meant bits
+        // 2:0 -- CMPA.L A1,A0 compared A0 with itself. The latches are
+        // per-effective-address and an instruction starts with none under way.
+        if (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE) begin
+          eapc_q  <= 1'b0;
+          eadst_q <= 1'b0;
+        end
 
         unique case (`UF(DST))
           rd68021_ucode_pkg::U_DST_T0: t_q[0] <= y;
@@ -487,21 +1160,81 @@ module rd68021_seq #(
                                                  & rd68021_pkg::SR_IMPLEMENTED;
           rd68021_ucode_pkg::U_DST_DREG: begin
             // A byte or word write leaves the rest of the data register alone.
-            unique case (`UF(SIZE))
+            unique case (eff_size)
               rd68021_ucode_pkg::U_SIZE_BYTE: dreg[wsel][7:0]  <= y[7:0];
               rd68021_ucode_pkg::U_SIZE_WORD: dreg[wsel][15:0] <= y[15:0];
               default:                        dreg[wsel]       <= y;
             endcase
           end
-          rd68021_ucode_pkg::U_DST_AREG: begin
-            // An address register is always written full width, sign extended
-            // from a word -- PRM 2.
-            if (wsel == 3'd7) begin
+          rd68021_ucode_pkg::U_DST_DREG_R: begin
+            // The same, addressed by the effective-address register field: the
+            // destination of a one-operand instruction whose <ea> is a register.
+            unique case (eff_size)
+              rd68021_ucode_pkg::U_SIZE_BYTE: dreg[rsel][7:0]  <= y[7:0];
+              rd68021_ucode_pkg::U_SIZE_WORD: dreg[rsel][15:0] <= y[15:0];
+              default:                        dreg[rsel]       <= y;
+            endcase
+          end
+          // MOVEM writing a register back. A word transfer is sign extended
+          // into the whole register whatever it is -- PRM 4, "the MOVEM
+          // instruction sign-extends a word to a long word in a data register
+          // as well as an address register", which is the one place a data
+          // register is written full width by a word operation.
+          rd68021_ucode_pkg::U_DST_REGN,
+          rd68021_ucode_pkg::U_DST_REGNR: begin
+            if (!movem_wn[3]) begin
+              dreg[movem_wn[2:0]] <= y_areg;
+            end else if (movem_wn[2:0] == 3'd7) begin
+              if (!super_mode)      usp_q <= y_areg;
+              else if (master_mode) msp_q <= y_areg;
+              else                  isp_q <= y_areg;
+            end else begin
+              areg[movem_wn[2:0]] <= y_areg;
+            end
+          end
+          // MOVEC writing a control register. SFC and DFC are three bits and
+          // CACR only two of its thirty-two are implemented here; PRM 6 says
+          // the transfer is thirty-two bits wide either way and the rest read
+          // back as zero, which is what narrow registers give.
+          rd68021_ucode_pkg::U_DST_CREG: begin
+            unique case (creg_sel)
+              12'h000: sfc_q  <= y[2:0];
+              12'h001: dfc_q  <= y[2:0];
+              12'h002: cacr_q <= y & rd68021_pkg::CACR_IMPLEMENTED;
+              12'h800: usp_q  <= y;
+              12'h801: vbr_q  <= y;
+              12'h802: caar_q <= y;
+              12'h803: msp_q  <= y;
+              12'h804: isp_q  <= y;
+              default: ;
+            endcase
+          end
+          rd68021_ucode_pkg::U_DST_XREG: begin
+            if (!xw_q[15]) begin
+              dreg[xw_q[14:12]] <= y;
+            end else if (xw_q[14:12] == 3'd7) begin
               if (!super_mode)      usp_q <= y;
               else if (master_mode) msp_q <= y;
               else                  isp_q <= y;
             end else begin
-              areg[wsel] <= y;
+              areg[xw_q[14:12]] <= y;
+            end
+          end
+          rd68021_ucode_pkg::U_DST_DREG_XQ: dreg[xw_q[14:12]] <= y;
+          rd68021_ucode_pkg::U_DST_DREG_XR: dreg[xw_q[2:0]]   <= y;
+          rd68021_ucode_pkg::U_DST_CCR:
+            sr_q[4:0] <= y[4:0];
+          rd68021_ucode_pkg::U_DST_AREG: begin
+            // An address register is always written full width, sign extended
+            // from a word -- PRM 2, "the entire destination address register is
+            // used regardless of the operation size". MOVEA.W and ADDA.W are
+            // the instructions that depend on it.
+            if (wsel == 3'd7) begin
+              if (!super_mode)      usp_q <= y_areg;
+              else if (master_mode) msp_q <= y_areg;
+              else                  isp_q <= y_areg;
+            end else begin
+              areg[wsel] <= y_areg;
             end
           end
           rd68021_ucode_pkg::U_DST_SP: begin
@@ -523,12 +1256,100 @@ module rd68021_seq #(
           default: ;
         endcase
 
-        if (`UF(CCR) == rd68021_ucode_pkg::U_CCR_LOGIC) begin
-          sr_q[rd68021_pkg::SR_N] <= res_n;
-          sr_q[rd68021_pkg::SR_Z] <= res_z;
-          sr_q[rd68021_pkg::SR_V] <= 1'b0;
-          sr_q[rd68021_pkg::SR_C] <= 1'b0;
-        end
+        // The condition codes -- PRM 3.3 and table 3-18. The field names the
+        // WAY the codes are set, not the instruction, because there are eighty
+        // instructions and about eight ways.
+        unique case (`UF(CCR))
+          rd68021_ucode_pkg::U_CCR_LOGIC: begin
+            sr_q[rd68021_pkg::SR_N] <= res_n;
+            sr_q[rd68021_pkg::SR_Z] <= res_z;
+            sr_q[rd68021_pkg::SR_V] <= 1'b0;
+            sr_q[rd68021_pkg::SR_C] <= 1'b0;
+          end
+          rd68021_ucode_pkg::U_CCR_ADD,
+          rd68021_ucode_pkg::U_CCR_SUB: begin
+            sr_q[rd68021_pkg::SR_N] <= res_n;
+            sr_q[rd68021_pkg::SR_Z] <= res_z;
+            sr_q[rd68021_pkg::SR_V] <= alu_v;
+            sr_q[rd68021_pkg::SR_C] <= alu_c;
+            sr_q[rd68021_pkg::SR_X] <= alu_c;
+          end
+          // "Z is cleared if the result is non-zero; unchanged otherwise", so
+          // that Z ends up meaning that every part of a multi-precision result
+          // was zero. Writing res_z here instead is the classic ADDX bug.
+          rd68021_ucode_pkg::U_CCR_ADDX,
+          rd68021_ucode_pkg::U_CCR_SUBX: begin
+            sr_q[rd68021_pkg::SR_N] <= res_n;
+            if (!res_z) sr_q[rd68021_pkg::SR_Z] <= 1'b0;
+            sr_q[rd68021_pkg::SR_V] <= alu_v;
+            sr_q[rd68021_pkg::SR_C] <= alu_c;
+            sr_q[rd68021_pkg::SR_X] <= alu_c;
+          end
+          // CMP and TST are subtractions that set no extend bit.
+          rd68021_ucode_pkg::U_CCR_CMP: begin
+            sr_q[rd68021_pkg::SR_N] <= res_n;
+            sr_q[rd68021_pkg::SR_Z] <= res_z;
+            sr_q[rd68021_pkg::SR_V] <= alu_v;
+            sr_q[rd68021_pkg::SR_C] <= alu_c;
+          end
+          rd68021_ucode_pkg::U_CCR_ZN: begin
+            sr_q[rd68021_pkg::SR_N] <= res_n;
+            sr_q[rd68021_pkg::SR_Z] <= res_z;
+          end
+          // The bit instructions move Z and nothing else at all.
+          rd68021_ucode_pkg::U_CCR_ZBIT:
+            sr_q[rd68021_pkg::SR_Z] <= res_z;
+          // The shifter works out its own C, V and X, and whether X moves at
+          // all -- a rotate never touches it, and a count of zero never does.
+          rd68021_ucode_pkg::U_CCR_SHIFT: begin
+            sr_q[rd68021_pkg::SR_N] <= res_n;
+            sr_q[rd68021_pkg::SR_Z] <= res_z;
+            sr_q[rd68021_pkg::SR_V] <= sh_v;
+            sr_q[rd68021_pkg::SR_C] <= sh_c;
+            if (sh_xwr) sr_q[rd68021_pkg::SR_X] <= sh_x;
+          end
+          // PRM 4 for the multiplies and divides. C is always cleared, X is
+          // never touched, and a 64-bit product takes its N and Z from all
+          // sixty-four bits rather than from the register the low half lands in.
+          // PRM 4 for ABCD, SBCD and NBCD: X and C are the decimal carry, Z is
+          // only ever cleared -- so that it means every byte of a
+          // multi-precision result was zero -- and N and V are undefined.
+          rd68021_ucode_pkg::U_CCR_BCD: begin
+            sr_q[rd68021_pkg::SR_N] <= res_n;
+            if (!res_z) sr_q[rd68021_pkg::SR_Z] <= 1'b0;
+            sr_q[rd68021_pkg::SR_V] <= 1'b0;
+            sr_q[rd68021_pkg::SR_C] <= bcd_c;
+            sr_q[rd68021_pkg::SR_X] <= bcd_c;
+          end
+          rd68021_ucode_pkg::U_CCR_MUL32: begin
+            sr_q[rd68021_pkg::SR_N] <= res_n;
+            sr_q[rd68021_pkg::SR_Z] <= res_z;
+            sr_q[rd68021_pkg::SR_V] <= mul_ovf;
+            sr_q[rd68021_pkg::SR_C] <= 1'b0;
+          end
+          rd68021_ucode_pkg::U_CCR_MUL64: begin
+            sr_q[rd68021_pkg::SR_N] <= mul_full[63];
+            sr_q[rd68021_pkg::SR_Z] <= (mul_full == 64'd0);
+            sr_q[rd68021_pkg::SR_V] <= 1'b0;
+            sr_q[rd68021_pkg::SR_C] <= 1'b0;
+          end
+          rd68021_ucode_pkg::U_CCR_DIV: begin
+            sr_q[rd68021_pkg::SR_N] <= res_n;
+            sr_q[rd68021_pkg::SR_Z] <= res_z;
+            sr_q[rd68021_pkg::SR_V] <= 1'b0;
+            sr_q[rd68021_pkg::SR_C] <= 1'b0;
+          end
+          // On overflow PRM 4 leaves the operands alone and sets V. N and Z are
+          // undefined there and this design leaves them alone too, which
+          // doc/divergences.md records as the choice it is.
+          rd68021_ucode_pkg::U_CCR_DIVV: begin
+            sr_q[rd68021_pkg::SR_V] <= 1'b1;
+            sr_q[rd68021_pkg::SR_C] <= 1'b0;
+          end
+          rd68021_ucode_pkg::U_CCR_ALL:
+            sr_q[4:0] <= y[4:0];
+          default: ;
+        endcase
       end
     end
   end
@@ -557,6 +1378,10 @@ module rd68021_seq #(
   logic unused_seq;
   assign unused_seq = &{1'b1,
                         req_last, req_end, req_fault, req_fault_wr, req_dsack,
+                        eam_illegal, div_zero, mul_full66[65:64],
+                        // The bit number is taken modulo 32 at most, so its
+                        // top bit is never part of an answer -- PRM 4.
+                        bit_num[5],
                         req_rdata[39:32],
                         flt_addr, flt_bytes, flt_fc, flt_rw, flt_rmc, flt_dob,
                         flt_dib,

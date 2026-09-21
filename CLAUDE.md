@@ -73,8 +73,9 @@ three, and they are not in `make check` for that reason.
 | `rtl/gen/` | generated from `tools/ucode/` — microcode store, decoders, frame package |
 | `tools/` | microcode assembler, vector generator, test runners, timing solver, doc generators (Python) |
 | `sim/tb/` | testbenches |
+| `tools/vectors/` | the per-opcode sweep generator |
 | `sim/models/` | bus-slave and coprocessor models |
-| `sim/programs/` | real code, built and run on the core |
+| `sim/programs/` | real code, built by the cross-compiler and run on the core |
 | `sim/suska/` | harnesses that run the same code on the Suska VHDL core |
 | `scripts/` | Vivado and Quartus synthesis, implementation and timing scripts |
 | `doc/` | pinout, coding standard, checkpoint, compliance, divergence and implementation reports |
@@ -121,8 +122,22 @@ make lint     # elaborate every rtl module under the three always-available tool
 make audit    # prove no register initialises outside reset
 make ucode    # regenerate the microcode ROMs from tools/ucode/
 make sim      # directed testbenches (iverilog)
-make check    # the gate: ucode-check, lint, audit, sim, programs, AC timing
+make check    # the gate: ucode-check, lint, audit, sim, AC timing
 ```
+
+The oracles, none of which is in `check` because each takes minutes:
+
+```sh
+make ea               # every addressing mode and extension-word shape
+make vectors OP=alu   # one instruction group, against Musashi
+make vectors-all      # every group there is
+make cosim            # real programs, every register at every instruction
+make timing-verbose   # the AC solver, with the binding constraint named
+```
+
+`make vectors` defaults to the groups whose microcode exists, so it stays green
+while a milestone is being built; `vectors-all` is the milestone's own criterion
+and is expected to fail until it closes.
 
 Targets arrive as the milestones that need them do; `make help` lists what exists.
 

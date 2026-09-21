@@ -295,6 +295,12 @@ int main(void)
     m68k_init();
     m68k_set_cpu_type(M68K_CPU_TYPE_68020);
     m68k_pulse_reset();
+    /* m68k_pulse_reset leaves RESET_CYCLES set, and m68k_execute spends its
+     * whole budget on those before it looks at an instruction, so the first
+     * m68k_execute(1) after a reset runs NOTHING and returns. A budget of zero
+     * absorbs them. Without this the first vector of the sweep is compared
+     * against a Musashi that never executed it. See doc/bugs-found.md. */
+    m68k_execute(0);
 
     printf("%x\n", ntests);
     for (i = 0; i < ntests; i++) {

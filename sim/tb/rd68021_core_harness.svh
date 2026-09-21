@@ -186,6 +186,28 @@ always @(negedge clk) begin
   end
 end
 
+// One instruction. `boundary` is the retirement of a microword that decodes,
+// which is what ends an instruction.
+//
+// The retiring microword's writes are non-blocking and land on the NEXT RISING
+// edge, so the caller cannot compare anything until that edge has passed. It
+// must not wait a whole falling edge for it: a one-microword instruction
+// following this one retires on that very edge, and the next call to this task
+// would step straight past its boundary and compare the wrong instruction.
+// MOVEQ after a MOVE is what found it, 1652 instructions into a program.
+task automatic step_one(input int limit, output bit ok);
+  int n;
+  ok = 1'b0;
+  n  = 0;
+  while (!ok && n < limit) begin
+    @(negedge clk);
+    if (boundary) ok = 1'b1;
+    n = n + 1;
+  end
+  @(posedge clk);
+  #(CLK_PERIOD / 4.0);
+endtask
+
 // Run until the program counter settles on `spin`, or give up.
 // A while loop rather than a for with a return: iverilog rejects `return` in a
 // task ("Cannot return from tasks").
@@ -221,6 +243,8 @@ int unsigned nacc;
 logic [31:0] acc_addr [0:MAXACC-1];
 logic        acc_rw   [0:MAXACC-1];
 logic        acc_prog [0:MAXACC-1];
+logic  [2:0] acc_bytes[0:MAXACC-1];
+logic [31:0] acc_data [0:MAXACC-1];
 
 // The unit recorded is the OPERAND, not the bus cycle. The two are not the same
 // on this part: table 5-6 splits one misaligned operand across up to four
@@ -246,6 +270,13 @@ always @(posedge clk) begin
       acc_rw[nacc]   = rw_o;
       acc_prog[nacc] = (fc_o == rd68021_pkg::FC_SUPER_PROG
                         || fc_o == rd68021_pkg::FC_USER_PROG);
+      // op_rem is the byte count still to move, and at the first cycle of an
+      // operand that is the whole operand. op_data is the write data, right
+      // justified; on a read it is the accumulator and means nothing yet, so
+      // the recorded value is zero there and the oracle sends zero too.
+      acc_bytes[nacc] = dut.u_biu.op_rem;
+      acc_data[nacc]  = rw_o ? 32'd0 : (dut.u_biu.op_data[31:0]
+                                        & ~(32'hFFFF_FFFF << {dut.u_biu.op_rem, 3'b000}));
     end
     nacc = nacc + 1;
   end

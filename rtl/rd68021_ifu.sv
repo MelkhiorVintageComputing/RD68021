@@ -97,8 +97,8 @@ module rd68021_ifu #(
   logic [29:0] chr_addr_q;
   logic        chr_v_q;
   logic        chr_f_q;
-
   logic        fetch_pend_q;   // a fetch has been asked for and not yet answered
+  logic        discard_q;      // the word in flight is for a stream that is gone
 
   // The address that fetch was issued at. It has to be a register: fill_q moves
   // on as the queue drains, and a combinational fetch_addr would label the long
@@ -183,17 +183,25 @@ module rd68021_ifu #(
       chr_f_q      <= 1'b0;
       fetch_pend_q <= 1'b0;
       fetch_addr_q <= '0;
+      discard_q    <= 1'b0;
       primed_q     <= 1'b0;
     end else begin
       // ------------------------------------------------------------------
       // The fetch in flight
       // ------------------------------------------------------------------
       if (fetch_ack) begin
-        chr_q        <= fetch_rdata;
-        chr_addr_q   <= fetch_addr_q[31:2];
-        chr_v_q      <= 1'b1;
-        chr_f_q      <= fetch_fault;
         fetch_pend_q <= 1'b0;
+        discard_q    <= 1'b0;
+        // A word answering a request the flush threw away belongs to the
+        // instruction stream that no longer exists. Taking it would put a word
+        // from the OLD stream into the pipe with the NEW stream's address on
+        // it, which is what it did. See doc/bugs-found.md.
+        if (!discard_q) begin
+          chr_q      <= fetch_rdata;
+          chr_addr_q <= fetch_addr_q[31:2];
+          chr_v_q    <= 1'b1;
+          chr_f_q    <= fetch_fault;
+        end
       end else if (!fetch_pend_q && room && !chr_hit) begin
         fetch_pend_q <= 1'b1;
         fetch_addr_q <= {fill_q[31:2], 2'b00};
@@ -209,10 +217,21 @@ module rd68021_ifu #(
         pc_d_q       <= pf_addr;
         fill_q       <= pf_addr;
         chr_v_q      <= 1'b0;
-        fetch_pend_q <= 1'b0;
         d_f_q        <= 1'b0;
         c_f_q        <= 1'b0;
         b_f_q        <= 1'b0;
+        // A prefetch already in flight is NOT withdrawn. The bus unit took the
+        // operand when it could and there is no way to call it back; what there
+        // is, is the answer, which arrives some clocks later and belongs to the
+        // stream this flush just abandoned. So the request is left standing and
+        // the WORD is thrown away when it comes.
+        //
+        // Withdrawing it instead -- which is what this did -- leaves the bus
+        // unit finishing a cycle nobody is waiting for, and the next prefetch
+        // takes that answer as its own: a word from the old stream, carrying
+        // the new stream's address. It costs one bus cycle per taken branch,
+        // measured in doc/timing-divergences.md.
+        discard_q    <= fetch_pend_q && !fetch_ack;
       end else begin
         if (do_adv) begin
           d_q    <= c_q;

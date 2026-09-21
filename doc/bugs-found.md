@@ -653,3 +653,482 @@ the port — the shape `dec_ir` already had one instantiation above.
 saying plainly what this one demonstrates: the value of the Quartus gate is not
 that Quartus is a target, it is that Quartus disagrees with the others about
 something that has no diagnostic in them at all.
+
+---
+
+## M7 · The first instruction after a reset was never executed by the oracle
+
+**What:** the worst kind of oracle defect again, and this one was already in the
+M6 sweep without showing.
+
+`m68k_pulse_reset()` leaves `RESET_CYCLES` set, and `m68k_execute` spends its
+whole budget on those **before it looks at an instruction**:
+
+```c
+int m68k_execute(int num_cycles)
+{
+    if (RESET_CYCLES) {
+        int rc = RESET_CYCLES;
+        RESET_CYCLES = 0;
+        num_cycles -= rc;
+        if (num_cycles <= 0)
+            return rc;          /* nothing ran */
+    }
+```
+
+So `m68k_execute(1)` immediately after a reset returns having run nothing, and
+the "after" state recorded for that test is its "before" state.
+
+In the new sweep, which resets per test, **every** vector was affected and the
+symptom was obvious: MOVEQ #1,D0 left D0 alone and the program counter at
+`$1000`. In `make ea`, which resets once, it silently spoiled exactly one vector
+-- number 0, which is `LEA (A0),A0`. That is idempotent, so it passed anyway and
+703 of 703 was a true number reached partly by luck.
+
+**Fixed by:** `m68k_execute(0)` after every reset, which absorbs the reset cycles
+and executes nothing, in both `tools/vectors/gen.c` and `tools/cosim/musashi_ea.c`.
+
+**Worth saying:** the M6 sweep was green with a defect in it. What found the
+defect was a *different* test built on the same oracle, which is the argument
+for the plan's four independent oracles rather than one good one.
+
+---
+
+## M7 · Every byte and word operand stepped its address register by four
+
+**What:** `(An)+` and `-(An)` step the register by the operand size. The two
+routines are shared by every instruction that uses those modes, and instructions
+encode their size in different bits -- bits 7:6 for most, 8:6 for the ALU line,
+13:12 for MOVE -- so a shared routine cannot name a selector of its own. Until
+M7 every caller was a long-word instruction and the routines used their own
+`size` field, which was `LONG`. A comment in `program.py` said so and said what
+would have to change.
+
+`MOVE.B (A2)+,D1` then stepped A2 by four and read the wrong byte.
+
+**Fixed by:** `szsel = LATCHED`, a two-bit register the dispatching microword
+writes with the size it resolved. It is per-instruction state, so it has a
+checkpoint slot at `+$08` bits 8:7, which is the discipline working as intended
+rather than an afterthought.
+
+**Found by:** the sweep, on its first run, in 234 vectors at once.
+
+---
+
+## M7 · SUBX had its operands the wrong way round
+
+**What:** `SUBX Dy,Dx` is *Dx minus Dy minus X*. The microcode read the register
+named by bits 2:0 into the A side and the one named by bits 11:9 into the B
+side, which computes Dy minus Dx.
+
+It was written as one helper shared with ADDX, where the order does not matter
+because addition commutes -- so the shared code was right for one of the two
+instructions it served and wrong for the other, and the ADDX vectors passed.
+
+**Found by:** three vectors of `SUBX.B D5,D2`. Working the arithmetic by hand is
+what identified it: D2 held `$...08b2`, D5 `$...081b`, X was clear, and the core
+produced `$69` where the oracle produced `$97` -- and `$69` is exactly
+`($1b - $b2) & $ff`.
+
+**Stops it coming back:** the sweep has both instructions at all three sizes in
+both forms, and the register form is now written out with a comment saying why
+it is not shared.
+
+---
+
+## M7 · A program-counter-relative instruction's WRITE is not a program reference
+
+**What:** the correction M6 made to the oracle -- "this instruction's mode is
+PC-relative, so its accesses are program references" -- was applied to every
+access the instruction made. That is right for the reads, which is all LEA and
+`MOVE <ea>,Dn` make, and wrong as soon as an instruction with a PC-relative
+source also writes something.
+
+`PEA (d16,PC)` is the case: the address it computes is a program reference, and
+the long word it pushes is an ordinary data write to the stack. The core had it
+right and the oracle did not.
+
+**Fixed by:** the override applies to reads only. PRM 2 supports exactly that --
+every PC-relative mode is described as "a program reference allowed only for
+reads", so an instruction that writes is writing somewhere else by construction.
+
+---
+
+## M7 · The rotates only ever rotated left
+
+**What:** `rd68021_shifter.sv` builds two rings, one of the operand and one of
+the operand with X in it, and rotates both **left**. A right rotation is a left
+one by the complement of the count -- and the `left` input was never used for
+either kind, so ROL and ROXL passed and ROR and ROXR silently rotated the wrong
+way.
+
+Three-hundred and seventy-eight vectors, and the shape of the failure is worth
+recording: `ROXR.B #1,D4` produced a result that looked like a plausible rotate,
+because it *was* a plausible rotate, of the wrong sign.
+
+**Fixed by:** four lines.
+
+```systemverilog
+assign rot_amt = left ? rot_n : ((rot_n == 6'd0) ? 6'd0 : (w - rot_n));
+assign rox_amt = left ? rox_n : ((rox_n == 6'd0) ? 6'd0 : ((w + 6'd1) - rox_n));
+```
+
+The zero cases are not decoration: `opw >> (w - 0)` is a shift by the width,
+which is zero for a byte and a word and undefined-looking for a long, and the
+complement of a zero rotation is a zero rotation and not a whole turn.
+
+**Worth saying:** writing two rotators would have been the obvious way to do
+this and would have cost twice the logic on a unit that is already one of the
+widest things in the design. The cheap version was right; not writing the
+complement at all was the bug.
+
+---
+
+## M7 · The static bit instructions took their bit number for a displacement
+
+**What:** `BTST #0,(8,A6)` read at A6 instead of at A6+8, and `BTST #0,($2100).W`
+read at address 0.
+
+A static bit instruction carries its bit number in the word after the opcode,
+and the effective address's extension words come **after** that. The microcode
+computed the address first and consumed the bit number last, so the address
+routine found the bit-number word sitting in stage C and took it for its
+displacement. `BTST #14,(8,A6)` read six bytes past where it should, which is
+exactly 14 minus 8.
+
+The register forms were fine, which is why it took a sweep to find: there the
+bit number is the only extension word there is.
+
+**Fixed by:** the static forms latch the bit number into `xw` first, with a
+CONSUME, and the mask generator reads the latch rather than stage C. Two
+microwords fewer, as it happens, because the consume is no longer a separate
+step at the end.
+
+**The general shape of it:** stage C is a *position*, not a register. Anything
+that has to outlive a pipe advance goes in `xw` -- which is rule 3 of
+`doc/checkpoint.md`, written in M4 for exactly this reason and not applied here
+until the sweep insisted.
+
+---
+
+## M7 · A false combinational loop through the multiplier
+
+**What:** `MULLO` and `MULHI` are A-bus sources, and the multiplier was fed from
+the A bus. That closes a loop: `a_bus` to `mul_a` to `mul_full` back to `a_bus`.
+
+It is a false loop -- only one arm of the source mux is ever selected -- but it
+is a real one structurally, and Verilator refuses it with UNOPTFLAT.
+
+**Fixed by:** the multiplier and the divider take their operands from T0, T1,
+T2 and T3 rather than from the buses. The microcode puts them there, which it
+was doing anyway.
+
+**Worth saying:** the same trap is waiting for every unit whose result is a
+source. The divider was written the same way and was saved only by having
+registered outputs; it has been changed too, so that the rule is uniform rather
+than accidental.
+
+---
+
+## M7 · A bus request went out before the microword that made it was ready
+
+**What:** the most valuable find of the milestone, and not a bug in any
+instruction.
+
+`JSR (8,A6)` pushed the address of its own displacement word instead of the
+address of the next instruction. So did `BSR.W` and `BSR.L`. `JSR (A1)` and
+`BSR.B` were right, which is the shape of the clue: only the forms with an
+extension word were wrong.
+
+The push reads `PC_C`, the address of the word in pipe stage C. After the
+address routine has eaten the displacement, that is the next instruction -- but
+only once the pipe has refilled, because `PC_C` is derived as `stg_b_addr - 2`
+and `stg_b_addr` does not move until a word arrives. The microword knew this:
+`needs_c` includes the `PC_C` source, so it **stalled** until the pipe was ready.
+
+It stalled, and the write had already gone out.
+
+```systemverilog
+assign req_valid = bus_req && !req_last && !req_ack;   // wrong
+```
+
+`req_valid` was gated on the bus alone. The bus unit takes an operand the moment
+it can and latches its address and its write data then -- so a microword that
+asks for a bus cycle *and* reads something not yet valid presents the stale
+value, and the stall it is doing for exactly that reason comes too late to help.
+
+A trace of one instruction is what settled it:
+
+```
+  upc=558 stg_b_addr=00001004 cnt=0    retire=0   <- the write is already out
+  upc=558 stg_b_addr=00001006 cnt=1    retire=0
+  upc=558 stg_b_addr=00001006 cnt=2    retire=1   <- PC_C is right only now
+```
+
+**Fixed by:** splitting the stall in two. `other_stall` is everything a
+microword waits for except the bus, and the request is not presented while it
+holds:
+
+```systemverilog
+assign req_valid = bus_req && !other_stall && !req_last && !req_ack;
+```
+
+**Why it matters beyond JSR:** the class is "a bus request issued with operands
+that are not yet valid", and every later milestone adds microwords that both
+request a cycle and read something conditional -- the fault frames of M9 most of
+all, where a wrong address written to a stack is not a wrong answer but a
+corrupted kernel. It would not have been found by looking at the instruction,
+because the instruction was right.
+
+**Also fixed, and separate:** BSR.W and BSR.L never consumed their displacement
+at all -- the flush would eat it -- so `PC_C` named the displacement even with
+the gating fixed. The consume looks redundant and is not, because the return
+address is read between the consume and the flush.
+
+---
+
+## M7 · A flush abandoned a prefetch, and the next one took its answer
+
+**What:** the bug a program finds and a sweep cannot.
+
+`make cosim` ran eight instructions of the C runtime's `.bss` clear before the
+core and Musashi disagreed, and the divergence was not in the instruction that
+failed. Stage D held `$0000` where `$10FC` belonged, and the cache holding
+register was carrying a long word from `$12CC` with `$12C0` written on it:
+
+```
+t=5700000 chr=4eb90000 chra=000012c0 fill=000012c2 push=1
+```
+
+A taken branch flushes the pipe. The flush cleared `fetch_pend_q` -- withdrawing
+the prefetch request -- but the bus unit had already **taken** that operand and
+there is no way to call it back. It finished the cycle, pulsed `fetch_ack`, and
+the IFU, which by then had issued a request for the new stream, accepted that
+answer as its own. A word from the abandoned instruction stream went into the
+pipe with the new stream's address on it.
+
+Every taken branch was a chance to execute one instruction from the wrong place.
+
+**Fixed by:** not withdrawing. The request is left standing and the WORD is
+thrown away when it arrives:
+
+```systemverilog
+discard_q <= fetch_pend_q && !fetch_ack;   // on flush
+...
+if (fetch_ack) begin
+  fetch_pend_q <= 1'b0;
+  discard_q    <= 1'b0;
+  if (!discard_q) begin chr_q <= fetch_rdata; ... end
+end
+```
+
+It costs one bus cycle per taken branch, which `doc/timing-divergences.md` will
+measure. A real MC68020 does better with the ECS-aborted cycle of UM 5.2.5,
+which is M11's business.
+
+**Why the sweep could not find it:** the per-opcode sweep runs ONE instruction.
+The branch it tests is correct -- the program counter comes out right, which is
+all a single-instruction comparison can look at. What is wrong is the
+*instruction after* the branch, and there isn't one.
+
+---
+
+## M7 · MOVEM stored a zero in place of its first register
+
+**What:** eleven of twelve registers stored correctly and the first stored zero.
+
+```
+   0: write 4 bytes at 0000123c of 00000000      <- D0 is 9abe0400
+   1: write 4 bytes at 00001240 of 80900002      <- D1, correct
+   2: write 4 bytes at 00001244 of 0000119c      <- D2, correct
+```
+
+The register MOVEM's counter names was read through a function:
+
+```systemverilog
+function automatic logic [31:0] reg_read(input logic [3:0] n);
+  if (!n[3]) reg_read = dreg[n[2:0]]; ...
+endfunction
+assign regn_val = reg_read(regn);
+```
+
+A function that reads module state, called from a continuous assignment, is
+re-evaluated when its ARGUMENTS change -- not when the state it reads does.
+MOVEM's first register is number zero and the index never changes from the value
+it starts at, so the read of D0 was never re-evaluated and kept the value it had
+at time zero. Every other register came out right because its index moved.
+
+**Fixed by:** writing the mux out twice, in `always_comb`.
+
+**What makes this one worth reading twice:** the rule was already in
+`doc/coding-standard.md`, written before any of this existed, with the reason
+given. It is row two of the table. Having the rule written down did not stop it
+being broken, and what caught it was a program -- not the lint, not the sweep,
+and not the person who wrote the rule.
+
+---
+
+## M7 · The harness lost an instruction boundary to its own settle edge
+
+**What:** not a defect in the design. `step_one` waits for the microword that
+ends an instruction, and then waited one more falling edge so that the
+non-blocking writes would have landed before anything was compared.
+
+A one-microword instruction following another retires on exactly that edge. So
+the settle edge landed ON the next boundary, and the next call to `step_one`
+stepped past it -- the core ran one instruction more than the comparison
+thought, and every register afterwards was compared against the wrong entry.
+
+It took 1652 instructions of a real program to line up: a `MOVEQ` immediately
+after a `MOVE`, in the middle of a loop that had already run correctly.
+
+**Fixed by:** waiting for the RISING edge that commits the writes, and a quarter
+period, and no further.
+
+**Stops it coming back:** the reasoning is in the comment above the task, which
+is where someone tempted to add another edge will read it.
+
+---
+
+## M7 · The decimal adjust was done digit by digit, and cannot be
+
+**What:** ABCD, SBCD and NBCD were written the way the operation is usually
+explained -- correct the low digit, carry into the high one, correct that:
+
+```systemverilog
+lo = a[3:0] + b[3:0] + X;
+if (lo > 9) begin lo = lo + 6; carry = 1; end
+hi = a[7:4] + b[7:4] + carry;
+```
+
+It is right for every valid operand and wrong as soon as a digit is greater than
+nine. A low-digit sum of twenty-seven plus six is thirty-three -- **two** tens
+into the digit above -- and a one-bit carry cannot say so.
+
+`ABCD` of $3E and $4C with X set: this core gave $81 where the whole-byte
+correction gives $91.
+
+**Fixed by:** doing the arithmetic on the byte and correcting the byte:
+
+```
+    add:       sum = a + b + X;  if the low digits passed nine, add six;
+               then if the byte passed $99, subtract $A0 and carry.
+```
+
+which is the textbook decimal adjust and is what "store the result in
+binary-coded decimal form" means.
+
+**Worth saying:** the digit-by-digit form is not a simplification of the
+whole-byte one, it is a different function -- and the two agree on exactly the
+inputs the instruction is defined for. `make cosim` ran ABCD and SBCD with valid
+digits and passed; it was the sweep, throwing random bytes at them, that found
+it. Which is the argument for having both.
+
+---
+
+## M7 · The two sides of the sweep filled memory differently
+
+**What:** with the decimal instructions restricted to decimal operands, half the
+sweep still failed -- and the arithmetic was right. Working one case by hand:
+the destination byte should have been $80 and the source $70, which gives $10,
+and the core produced $04 from operands it had been given and the oracle had
+not.
+
+Both sides compute the memory fill independently from the test index -- that is
+the point, so that neither has to send the other a copy. The reduction to
+decimal digits was added to both, and one of them was wrong:
+
+```c
+out |= ((((b >> 4) % 10u) << 4) | (b % 10u)) << (i * 8);
+```
+
+`b % 10` takes the whole BYTE modulo ten, not the low nibble. $7C became $74 in
+the generator and $72 in the testbench, and every byte with a low digit above
+nine differed.
+
+**Found by:** running the two conversions side by side on the same input, in
+eleven lines of iverilog and eleven of Python, rather than reading them again.
+
+**The general point:** any value computed independently on both sides of an
+oracle comparison is a second implementation, and it can disagree. The fill was
+chosen to be two multiplications and an exclusive or precisely because that is
+hard to get wrong in two languages; the moment something less trivial was added
+to it, it was got wrong.
+
+---
+
+## M7 · Moving the vector table switched off the check that found traps
+
+**What:** the sweep drops any test whose oracle run took an exception, because
+exception processing is M8. It recognises one by the addresses the instruction
+touched: anything inside the vector table is a vector fetch and nothing else.
+
+Establishing the control registers per test -- which the MOVEC vectors needed,
+because UM 6.1.1 does not say what reset leaves in them -- set VBR to `$A000`.
+The vector table moved with it, the check was still looking below `$400`, and
+**nothing was dropped any more**:
+
+```
+  vectors: 7806 tests, 0 dropped     (it had been 82)
+```
+
+CHK's trapping cases came straight back in, and eighty of them hung the core on
+the microword that stands in for the exception until M8 builds it.
+
+**Fixed by:** two things, because one of them would have been enough and the
+other is what stops it recurring.
+
+VBR is set to **zero**, deliberately: UM 6.1.1 step 4 initialises it to zero, so
+it is the one control register that does not need establishing. And the check
+now reads
+
+```c
+if (acc[j].addr >= t->ivbr && acc[j].addr < t->ivbr + 0x400) trapped = 1;
+```
+
+against the test's own VBR, so that moving the table cannot silently switch it
+off again.
+
+**What made it visible:** the generator prints how many tests it dropped, on
+every run. A count that had been 82 for a dozen runs became 0, and that is a
+louder signal than eighty failures -- the failures said CHK was broken, and the
+count said the test was.
+
+---
+
+## M7 · Three front-ends accepted what three refused
+
+**What:** everything passed -- the sweep, the programs, `make check` -- and then
+Quartus, Questa and Vivado all refused the same file for two reasons that
+iverilog, Verilator and yosys had not mentioned.
+
+**Used before declared.** The datapath's source multiplexers read the register
+MOVEM walks, the control registers, the multiplier and the divider, and every
+one of those is produced further down the file. Quartus makes an implicit net
+of each and builds a netlist that does not match the source, with a zero exit
+code; Vivado's `[Synth 8-6901]` says so; Questa refuses outright with
+`Undefined variable`. Fixed by declaring them above the multiplexers and
+driving them where they belong.
+
+**A package-scoped name in a port connection**, again:
+
+```systemverilog
+.x_in (sr_q[rd68021_pkg::SR_X])
+```
+
+Quartus reads `SR_X` as an undeclared identifier and creates an implicit net for
+it. This is the *same trap* that took `` `UF(EAPC) `` on `u_eadec` in M6, which
+was found then, written into `doc/coding-standard.md` then, and broken again in
+the same file two milestones later.
+
+**What is worth taking from it:** two of the six front-ends are not there to
+check portability to a part anyone is targeting. Quartus is there because it
+disagrees with the others about something that has **no diagnostic in them at
+all**, and it has now earned that place three times. The grep that finds this
+one is a line long:
+
+```sh
+grep -nE "\.[a-z_0-9]+ *\([^)]*::" rtl/*.sv
+```
+
+and it is in the coding standard beside the rule.

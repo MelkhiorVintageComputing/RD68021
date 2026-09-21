@@ -116,6 +116,9 @@ INTERNAL = [
     (0x08,  4,  4, 'notrace',    1,  'the trace pending for this instruction was cancelled'),
     (0x08,  5,  5, 'rr_pending', 1,  'a rerun flag out of the frame is still to be applied'),
     (0x08,  6,  6, 'eapc',       1,  'the base of the effective address under way is the PC'),
+    (0x08,  8,  7, 'opsize',     2,  'the operand size the dispatching microword resolved'),
+    (0x08,  9,  9, 'eadst',      1,  'the effective address under way is a MOVE destination'),
+    (0x08, 14, 10, 'regcnt',     5,  "MOVEM's register counter"),
     (0x14, 15,  0, 'upc',       16,  'the micro-address to resume at'),
     (0x16, 15,  0, 'stage_d',   16,  'the instruction word being decoded'),
     (0x1C, 31,  0, 't0',        32,  'working register'),
@@ -174,6 +177,9 @@ CHECKPOINT = [
     ('seq', 'notrace',           1, 'notrace',       ''),
     ('seq', 'rr_pending',        1, 'rr_pending',    ''),
     ('seq', 'eapc',              1, 'eapc',          'seq = EADEC latches it; EABASE reads it'),
+    ('seq', 'size_q',            2, 'opsize',        'seq = EAMODE latches it; the shared EA routines read it'),
+    ('seq', 'eadst_q',           1, 'eadst',         'likewise, and rsel reads it'),
+    ('seq', 'cnt_q',             5, 'regcnt',        'MOVEM is restarted where it stopped'),
     ('seq', 'sr',               16, 'sr',            'frame +$00'),
 ]
 

@@ -212,6 +212,21 @@ A function whose result depends only on its arguments is still fine anywhere.
 | all of them | a testbench that samples an instruction boundary just after the rising edge misses the end of a bus-cycle microword, because the bus unit's output stage is negedge-clocked and the acknowledge only settles in the second half of the clock | sample instruction boundaries on the *falling* edge |
 | all of them | a testbench that *releases reset* on a rising edge races the design, because every register takes its reset value on that same edge and both are non-blocking assignments at the same time step. The tell is that adding a `$display` to the harness changes the result | a testbench changes an input the design samples on a rising edge only on a **falling** edge. Measured here: the first vector of a sweep behaved differently from the same vector replayed later |
 | Quartus | a macro expanding to a **package-scoped part-select** (`` `UF(EAPC) `` → `pkg::U_EAPC_LSB +: pkg::U_EAPC_W`) is fine in a procedural block and **not** in a port connection: Quartus reads both scoped names as undeclared identifiers, creates implicit nets and builds a netlist that does not match the source, exit code 0 | bind it to a named signal and pass that. Measured here on `u_eadec.pc_base`; iverilog, Verilator, yosys, Vivado and Questa all accepted it |
+| yosys | a variable **declared inside an `always_ff`** and assigned with `=` reads like a temporary and is not one: yosys gives it storage, and the flip-flops it makes have no reset because nothing in the reset branch mentions them | declare it outside and drive it with a continuous assignment. Measured here on a four-bit register select inside MOVEM's destination arm: `make lint` passed and `make audit` reported four flip-flops initialising outside reset |
+| Quartus, Vivado, Questa | a signal **used before it is declared** inside a module. iverilog, Verilator and yosys all accept it; Quartus creates an implicit net and builds a netlist that does not match the source, Vivado's `[Synth 8-6901]` says so, and Questa refuses with `Undefined variable` | declare every signal above its first use. Measured here on six signals the datapath's source multiplexers read from units written further down the file: three front-ends green, three refusing |
+
+Two of these have a grep, and the greps are worth running before a vendor run
+rather than after one:
+
+```sh
+# a package-scoped name inside a port connection -- Quartus makes an implicit
+# net of it and says so only in a warning
+grep -nE "\.[a-z_0-9]+ *\([^)]*::" rtl/*.sv
+
+# a comment line that begins with the linter's own name, which it reads as a
+# directive
+grep -nE "^\s*// *Verilator" rtl/*.sv sim/**/*.sv
+```
 
 Add to this table whenever a tool surprises you. It is cheaper than rediscovering it.
 

@@ -455,7 +455,52 @@ endmodule""")
     return '\n'.join(out) + '\n'
 
 
+def eamode_rom():
+    """The addressing-mode decoder: six bits of stage D in, a micro-address out.
+
+    The same trick as the opcode and extension-word decoders, one level down.
+    Without it every instruction with an effective address needs one opcode
+    pattern per addressing mode -- eighteen of them, times eighty instructions --
+    and the decode table stops being something anyone can read.
+    """
+    ordered = program.MODEPATTERNS
+    disjoint = make_disjoint(ordered)
+    bad = check_disjoint(ordered, disjoint, width=6)
+    if bad:
+        raise SystemExit('assemble: the disjoint addressing-mode table does not '
+                         'agree with the ordered one:\n  ' + '\n  '.join(bad))
+    out = [BANNER]
+    out.append("""// The addressing-mode decoder: the mode and register fields of the instruction
+// word in, the micro-address of the routine that computes that address out.
+//
+// %d ordered patterns became %d disjoint ones.
+
+module rd68021_eamode_rom (
+    input  logic  [5:0] mr,
+    output logic [%d:0] entry,
+    output logic        illegal
+);
+
+  always_comb begin
+    illegal = 1'b0;
+    casez (mr)
+""" % (len(ordered), len(disjoint), isa.UADDR_BITS - 1))
+    for p, t, m in disjoint:
+        out.append("      6'b%s: entry = %d'd%d;   // %s"
+                   % (p.replace('-', '?'), isa.UADDR_BITS, program.entry(t), m))
+    out.append("""      default: begin
+        entry   = rd68021_ucode_pkg::ENTRY_ILLEGAL;
+        illegal = 1'b1;
+      end
+    endcase
+  end
+
+endmodule""")
+    return '\n'.join(out) + '\n'
+
+
 OUTPUTS = {
+    os.path.join(GEN, 'rd68021_eamode_rom.sv'): eamode_rom,
     os.path.join(GEN, 'rd68021_frame_pkg.sv'): frame_pkg,
     os.path.join(GEN, 'rd68021_eadec_rom.sv'): eadec_rom,
     os.path.join(GEN, 'rd68021_ucode_pkg.sv'): ucode_pkg,

@@ -36,6 +36,8 @@ GENPKG  := $(wildcard rtl/gen/*_pkg.sv)
 GENSRC  := $(filter-out $(GENPKG),$(wildcard rtl/gen/*.sv))
 SRCS := rtl/rd68021_sync.sv \
         rtl/rd68021_dedge_ff.sv \
+        rtl/rd68021_shifter.sv \
+        rtl/rd68021_divider.sv \
         rtl/rd68021_biu.sv \
         rtl/rd68021_ifu.sv \
         rtl/rd68021_seq.sv \
@@ -146,7 +148,12 @@ ucode-check: dirs
 # ---------------------------------------------------------------------------
 # core_ea_tb is not here: it needs a vector file that `make ea` generates from
 # Musashi first, and it runs for minutes. It has its own target.
-TBS := $(filter-out core_ea_tb,$(patsubst sim/tb/%.sv,%,$(wildcard sim/tb/*_tb.sv)))
+# The instruction groups whose microcode exists. `make vectors` sweeps these;
+# adding a family to tools/ucode/program.py adds its name here, and that is how
+# the sweep grows with the milestone instead of being switched on at the end.
+VECGROUPS := moveq
+
+TBS := $(filter-out core_ea_tb core_vec_tb core_cosim_tb,$(patsubst sim/tb/%.sv,%,$(wildcard sim/tb/*_tb.sv)))
 
 sim: dirs
 	@ok=1; for tb in $(TBS); do \
@@ -212,6 +219,121 @@ ea: dirs $(MBUILD)/musashi_ea
 	 grep -E '^  FAIL' $(BUILD)/core_ea_tb.log | head -20; \
 	 grep -q '^PASS' $(BUILD)/core_ea_tb.log || { tail -3 $(BUILD)/core_ea_tb.log; exit 1; }
 	@tail -2 $(BUILD)/core_ea_tb.log
+
+$(MBUILD)/vectors_gen: tools/vectors/gen.c $(MBUILD)/m68kops.c \
+                       tools/cosim/m68kconf.h
+	@cc $(MCFLAGS) -I$(MBUILD) -I$(MUSASHI)/softfloat -o $@ $< \
+	    $(MBUILD)/m68kops.c $(MUSASHI)/m68kcpu.c $(MUSASHI)/m68kdasm.c \
+	    $(MUSASHI)/softfloat/softfloat.c -lm \
+	    > $(BUILD)/vectors.log 2>&1 \
+	  || { tail -20 $(BUILD)/vectors.log; exit 1; }
+
+# ---------------------------------------------------------------------------
+# The per-opcode sweep
+#
+#   make vectors OP=alu        one group
+#   make vectors               every group the microcode has reached
+#   make vectors-all           every group there is, including the unwritten
+#
+# OP defaults to the groups M7 has implemented so far rather than to `all`, so
+# that `make vectors` is a gate that can stay green while the milestone is being
+# built. `vectors-all` is the milestone's own criterion and is expected to fail
+# until it closes.
+# ---------------------------------------------------------------------------
+OP ?= $(VECGROUPS)
+
+vectors: dirs $(MBUILD)/vectors_gen
+	@$(MBUILD)/vectors_gen $(OP) > $(BUILD)/vectors.hex 2> $(BUILD)/vectors-gen.log \
+	  || { cat $(BUILD)/vectors-gen.log; exit 1; }
+	@sed 's/^/  /' $(BUILD)/vectors-gen.log
+	@iverilog $(IVFLAGS) -I sim/tb -o $(BUILD)/core_vec_tb.vvp -s core_vec_tb \
+	    $(RTL) sim/models/*.sv sim/tb/core_vec_tb.sv \
+	    > $(BUILD)/core_vec_tb.build.log 2>&1 \
+	  || { grep -v $(NOTES) $(BUILD)/core_vec_tb.build.log; exit 1; }
+	@vvp $(BUILD)/core_vec_tb.vvp +vec=$(BUILD)/vectors.hex \
+	    > $(BUILD)/core_vec_tb.log 2>&1; \
+	 grep -E '^  FAIL' $(BUILD)/core_vec_tb.log | head -20; \
+	 grep -q '^PASS' $(BUILD)/core_vec_tb.log || { tail -3 $(BUILD)/core_vec_tb.log; exit 1; }
+	@tail -2 $(BUILD)/core_vec_tb.log
+
+vectors-all: dirs
+	@$(MAKE) --no-print-directory vectors OP=all
+
+$(MBUILD)/musashi_trace: tools/cosim/musashi_trace.c $(MBUILD)/m68kops.c \
+                        tools/cosim/m68kconf.h
+	@cc $(MCFLAGS) -I$(MBUILD) -I$(MUSASHI)/softfloat -o $@ $< \
+	    $(MBUILD)/m68kops.c $(MUSASHI)/m68kcpu.c $(MUSASHI)/m68kdasm.c \
+	    $(MUSASHI)/softfloat/softfloat.c -lm \
+	    > $(BUILD)/trace.log 2>&1 \
+	  || { tail -20 $(BUILD)/trace.log; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Real programs, against Musashi at every instruction boundary
+#
+# The per-opcode sweep runs one instruction from a state nobody reached by
+# executing anything. This runs a program: the instruction mix and the register
+# allocation are the compiler's, and every instruction starts where the one
+# before it left off.
+#
+# STEPS caps the trace. A program that runs for a million instructions is a fine
+# thing to have and a slow gate, so `cosim` takes the first STEPS of it and
+# `cosim-long` takes the lot.
+# ---------------------------------------------------------------------------
+CROSS   := m68k-linux-gnu-
+PROGS   := arith corners
+STEPS   ?= 20000
+CFLAGS68 := -O2 -fno-builtin -fomit-frame-pointer -nostdlib -ffreestanding \
+            -Wall -Wextra
+
+$(BUILD)/programs/%.o: sim/programs/%.c | dirs
+	@mkdir -p $(BUILD)/programs
+	@$(CROSS)gcc -c $(CFLAGS68) -o $@ $<
+
+$(BUILD)/programs/%.o: sim/programs/%.S | dirs
+	@mkdir -p $(BUILD)/programs
+	@$(CROSS)gcc -c -o $@ $<
+
+.PRECIOUS: $(BUILD)/programs/%.o $(BUILD)/programs/%.elf \
+           $(BUILD)/programs/%.bin $(BUILD)/programs/%.hex \
+           $(BUILD)/programs/%.trc
+
+$(BUILD)/programs/%.elf: $(BUILD)/programs/%.o $(BUILD)/programs/crt0.o \
+                         sim/programs/flat.ld
+	@$(CROSS)gcc -nostdlib -nostartfiles -T sim/programs/flat.ld -o $@ \
+	    $(BUILD)/programs/crt0.o $< -lgcc 2> $(BUILD)/programs/$*.link.log \
+	  || { cat $(BUILD)/programs/$*.link.log; exit 1; }
+
+$(BUILD)/programs/%.bin: $(BUILD)/programs/%.elf
+	@$(CROSS)objcopy -O binary $< $@
+
+$(BUILD)/programs/%.hex: $(BUILD)/programs/%.elf
+	@$(CROSS)objcopy -O verilog --verilog-data-width=1 $< $@
+
+$(BUILD)/programs/%.trc: $(BUILD)/programs/%.bin $(MBUILD)/musashi_trace
+	@$(MBUILD)/musashi_trace $< $(STEPS) > $@ 2> $(BUILD)/programs/$*.trace.log \
+	  || { cat $(BUILD)/programs/$*.trace.log; exit 1; }
+	@sed 's/^/  /' $(BUILD)/programs/$*.trace.log
+
+cosim: dirs $(patsubst %,$(BUILD)/programs/%.hex,$(PROGS)) \
+             $(patsubst %,$(BUILD)/programs/%.trc,$(PROGS))
+	@iverilog $(IVFLAGS) -I sim/tb -o $(BUILD)/core_cosim_tb.vvp -s core_cosim_tb \
+	    $(RTL) sim/models/*.sv sim/tb/core_cosim_tb.sv \
+	    > $(BUILD)/core_cosim_tb.build.log 2>&1 \
+	  || { grep -v $(NOTES) $(BUILD)/core_cosim_tb.build.log; exit 1; }
+	@ok=1; for p in $(PROGS); do \
+	  vvp $(BUILD)/core_cosim_tb.vvp +image=$(BUILD)/programs/$$p.hex \
+	      +trace=$(BUILD)/programs/$$p.trc > $(BUILD)/cosim-$$p.log 2>&1; \
+	  grep -E '^  FAIL' $(BUILD)/cosim-$$p.log | head -5; \
+	  if grep -q '^PASS' $(BUILD)/cosim-$$p.log; then \
+	    echo "  PASS: $$p -- $$(sed -n 's/^core_cosim_tb: \([0-9]*\) instructions.*/\1/p' $(BUILD)/cosim-$$p.log) instructions"; \
+	  else \
+	    echo "  FAIL: $$p"; tail -3 $(BUILD)/cosim-$$p.log; ok=0; \
+	  fi; \
+	done; \
+	test $$ok -eq 1 && echo "PASS: cosim"
+
+cosim-long: dirs
+	@$(MAKE) --no-print-directory cosim STEPS=4000000
 
 # ---------------------------------------------------------------------------
 # AC timing
