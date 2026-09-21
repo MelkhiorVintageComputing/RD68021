@@ -523,6 +523,19 @@ def main():
             print('  %s' % b)
         return 1
 
+    # And against the RTL. doc/checkpoint.md rule 3 -- every register an
+    # instruction accumulates has a home in the frame or it does not exist -- is
+    # about REGISTERS, so it is checked against the registers rather than
+    # against the microcode's destinations. The old check read the destinations
+    # and could not see link_q, eapc_q, size_q, eadst_q or cnt_q, all of which
+    # are per-instruction state and all of which got past it.
+    bad = frames.check_rtl(os.path.join(ROOT, 'rtl'))
+    if bad:
+        print('FAIL: the checkpoint set does not account for the RTL')
+        for b in bad:
+            print('  %s' % b)
+        return 1
+
     stale = []
     for path, fn in sorted(OUTPUTS.items()):
         text = fn()
@@ -547,8 +560,11 @@ def main():
             return 1
         have, use, spare = frames.budget()
         print('  ucode-check: %d microwords, %d opcode patterns, %d of %d '
-              'checkpoint bits used' % (len(program.WORDS),
-                                        len(program.PATTERNS), use, have))
+              'checkpoint bits used, %d registers accounted for, %d pending'
+              % (len(program.WORDS), len(program.PATTERNS), use, have,
+                 sum(len(v) for v in
+                     frames.rtl_registers(os.path.join(ROOT, 'rtl')).values()),
+                 len(frames.PENDING)))
     else:
         have, use, spare = frames.budget()
         _lay, uww = isa.layout()

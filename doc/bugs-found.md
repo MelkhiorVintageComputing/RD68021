@@ -1132,3 +1132,46 @@ grep -nE "\.[a-z_0-9]+ *\([^)]*::" rtl/*.sv
 ```
 
 and it is in the coding standard beside the rule.
+
+---
+
+## M8 · The checkpoint check was reading the wrong thing
+
+**What:** not a bug in the design -- a bug in the check that exists to prevent a
+class of bug, which is worse, because it had been reporting success.
+
+`doc/checkpoint.md` rule 3 is "every register an instruction accumulates has a
+home here or it does not exist". The check enforcing it walked the MICROCODE and
+verified that every `dst` a microword uses has a frame slot. A register the
+microcode never names as a destination is invisible to that, and five of them
+got past it across M6 and M7:
+
+| | how it is written | what it is |
+|---|---|---|
+| `link_q` | by the microword's `call` bit | the return address of an effective-address routine |
+| `eapc_q` | at a `seq = EADEC` dispatch | whether the base is the program counter |
+| `size_q` | at a `seq = EAMODE` dispatch | the operand size the shared routines step by |
+| `eadst_q` | likewise | which field the address came out of |
+| `cnt_q` | by the microword's `cnt` field | MOVEM's register counter |
+
+Each was found by an unrelated investigation. `link_q` would have surfaced in M9
+as a wild jump on a demand-paged access: a fault inside an effective-address
+subroutine restores `upc` from the frame and then returns through a link
+register holding whatever the handler last put there. Reproducible only under a
+fault, and nothing before M9 would have shown it.
+
+**Fixed by:** `frames.check_rtl`, which reads every clocked process in `rtl/`,
+collects the signal each non-blocking assignment writes, and insists that every
+one is either in the frozen set or in `EXEMPT` with a reason. Ninety-one
+registers, all accounted for; eight rows are `PENDING` with the milestone that
+builds them.
+
+Both directions are checked, and both were negative-tested before this was
+believed: adding a plausible `trace_pending_q` to the sequencer fails the build,
+and renaming `link_q` fails it twice -- the new name unaccounted for and the old
+one missing.
+
+**The lesson is about the shape of the check and not about the registers.** The
+rule is stated in terms of registers. The check was written in terms of the
+microcode, because that was what the assembler already had in front of it, and
+it silently answered a different question for two milestones.

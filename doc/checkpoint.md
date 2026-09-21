@@ -201,6 +201,32 @@ This is a cycle-count divergence, measured and justified in
 
 ---
 
+## How the rules are enforced
+
+Rule 3 -- *every register an instruction accumulates has a home here or it does
+not exist* -- is about **registers**, so it is checked against the registers.
+`tools/ucode/frames.py`'s `check_rtl` reads every clocked process in `rtl/`,
+collects the signal each one writes, and insists that every one is either in the
+frozen set above or in `EXEMPT` with a reason. `make ucode` runs it and fails.
+
+It is checked in both directions. A register added without a thought about what
+a fault does to it is a build failure; so is a register renamed in the RTL and
+not in the table, which shows up twice -- the new name unaccounted for and the
+old one missing.
+
+`PENDING` holds the rows whose register does not exist yet, each with the
+milestone that builds it, so that this table can describe the finished design
+while the check still says which parts of it are not there. A pending register
+that arrives without being taken off the list is also a failure.
+
+**This replaced a check that read the microcode's DESTINATIONS.** That one could
+not see a register the microcode never names as a destination, and five got past
+it: `link_q`, `eapc_q`, `size_q`, `eadst_q` and `cnt_q`, every one of them
+per-instruction state. The first would have surfaced in M9 as a wild jump on a
+demand-paged access -- a fault inside an effective-address subroutine restores
+`upc` from the frame and then returns through a link register holding whatever
+the handler last put there.
+
 ## The rules this imposes on the microcode
 
 Seven, and the microcode is written to them rather than audited against them
