@@ -64,7 +64,7 @@ package rd68021_frame_pkg;
   // ==========================================================================
   // This design's own state, in the long frame's internal words
   //
-  // 492 bits available, 304 used, 11 words spare. Recompute this whenever
+  // 492 bits available, 340 used, 9 words spare. Recompute this whenever
   // something is added: doc/checkpoint.md carries the same table, printed from
   // the same source.
   // ==========================================================================
@@ -89,6 +89,18 @@ package rd68021_frame_pkg;
   localparam int OFF_I_EADST     = 'h08;   //  1 bits, the effective address under way is a MOVE destination
   localparam int I_EADST_HI      = 9;
   localparam int I_EADST_LO      = 9;
+  localparam int OFF_I_TRMODE    = 'h36;   //  2 bits, the trace mode this instruction began with
+  localparam int I_TRMODE_HI     = 2;
+  localparam int I_TRMODE_LO     = 1;
+  localparam int OFF_I_FLOW      = 'h36;   //  1 bits, this instruction has changed the flow
+  localparam int I_FLOW_HI       = 3;
+  localparam int I_FLOW_LO       = 3;
+  localparam int OFF_I_PC_KEPT   = 'h36;   //  1 bits, pc_prev was taken at a flush, not at the decode
+  localparam int I_PC_KEPT_HI    = 4;
+  localparam int I_PC_KEPT_LO    = 4;
+  localparam int OFF_I_PC_PREV   = 'h46;   // 32 bits, the address of the instruction before this one
+  localparam int I_PC_PREV_HI    = 31;
+  localparam int I_PC_PREV_LO    = 0;
   localparam int OFF_I_REGCNT    = 'h08;   //  5 bits, MOVEM's register counter
   localparam int I_REGCNT_HI     = 14;
   localparam int I_REGCNT_LO     = 10;

@@ -151,7 +151,11 @@ ucode-check: dirs
 # The instruction groups whose microcode exists. `make vectors` sweeps these;
 # adding a family to tools/ucode/program.py adds its name here, and that is how
 # the sweep grows with the milestone instead of being switched on at the end.
-VECGROUPS := moveq
+#
+# Every group the generator knows how to build, since M8. `make vectors-all` is
+# the same thing named for the milestone criterion, and the two stay the same
+# until M10 adds instructions the generator has no group for yet.
+VECGROUPS := all
 
 TBS := $(filter-out core_ea_tb core_vec_tb core_cosim_tb,$(patsubst sim/tb/%.sv,%,$(wildcard sim/tb/*_tb.sv)))
 

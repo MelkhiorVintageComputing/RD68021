@@ -307,9 +307,14 @@ package rd68021_ucode_pkg;
                        % (w - 1, name.upper(), k, w, v))
         out.append('')
     out.append('  // Named entry points.')
-    for lbl in ('reset', 'illegal'):
+    # The entry points hardware reaches without the microcode asking: reset,
+    # the decoder's fall-through, and the trace exception, which the sequencer
+    # puts in front of the decode arm at every instruction boundary.
+    for lbl in ('reset', 'illegal', 'exc_trace', 'exc_irq'):
         out.append('  localparam logic [UADDR-1:0] ENTRY_%s = %d\'d%d;'
-                   % (lbl.upper(), isa.UADDR_BITS, program.entry(lbl)))
+                   % (lbl.upper().replace('EXC_', '').replace('IRQ', 'IRQ'),
+                      isa.UADDR_BITS,
+                      program.entry(lbl)))
     out.append("""
 endpackage
 
@@ -499,6 +504,23 @@ endmodule""")
     return '\n'.join(out) + '\n'
 
 
+def checkpoint_doc():
+    """doc/checkpoint.md with its tables replaced by the generated ones.
+
+    The document is written by hand and its three tables are not: they are the
+    frozen set, and a copy of them that can drift is worse than no copy. It had
+    drifted -- the instruction pipe's registers were renamed and the document
+    still named the old ones -- so the span between the two headings is spliced
+    in here and `make ucode-check` fails when it does not match.
+    """
+    path = os.path.join(ROOT, 'doc', 'checkpoint.md')
+    doc = open(path).read()
+    gen = doc_tables()
+    first, last = '### The frames', '### Not checkpointed, and why'
+    return doc[:doc.index(first)] + gen[gen.index(first):gen.index(last)] \
+        + doc[doc.index(last):]
+
+
 OUTPUTS = {
     os.path.join(GEN, 'rd68021_eamode_rom.sv'): eamode_rom,
     os.path.join(GEN, 'rd68021_frame_pkg.sv'): frame_pkg,
@@ -507,7 +529,46 @@ OUTPUTS = {
     os.path.join(GEN, 'rd68021_ucode_rom.sv'): ucode_rom,
     os.path.join(GEN, 'rd68021_decode_rom.sv'): decode_rom,
     os.path.join(ROOT, 'build', 'checkpoint-tables.md'): doc_tables,
+    os.path.join(ROOT, 'doc', 'checkpoint.md'): checkpoint_doc,
 }
+
+
+# --------------------------------------------------------------------------
+# A condition may not read the register the same microword writes
+#
+# A condition is evaluated against the register as it STANDS. The microword's
+# own write is a non-blocking assignment that lands on the edge the microword
+# retires -- the same edge the condition steers -- so a microword that writes a
+# register and branches on it branches on the value BEFORE it.
+#
+# RTE found it. `dst = XW, cond = FMT1` on one microword tested the format word
+# of the frame the PREVIOUS RTE had unwound, so a throwaway frame fell through
+# to the four-word test, failed it, and became a format error. Nothing else
+# noticed, because the FMT2 and FMT0 tests sit on later microwords and read the
+# register correctly.
+#
+# The same shape is deliberate for the conditions that read the ALU RESULT --
+# RESNEG, GTZ, RESM1, CAS_EQ -- which exist precisely to test what the current
+# microword computes, so they are not in this table.
+# --------------------------------------------------------------------------
+COND_READS = {
+    'FMT0': 'XW', 'FMT1': 'XW', 'FMT2': 'XW', 'XW10': 'XW',
+    'MASK0': 'T0',
+    'USER': 'SR', 'MASTER': 'SR',
+}
+
+
+def check_cond_dst():
+    bad = []
+    for i, (f, c) in enumerate(program.WORDS):
+        if f.get('seq') != 'COND':
+            continue
+        reads = COND_READS.get(f.get('cond'))
+        if reads is not None and f.get('dst') == reads:
+            bad.append('microword %d writes %s and branches on %s, which reads '
+                       'the value it is replacing -- %s'
+                       % (i, reads, f.get('cond'), c))
+    return bad
 
 
 def main():
@@ -516,7 +577,7 @@ def main():
                     help='fail if the checked-in files are stale')
     args = ap.parse_args()
 
-    bad = frames.check() + isa.check()
+    bad = frames.check() + isa.check() + check_cond_dst()
     if bad:
         print('FAIL: the tables are not self-consistent')
         for b in bad:

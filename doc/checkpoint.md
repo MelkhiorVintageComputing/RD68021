@@ -132,6 +132,13 @@ This is a cycle-count divergence, measured and justified in
 | `+$08` | 4 | `notrace` | the trace pending for this instruction was cancelled |
 | `+$08` | 5 | `rr_pending` | a rerun flag out of the frame is still to be applied |
 | `+$08` | 6 | `eapc` | the base of the effective address under way is the PC |
+| `+$08` | 8:7 | `opsize` | the operand size the dispatching microword resolved |
+| `+$08` | 9 | `eadst` | the effective address under way is a MOVE destination |
+| `+$36` | 2:1 | `trmode` | the trace mode this instruction began with |
+| `+$36` | 3 | `flow` | this instruction has changed the flow |
+| `+$36` | 4 | `pc_kept` | pc_prev was taken at a flush, not at the decode |
+| `+$46` | 31:0 | `pc_prev` | the address of the instruction before this one |
+| `+$08` | 14:10 | `regcnt` | MOVEM's register counter |
 | `+$14` | 15:0 | `upc` | the micro-address to resume at |
 | `+$16` | 15:0 | `stage_d` | the instruction word being decoded |
 | `+$1C` | 31:0 | `t0` | working register |
@@ -145,49 +152,56 @@ This is a cycle-count divergence, measured and justified in
 | `+$40` | 31:0 | `pc_fetch` | the next long word the pipe will fetch |
 | `+$44` | 15:0 | `link` | the return address of the subroutine under way |
 
-**492 bits available, 296 used, 11 words spare** (`+$46`, `+$48`, `+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
+**492 bits available, 340 used, 9 words spare** (`+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
 
 ### The frozen set
 
 | Unit | Register | Bits | Lands in | |
 |---|---|--:|---|---|
-| `ifu` | `stg_d` | 16 | `stage_d` |  |
-| `ifu` | `stg_c` | 16 | `stage_c` | frame +$0C |
-| `ifu` | `stg_b` | 16 | `stage_b` | frame +$0E |
-| `ifu` | `stg_c_fault` | 1 | `ssw` | SSW FC |
-| `ifu` | `stg_b_fault` | 1 | `ssw` | SSW FB |
+| `ifu` | `d_q` | 16 | `stage_d` |  |
+| `ifu` | `c_q` | 16 | `stage_c` | frame +$0C |
+| `ifu` | `b_q` | 16 | `stage_b` | frame +$0E |
+| `ifu` | `c_f_q` | 1 | `ssw` | SSW FC |
+| `ifu` | `b_f_q` | 1 | `ssw` | SSW FB |
 | `ifu` | `stg_c_rerun` | 1 | `ssw` | SSW RC |
 | `ifu` | `stg_b_rerun` | 1 | `ssw` | SSW RB |
-| `ifu` | `stg_d_fault` | 1 | `stage_d_f` |  |
-| `ifu` | `pc_d` | 32 | `pc` | the frame's own program counter |
-| `ifu` | `stg_b_addr` | 32 | `stage_b_addr` | long frame +$24; short frame derives it |
-| `ifu` | `pc_fetch` | 32 | `pc_fetch` |  |
-| `ifu` | `chr` | 32 | `derived` | not saved: invalidated by RTE, re-fetched |
-| `ifu` | `chr_addr` | 30 | `derived` | likewise |
-| `ifu` | `chr_valid` | 1 | `derived` | likewise -- always restored as invalid |
-| `ifu` | `chr_fault` | 1 | `derived` | likewise |
-| `biu` | `flt_addr` | 32 | `dfa` | frame +$10 |
-| `biu` | `flt_dob` | 32 | `dob` | frame +$18 |
+| `ifu` | `d_f_q` | 1 | `stage_d_f` |  |
+| `ifu` | `pc_d_q` | 32 | `pc` | the frame's own program counter |
+| `ifu` | `fill_q` | 32 | `stage_b_addr` | long frame +$24; short frame derives it. The same register as pc_fetch: stage B is two before the fill point. |
+| `ifu` | `fill_q` | 32 | `pc_fetch` |  |
+| `ifu` | `chr_q` | 32 | `derived` | not saved: invalidated by RTE, re-fetched |
+| `ifu` | `chr_addr_q` | 30 | `derived` | likewise |
+| `ifu` | `chr_v_q` | 1 | `derived` | likewise -- always restored as invalid |
+| `ifu` | `chr_f_q` | 1 | `derived` | likewise |
+| `biu` | `op_addr` | 32 | `dfa` | frame +$10 |
+| `biu` | `op_data` | 32 | `dob` | frame +$18 |
 | `biu` | `flt_dib` | 32 | `dib` | long frame +$2C |
 | `biu` | `ssw` | 16 | `ssw` | frame +$0A |
-| `biu` | `flt_bytes` | 3 | `bytes` | SIZ cannot encode a five-byte residual |
-| `biu` | `flt_rmc` | 1 | `ssw` | SSW RM |
-| `biu` | `flt_rw` | 1 | `ssw` | SSW RW |
-| `biu` | `flt_fc` | 3 | `ssw` | SSW FC2-FC0 |
+| `biu` | `op_rem` | 3 | `bytes` | SIZ cannot encode a five-byte residual |
+| `biu` | `op_rmc` | 1 | `ssw` | SSW RM |
+| `biu` | `op_rw` | 1 | `ssw` | SSW RW |
+| `biu` | `op_fc` | 3 | `ssw` | SSW FC2-FC0 |
 | `seq` | `upc` | 16 | `upc` |  |
-| `seq` | `link` | 16 | `link` | seq = RET returns here |
-| `seq` | `t0` | 32 | `t0` |  |
-| `seq` | `t1` | 32 | `t1` |  |
-| `seq` | `t2` | 32 | `t2` |  |
-| `seq` | `t3` | 32 | `t3` |  |
-| `seq` | `ea_latch` | 32 | `ea_latch` |  |
+| `seq` | `link_q` | 16 | `link` | seq = RET returns here |
+| `seq` | `t_q` | 32 | `t0` | one array of four in the RTL |
+| `seq` | `t_q` | 32 | `t1` |  |
+| `seq` | `t_q` | 32 | `t2` |  |
+| `seq` | `t_q` | 32 | `t3` |  |
+| `seq` | `ea_q` | 32 | `ea_latch` |  |
 | `seq` | `ea_save` | 32 | `ea_save` |  |
-| `seq` | `xw` | 16 | `xw` |  |
+| `seq` | `xw_q` | 16 | `xw` |  |
 | `seq` | `g0` | 1 | `g0` |  |
-| `seq` | `notrace` | 1 | `notrace` |  |
+| `seq` | `notrace_q` | 1 | `notrace` | the instruction was never executed, so UM 6.1.7 does not trace it |
 | `seq` | `rr_pending` | 1 | `rr_pending` |  |
-| `seq` | `eapc` | 1 | `eapc` | seq = EADEC latches it; EABASE reads it |
-| `seq` | `sr` | 16 | `sr` | frame +$00 |
+| `seq` | `eapc_q` | 1 | `eapc` | seq = EADEC latches it; EABASE reads it |
+| `seq` | `size_q` | 2 | `opsize` | seq = EAMODE latches it; the shared EA routines read it |
+| `seq` | `eadst_q` | 1 | `eadst` | likewise, and rsel reads it |
+| `seq` | `cnt_q` | 5 | `regcnt` | MOVEM is restarted where it stopped |
+| `seq` | `trace_mode_q` | 2 | `trmode` | UM 6.1.7 fixes it at the start of the instruction, so a fault may not lose it |
+| `seq` | `flow_q` | 1 | `flow` | likewise: whether the instruction had changed the flow before it faulted |
+| `seq` | `pc_prev_q` | 32 | `pc_prev` | a trace frame carries it at +$08 |
+| `seq` | `pc_kept_q` | 1 | `pc_kept` | pc_prev_q was taken at a flush, so the decode must not overwrite it |
+| `seq` | `sr_q` | 16 | `sr` | frame +$00 |
 
 ### Not checkpointed, and why
 
@@ -198,6 +212,8 @@ This is a cycle-count divergence, measured and justified in
 | VBR, SFC, DFC | architectural |
 | CACR, CAAR | architectural |
 | the instruction cache | a cache; UM 4.1 caches instructions only, so it is architecturally invisible |
+| `stopped_q` | PRM 6 STOP. A stopped processor runs no bus cycle, so no fault can be recognised while it is stopped, and the interrupt that ends the stopped state clears the bit on the clock it enters exception processing |
+| `rsto_q`, `rsto_cnt`, `rsto_arm_q` | PRM 6 RESET. The instruction asks for no bus cycle and the sequencer is stalled for its 512 clocks, so the pipe stands still too and nothing can fault in the middle of it |
 
 ---
 
@@ -219,6 +235,14 @@ milestone that builds it, so that this table can describe the finished design
 while the check still says which parts of it are not there. A pending register
 that arrives without being taken off the list is also a failure.
 
+The scraper itself had to be fixed once, and in the direction that matters: it
+required the *whole* left-hand side of a line to be an identifier, which kept
+`if (a <= b)` out of the answer but also hid `irq_taking_q`, whose assignment
+shared a line with the `else if (...)` guarding it. An invisible register is an
+unreported one. It now looks at every `<=` on the line and rejects the ones that
+stand inside an expression -- unbalanced parentheses to the left, or a blocking
+assignment outside parentheses on the same line.
+
 **This replaced a check that read the microcode's DESTINATIONS.** That one could
 not see a register the microcode never names as a destination, and five got past
 it: `link_q`, `eapc_q`, `size_q`, `eadst_q` and `cnt_q`, every one of them
@@ -229,7 +253,7 @@ the handler last put there.
 
 ## The rules this imposes on the microcode
 
-Seven, and the microcode is written to them rather than audited against them
+Eight, and the microcode is written to them rather than audited against them
 afterwards.
 
 1. **No state outside the set.** A microword may not stash a value anywhere but
@@ -263,7 +287,17 @@ afterwards.
    "the only bits in the SSW that may be modified are DF, RB, and RC". Our RTE
    honours exactly those three and trusts nothing else it reads back.
 
-7. **Recompute the budget on every addition.** The table above is printed from the
+7. **A condition reads a register as it stands, never as the microword is about
+   to leave it.** The write is a non-blocking assignment landing on the edge the
+   branch steers, so a microword that writes a register and branches on it
+   branches on the value before it. `check_cond_dst` in `assemble.py` fails the
+   build on that pairing, for the conditions that read a register -- the ones
+   that read the ALU *result* are excluded, because testing what the current
+   microword computes is what they exist for. RTE on a throwaway frame is what
+   found it: the format word was latched and tested on one microword, so the
+   test saw the frame the previous RTE had unwound.
+
+8. **Recompute the budget on every addition.** The table above is printed from the
    source, so it cannot be out of date; the discipline is that the number is
    looked at.
 

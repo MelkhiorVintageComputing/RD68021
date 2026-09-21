@@ -120,6 +120,10 @@ INTERNAL = [
     (0x08,  6,  6, 'eapc',       1,  'the base of the effective address under way is the PC'),
     (0x08,  8,  7, 'opsize',     2,  'the operand size the dispatching microword resolved'),
     (0x08,  9,  9, 'eadst',      1,  'the effective address under way is a MOVE destination'),
+    (0x36,  2,  1, 'trmode',     2,  'the trace mode this instruction began with'),
+    (0x36,  3,  3, 'flow',       1,  'this instruction has changed the flow'),
+    (0x36,  4,  4, 'pc_kept',    1,  'pc_prev was taken at a flush, not at the decode'),
+    (0x46, 31,  0, 'pc_prev',   32,  'the address of the instruction before this one'),
     (0x08, 14, 10, 'regcnt',     5,  "MOVEM's register counter"),
     (0x14, 15,  0, 'upc',       16,  'the micro-address to resume at'),
     (0x16, 15,  0, 'stage_d',   16,  'the instruction word being decoded'),
@@ -184,12 +188,16 @@ CHECKPOINT = [
     ('seq', 'ea_save',          32, 'ea_save',       ''),
     ('seq', 'xw_q',             16, 'xw',            ''),
     ('seq', 'g0',                1, 'g0',            ''),
-    ('seq', 'notrace',           1, 'notrace',       ''),
+    ('seq', 'notrace_q',         1, 'notrace',       'the instruction was never executed, so UM 6.1.7 does not trace it'),
     ('seq', 'rr_pending',        1, 'rr_pending',    ''),
     ('seq', 'eapc_q',            1, 'eapc',          'seq = EADEC latches it; EABASE reads it'),
     ('seq', 'size_q',            2, 'opsize',        'seq = EAMODE latches it; the shared EA routines read it'),
     ('seq', 'eadst_q',           1, 'eadst',         'likewise, and rsel reads it'),
     ('seq', 'cnt_q',             5, 'regcnt',        'MOVEM is restarted where it stopped'),
+    ('seq', 'trace_mode_q',      2, 'trmode',        'UM 6.1.7 fixes it at the start of the instruction, so a fault may not lose it'),
+    ('seq', 'flow_q',            1, 'flow',          'likewise: whether the instruction had changed the flow before it faulted'),
+    ('seq', 'pc_prev_q',        32, 'pc_prev',       'a trace frame carries it at +$08'),
+    ('seq', 'pc_kept_q',         1, 'pc_kept',      'pc_prev_q was taken at a flush, so the decode must not overwrite it'),
     ('seq', 'sr_q',             16, 'sr',            'frame +$00'),
 ]
 
@@ -204,7 +212,7 @@ PENDING = {
     ('ifu', 'stg_b_rerun'):    'M9 -- SSW RB',
     ('seq', 'ea_save'):        'M9 -- the copy of the address buffer taken at the fault',
     ('seq', 'g0'):             'M8 -- inside group-0 exception processing',
-    ('seq', 'notrace'):        'M8 -- the trace pending for this instruction was cancelled',
+
     ('seq', 'rr_pending'):     'M9 -- a rerun flag out of the frame is still to be applied',
 }
 
@@ -229,6 +237,22 @@ EXEMPT = [
     # bus cycle and the bus is idle by the time the exception is taken, so none
     # of this is live across one. What IS live is the OPERAND residual, and that
     # is in CHECKPOINT above.
+    # The RESET instruction's 512 clocks. No bus cycle runs while the counter
+    # does -- the instruction asks for none and the sequencer is stalled, so the
+    # pipe stands still too -- and therefore no fault can be taken in the middle
+    # of it. PRM 6 also says the processor state other than the PC is
+    # unaffected, so there is nothing here an exception handler could want.
+    ('biu', 'req_end_q',    'how the last operand ended, as the sequencer is '
+                            'told it. A fault is the one end code that outlives '
+                            'the cycle, and it is in the SSW, which IS '
+                            'checkpointed; the others are consumed by the '
+                            'microword after the one that waited.'),
+
+    ('biu', 'rsto_q',       'the RESET instruction is driving the pin'),
+    ('biu', 'rsto_cnt',     '... for this many more clocks'),
+    ('biu', 'rsto_arm_q',   '... and the request has been let go since, so the '
+                            'count cannot restart itself'),
+
     ('biu', 'st_p',         'the bus state machine, rising-edge half'),
     ('biu', 'st_n',         '... and falling-edge half'),
     ('biu', 'cyc_addr',     'the address of the cycle now running'),
@@ -243,6 +267,7 @@ EXEMPT = [
     ('biu', 'term_err',     '... bus error'),
     ('biu', 'term_rty',     '... retry'),
     ('biu', 'term_hlt',     '... halt'),
+    ('biu', 'term_avc',     '... AVEC, on an interrupt acknowledge cycle'),
     ('biu', 'hiz_q',        'whether the address group is released'),
     ('biu', 'rdata_q',      'the result of the last read, held for the sequencer'),
     ('biu', 'frdata_q',     '... and of the last prefetch'),
@@ -271,6 +296,24 @@ EXEMPT = [
     ('seq', 'dfc_q',        'architectural'),
     ('seq', 'cacr_q',       'architectural'),
     ('seq', 'caar_q',       'architectural'),
+    ('seq', 'irq_prev_q',   'the interrupt level at the last instruction '
+                            'boundary. It is about the PINS, not about the '
+                            'instruction: a fault does not change what the '
+                            'outside world is asking for, and UM 6.1.9 requires '
+                            'the device to hold the level until it is '
+                            'acknowledged.'),
+    ('seq', 'irq_taking_q', 'the level of the interrupt being taken. Live only '
+                            'between the dispatch and the acknowledge cycle, '
+                            'and nothing in that span makes a DATA access that '
+                            'could fault -- the acknowledge itself is in CPU '
+                            'space and a fault there is a spurious interrupt, '
+                            'not a bus fault. M9 revisits it.'),
+    # PRM 6 STOP. The processor runs no bus cycle while stopped, so no fault can
+    # be recognised there, and the interrupt that ends the stopped state clears
+    # the bit on the same clock it enters exception processing. A stopped
+    # processor is not a context worth saving: it has none.
+    ('seq', 'stopped_q',    'the processor is stopped'),
+
     ('seq', 'div_go_q',     'the divider is running. A divide makes no bus cycle, '
                             'so nothing can fault inside one: the microword that '
                             'reads the pipe comes after it.'),
@@ -436,13 +479,28 @@ def check():
 _MODULES = ('ifu', 'biu', 'seq', 'divider', 'shifter', 'sync', 'dedge_ff', 'top')
 
 
+def _unparen(text):
+    """`text` with every parenthesised span removed."""
+    out, depth = [], 0
+    for ch in text:
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            out.append(ch)
+    return ''.join(out)
+
+
 def rtl_registers(rtl_dir):
     """Every signal a clocked process writes, by module.
 
-    A non-blocking assignment whose whole left-hand side is an identifier with
-    optional index expressions IS a register; anything else -- a comparison, a
-    condition -- is not. Requiring the WHOLE left side to match is what keeps
-    `if (a <= b)` out of the answer.
+    A non-blocking assignment ends with an identifier and optional index
+    expressions, and stands at a statement boundary; a comparison stands inside
+    an expression. Unbalanced parentheses to the left of the name is what tells
+    the two apart, so `if (a <= b)` and `for (i = 0; i <= 7; ...)` are rejected
+    while a `q <= d` sharing its line with the `else if (...)` that guards it is
+    not. Missing one of those would leave a register silently unchecked.
     """
     found = {}
     for name in _MODULES:
@@ -454,13 +512,21 @@ def rtl_registers(rtl_dir):
         for line in text.split('\n'):
             if '<=' not in line:
                 continue
-            left = line.split('<=')[0]
-            # A case label shares the line with the statement it guards. Split
-            # on colon-SPACE: a part-select's colon never has one.
-            if ': ' in left:
-                left = left.rsplit(': ', 1)[1]
-            m = re.fullmatch(r'([a-z_][a-z_0-9]*)((?:\[[^\]]*\])*)', left.strip())
-            if m:
+            for a in re.finditer('<=', line):
+                left = line[:a.start()]
+                m = re.search(r'([a-z_][a-z_0-9]*)((?:\[[^\]]*\])*)\s*$', left)
+                if not m:
+                    continue
+                before = left[:m.start()]
+                # Inside an expression -- `if (a <= b)`, `for (i = 0; i <= 7;)`
+                # -- the parentheses are still open.
+                if before.count('(') != before.count(')'):
+                    continue
+                # A blocking assignment on the same line means this `<=` is the
+                # comparison in `y = a <= b`, not a register. Parenthesised `=`
+                # belongs to a for-loop header, which may still guard one.
+                if re.search(r'(?<![<>=!])=(?!=)', _unparen(before)):
+                    continue
                 regs.add(m.group(1))
         found[name] = regs
     return found

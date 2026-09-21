@@ -115,3 +115,36 @@ which is where UM 5.3.1 state 2 puts it.
 
 All four of this design's DBEN edges satisfy specifications 42, 43, 45 and 25A at
 the 16.67 MHz grade, and `sim/tb/bus_ruler_tb.sv` measures them.
+
+---
+
+## The format error builds two different frames, depending which page you read
+
+**UM 6.1.8**, in prose:
+
+> If any of the checks previously described determine that the format of the
+> stacked data is improper, the instruction generates a format error exception.
+> This exception **saves a short bus fault stack frame**, generates exception
+> vector number 14, and continues execution at the address in the format
+> exception vector.
+
+**UM table 6-5**, which is the definitive list of which exception takes which
+frame, puts
+
+> Format Error &nbsp;&nbsp; [RTE or cpRESTORE instruction]
+
+in the box headed **FOUR-WORD STACK FRAME — FORMAT $0**.
+
+A short bus fault frame is format `$A`, sixteen words, and it exists to describe
+a faulted bus cycle: a special status word, a fault address, a data output
+buffer, the pipe stages. A format error has no bus cycle to describe. Every one
+of those fields would be meaningless.
+
+**This design follows the table and builds a format `$0` frame.** The table is
+the one the whole of 6.4 is organised around, and the sentence in 6.1.8 reads
+like text carried over from a draft where the format error was a bus fault. The
+MC68010, whose format error is the direct ancestor of this one, produces a
+four-word frame.
+
+**What could differ:** a handler that reads a format error's frame as sixteen
+words gets four. It would be reading fifteen words of somebody else's stack.

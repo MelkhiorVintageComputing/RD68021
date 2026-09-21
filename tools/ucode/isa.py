@@ -76,6 +76,22 @@ COND = enc(
     'CNT16',     # the counter has been round all sixteen
     'MDOVF',     # the multiply or divide overflowed
     'XW10',      # bit 10 of the extension word: the long forms' 64-bit selector
+    # RTE reads a frame's format word into xw and branches on it. UM 6.1.12
+    # names three it understands and says the rest are a format error.
+    'FMT0',      # the format word in xw says a four-word frame
+    'FMT1',      # ... a throwaway four-word frame
+    'FMT2',      # ... a six-word frame
+    'MASTER',    # the M bit is set, so the active supervisor stack is the
+                 # master one and an interrupt owes a throwaway frame -- UM 6.1.9
+    'USER',      # the S bit is clear: a privileged instruction may not run
+    'DIVZERO',   # the divisor was zero. PRM 4: "division by zero causes a
+                 # trap", which is a different thing from an overflow -- the
+                 # overflow arm returns and this one does not
+    'VSET',      # the overflow flag. TRAPV tests V and its own condition
+                 # field reads as NE, so it cannot use the cc evaluation
+    'AVEC',      # the last cycle ended with AVEC: use the autovector
+    'BERR',      # ... or with a bus error. On an interrupt acknowledge that is
+                 # a spurious interrupt, UM 6.1.9, and not a bus fault
     'RESNEG',    # the ALU result is negative at the effective size
     'GTZ',       # ... and the signed comparison just made came out greater
 )
@@ -96,6 +112,8 @@ ASEL = enc(
     'FOUR',      # address 4
     'T0',
     'T1',
+    'T2',
+    'T3',
     'EA',        # the address output buffer
     'PC_D',
 )
@@ -143,8 +161,20 @@ ASRC = enc(
     'IMM8',      # bits 7:0 of the instruction word, sign extended: MOVEQ
     'DISP8',     # bits 7:0 sign extended, for a short branch
     'SP',        # whichever of USP, ISP and MSP the S and M bits select
+    'USP',       # the user stack pointer by name -- MOVE USP again
     'CCRW',      # the condition codes alone, zero extended to a word: PRM 4
                  # leaves the upper byte of a MOVE from CCR reading as zero
+    'VECOFF',    # the microword's vector number, times four
+    'FMTVEC',    # the format word of a stack frame: the microword's frame code
+                 # in bits 15:12 and the vector offset from T0 in bits 11:0
+    'VBR',       # the vector base register
+    'TRAPVEC',   # TRAP #n: 32 + n, times four, from bits 3:0 of the opcode
+    'IRQLEVEL',  # the level of the interrupt being taken, for the status
+                 # register's mask and for the acknowledge cycle's address
+    'AUTOVEC',   # 24 + that level, times four: the autovector offset
+    'IRQVEC',    # the vector the acknowledging device returned, times four
+    'PC_PREV',   # the address of the instruction that has just finished, which
+                 # is what a trace frame carries at +$08
     # The register MOVEM's counter names: 0 to 7 are D0 to D7 and 8 to 15 are
     # A0 to A7. REGNR counts the other way, because the predecrement form's
     # mask is reversed -- PRM 4, "bit 0 selects A7".
@@ -177,6 +207,9 @@ BSRC = enc(
                  # the operand size: 32 for a register, 8 for a byte in memory
     'TWO',       # the constant 2, for stepping the program counter
     'FOUR',      # ... and 4, for stepping the stack pointer
+    'SIX',       # ... 6, the offset of a frame's format word
+    'EIGHT',     # ... 8, the length of a four-word frame
+    'TWELVE',    # ... and 12, of a six-word one
     'T0', 'T1', 'T2', 'T3',
     'XW',        # a fetched displacement, sign extended from 16 bits
     'DISP8',     # bits 7:0 of the instruction word, sign extended: a short branch
@@ -189,6 +222,7 @@ BSRC = enc(
     'IMMQ',      # bits 11:9 of the opcode, with zero meaning eight: ADDQ, SUBQ
                  # and the immediate shift counts
     'DIVQ',      # the quotient, for assembling the word divide's result
+    'IRQLEVEL',  # the level of the interrupt being taken, for the mask
 )
 
 ALU = enc(
@@ -209,6 +243,24 @@ ALU = enc(
     'EXTW',      # bits 7:0 of A, sign extended to 16
     'EXTL',      # bits 15:0 of A, sign extended to 32
     'EXTB',      # bits 7:0 of A, sign extended to 32 -- EXTB.L, new on the 020
+    # UM 6.1 step one: "the processor makes an internal copy of the SR, then
+    # sets the S-bit ... next, the processor inhibits tracing of the exception
+    # handler by clearing the T1 and T0 bits". One operation, because the two
+    # halves must not be separable: between them the processor would be in
+    # supervisor mode with tracing still on.
+    'EXCSR',
+    # UM 6.1: "for the reset and interrupt exceptions, the processor also
+    # updates the interrupt priority mask". The level replaces I2-I0 and
+    # nothing else in the status register moves.
+    'SETMASK',
+    # UM 6.1.9: "if the M-bit in the SR is set, the processor clears the M-bit
+    # and creates a throwaway exception stack frame on top of the interrupt
+    # stack". Clearing it is what moves the active stack from MSP to ISP.
+    'CLRM',
+    # ... and the copy of the status register on that throwaway frame "is
+    # exactly the same as that placed on the master stack except that the S-bit
+    # is set".
+    'SETS',
     # Sign extend from the EFFECTIVE size to all thirty-two bits, and pass a
     # long word through untouched. Every instruction with an address register
     # destination needs it -- PRM 4, "the entire destination address register is
@@ -252,6 +304,8 @@ DST = enc(
     'DREG_XR',   # ... and its bits 2:0
     'CREG',      # the control register MOVEC's extension word names
     'XREG',      # the general register it names -- data or address per bit 15
+    'USP',       # the user stack pointer BY NAME, not whichever A7 means --
+                 # which is the whole point of MOVE USP
 )
 
 # How wide the destination write is. A write to a data register of size byte or
@@ -311,6 +365,12 @@ CCR = enc(
     'DIVV',      # V alone, set: PRM 4 leaves the operands alone on overflow
     'BCD',       # the decimal carry into X and C, Z only ever cleared
     'ALL',       # the low five bits of the result are the codes: MOVE to CCR
+    # N Z V C all cleared, X untouched. CHK is the only user: PRM 4 says N is
+    # "cleared if the compared value is greater than the upper bound", which is
+    # a rule about WHY the trap happened and not about the sign of anything the
+    # comparison computed -- and the two differ when the bound is negative and
+    # the subtraction overflows.
+    'CLRNZVC',
 )
 
 # The instruction pipe.
@@ -325,6 +385,15 @@ PF = enc(
 # takes a clock per quotient bit and the microword stalls on it exactly as it
 # stalls on a bus cycle.
 MDOP = enc('NONE', 'MUL', 'DIV')
+
+# The CPU address spaces of UM figure 5-31. The breakpoint and the module call
+# arrive with M10, the coprocessor with M13.
+CPUSPACE = enc('NONE', 'IACK', 'BKPT', 'COPROC')
+
+# Which exception stack frame a microword is building. UM table 6-5 names the
+# exceptions that take each; the code below is the value that goes in bits 15:12
+# of the format word at +$06.
+FRAME = enc('F0', 'F1', 'F2', 'F9', 'FA', 'FB')
 
 # MOVEM's register counter: sixteen registers, walked once.
 CNT = enc('NONE', 'ZERO', 'INC')
@@ -346,7 +415,7 @@ UADDR_BITS = 13
 
 FIELDS = OrderedDict([
     ('seq',   (3,  SEQ,   'NEXT')),
-    ('cond',  (4,  COND,  'NEVER')),
+    ('cond',  (5,  COND,  'NEVER')),
     ('next',  (UADDR_BITS, None, 0)),
     ('bus',   (2,  BUS,   'NONE')),
     ('asel',  (3,  ASEL,  'ZERO')),
@@ -357,7 +426,7 @@ FIELDS = OrderedDict([
     ('alu',   (5,  ALU,   'A')),
     ('dst',   (5,  DST,   'NONE')),
     ('size',  (2,  SIZE,  'LONG')),
-    ('ccr',   (4,  CCR,   'NONE')),
+    ('ccr',   (5,  CCR,   'NONE')),
     ('szsel', (3,  SZSEL, 'FIXED')),
     ('pf',    (2,  PF,    'NONE')),
     # Latch the return address. One level is enough: an effective-address
@@ -382,10 +451,32 @@ FIELDS = OrderedDict([
     # of MULU, MULS, DIVU and DIVS carry both in the opcode; the long forms
     # carry them in the extension word -- PRM 8.
     ('mdext', (1,  None,  0)),
+    # The vector NUMBER an internally generated exception uses. UM 6.1: "for
+    # all other exceptions, internal logic provides the vector number". The
+    # ASRC that reads it gives the OFFSET -- the number times four -- because
+    # that is what both the format word and the vector address want.
+    ('vec',   (8,  None,  0)),
+    ('frame', (3,  FRAME, 'F0')),
+    # UM 6.1.7: "when tracing is enabled and the processor attempts to execute
+    # an illegal or unimplemented instruction, that instruction does not cause
+    # a trace exception since it is not executed". The four entry points for
+    # instructions that were never executed set this, and nothing else does.
+    ('notrace', (1, None,  0)),
+    # Which CPU address space a request goes to -- UM figure 5-31. Only the
+    # interrupt acknowledge is used before M10.
+    ('cpuspace', (2, CPUSPACE, 'NONE')),
     # Hold RMC across the accesses of an indivisible read-modify-write. UM 5.5.2:
     # on this part RMC is a qualifier across a run of ordinary bus cycles, each
     # retried separately, and not one long cycle.
     ('rmc',   (1,  None,  0)),
+    # PRM 6 STOP: "stops the fetching and executing of instructions. A trace,
+    # interrupt, or reset exception causes the processor to resume". The bit
+    # sits on a microword that also decodes, so the trace and interrupt arms
+    # are judged first and against the status register STOP has just written.
+    ('stop',  (1,  None,  0)),
+    # PRM 6 RESET: "asserts the RSTO signal for 512 clock periods". The bus unit
+    # owns the pin and the counter; this bit asks for it and stalls until done.
+    ('rsto',  (1,  None,  0)),
     ('eadst', (1,  None,  0)),
     # Whether the base of an indexed effective address is the program counter or
     # an address register. It is in the OPCODE, not the extension word, so the

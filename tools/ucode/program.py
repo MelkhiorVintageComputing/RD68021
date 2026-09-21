@@ -109,8 +109,8 @@ u('... then wait for the pipe and decode',
 # which a testbench can see and no test relies on.
 # ==========================================================================
 label('illegal')
-u('no pattern for this opcode; exception processing is M8')
-goto('illegal')
+u('no pattern for this opcode -- UM 6.1.5, vector 4',
+  next='exc_illegal')
 
 # ==========================================================================
 # NOP -- PRM 4, "no operation"
@@ -992,6 +992,13 @@ for _bits, _stem, _alu, _ccr, _rev, _wr in (
     if _stem in ('andi', 'ori', 'eori'):
         opcode('0000' + _bits + '00111100', _stem + '_ccr',
                _M + ' #imm,CCR')
+        # And the privileged form, which is the same instruction on the whole
+        # status register at word size. Without this pattern the opcode falls
+        # into the general immediate one with an immediate DESTINATION, which
+        # no addressing mode allows -- so it became an illegal instruction, and
+        # the sweep said so.
+        opcode('0000' + _bits + '01111100', _stem + '_sr',
+               _M + ' #imm,SR')
     for _sz, _n, _w in (('00', 'B', 'immw'), ('01', 'W', 'immw'),
                         ('10', 'L', 'imml')):
         opcode('0000' + _bits + _sz + '000---', '%s_%s_dn' % (_stem, _w),
@@ -1220,6 +1227,9 @@ ret('rtr', True,  False)
 ret('rtd', False, True)
 
 # ---- the patterns ----
+opcode('0101----11111100', 'trapcc_n', 'TRAPcc')
+opcode('0101----11111010', 'trapcc_w', 'TRAPcc.W #d')
+opcode('0101----11111011', 'trapcc_l', 'TRAPcc.L #d')
 opcode('0101----11001---', 'dbcc',    'DBcc Dn,#d16')
 opcode('0101----11000---', 'scc_dn',  'Scc Dn')
 opcode('0101----11------', 'scc_mem', 'Scc <ea>')
@@ -1528,7 +1538,10 @@ u('the dividend is the whole destination register',
   asrc='DREGW', alu='A', dst='T2', size='LONG')
 u('... whose top half is its sign, or nothing',
   asrc='T2', alu='XSZHI', dst='T3', size='LONG')
-u('divide, and stall until it is done',
+u('divide, and stall until it is done. A zero divisor never starts it, so the '
+  'stall resolves at once and the trap is taken -- PRM 4',
+  mdop='DIV', size='WORD', seq='COND', cond='DIVZERO', next='exc_divzero')
+u('... and the quotient has to fit where it is going',
   mdop='DIV', size='WORD', seq='COND', cond='MDOVF', next='divw_ovf')
 u('the remainder goes in the high word',
   asrc='DIVR', alu='SHL16', dst='T0', size='LONG')
@@ -1539,7 +1552,7 @@ u('the quotient is what sets the codes, at sixteen bits',
 u('and both halves are written together',
   asrc='T1', alu='A', dst='DREG', size='LONG', pf='ADV', seq='DECODE')
 label('divw_ovf')
-u('on overflow the operands are unaffected and V is set',
+u('on overflow the operands are unaffected and V is set -- PRM 4',
   ccr='DIVV', pf='ADV', seq='DECODE')
 
 
@@ -1581,6 +1594,9 @@ u('... or the register the extension word names',
   asrc='DREG_XR', alu='A', dst='T3', size='LONG')
 label('divl_start')
 u('divide, and stall until it is done',
+  mdop='DIV', mdext=1, size='LONG', seq='COND', cond='DIVZERO',
+  next='exc_divzero')
+u('... and the quotient has to fit where it is going',
   mdop='DIV', mdext=1, size='LONG', seq='COND', cond='MDOVF', next='divl_ovf')
 # PRM 4: the remainder goes to Dr and the quotient to Dq. When they are the same
 # register -- which is how DIVx.L <ea>,Dq is written -- the quotient must be
@@ -1591,7 +1607,7 @@ u('... and then the quotient, which wins when they are the same register',
   asrc='DIVQ', alu='A', dst='DREG_XQ', size='LONG', ccr='DIV',
   pf='ADV', seq='DECODE')
 label('divl_ovf')
-u('on overflow the operands are unaffected and V is set',
+u('on overflow the operands are unaffected and V is set -- PRM 4',
   ccr='DIVV', pf='ADV', seq='DECODE')
 
 # ---- the patterns ----
@@ -1668,6 +1684,7 @@ u('and bit 7 goes back, still holding the bus',
 
 opcode('0100100000000---', 'nbcd_dn',  'NBCD Dn')
 opcode('0100100000------', 'nbcd_mem', 'NBCD <ea>')
+opcode('0100101011111100', 'exc_illegal', 'ILLEGAL')
 opcode('0100101011000---', 'tas_dn',   'TAS Dn')
 opcode('0100101011------', 'tas_mem',  'TAS <ea>')
 
@@ -1743,28 +1760,39 @@ movep('movep_lm', True,  4)   # MOVEP.L Dx,(d,Ay)
 # exception occurs." The MC68020 adds the long form; the MC68010 had only the
 # word one, and PRM 8 encodes the two in opmodes 110 and 100 -- bit 7 alone.
 #
-# The trap itself is M8. Until then the trapping arm stops, which a testbench
-# can see and the vector sweep never reaches, because the generator drops any
-# test whose oracle run touched the vector table.
+# PRM 4 on the condition codes: "N: set if the compared value is less than
+# zero; cleared if greater than the upper bound; undefined otherwise. Z, V, C:
+# undefined." The two defined cases are exactly the two that trap, so N is a
+# statement about what the handler finds in the frame and not about what the
+# instruction leaves behind.
 #
-# PRM 4 leaves N undefined unless one of the two conditions held -- and if one
-# held there is a trap, so the path that returns leaves the codes alone.
-# doc/divergences.md records that as the choice it is.
+# The first comparison writes the codes, and the sign of what it computes IS the
+# N the manual asks for when the register is negative. The second does not: its
+# rule is "cleared if greater than the upper bound", which is about why the trap
+# happened, so the trapping path clears N outright rather than trusting the sign
+# of a subtraction that a negative bound can overflow. Z, V and C are zero on
+# both trapping paths; the manual leaves them undefined and doc/divergences.md
+# records the choice. The non-trapping path falls under "undefined otherwise".
 # ==========================================================================
 src_prologues('chk', 'CHK', an_ok=False)
 u('the upper bound',
   asrc='T0', alu='A', dst='T1', szsel='CHK')
-u('less than zero?',
-  asrc='DREGW', alu='A', szsel='CHK', seq='COND', cond='RESNEG',
+u('less than zero? -- and N is the sign of the register, PRM 4',
+  asrc='DREGW', alu='A', szsel='CHK', ccr='LOGIC', seq='COND', cond='RESNEG',
   next='chk_trap')
 u('greater than the bound?',
-  asrc='DREGW', bsrc='T1', alu='SUB', szsel='CHK', seq='COND', cond='GTZ',
-  next='chk_trap')
+  asrc='DREGW', bsrc='T1', alu='SUB', szsel='CHK',
+  seq='COND', cond='GTZ', next='chk_trap_high')
 u('neither, so the instruction does nothing at all',
   pf='ADV', seq='DECODE')
+label('chk_trap_high')
+u('... and then N is CLEARED, because that is what the rule says and not what '
+  'the sign of the difference says: a negative upper bound makes the '
+  'subtraction overflow and the two part company',
+  ccr='CLRNZVC')
 label('chk_trap')
-u('a CHK exception -- exception processing is M8')
-goto('chk_trap')
+u('a CHK exception -- UM table 6-1, vector 6, and a six-word frame',
+  next='exc_chk')
 
 for _opm, _n in (('110', 'W'), ('100', 'L')):
     opcode('0100---' + _opm + '000---', 'chk_dn',   'CHK.%s Dn,Dn' % _n)
@@ -1786,12 +1814,16 @@ for _opm, _n in (('110', 'W'), ('100', 'L')):
 # supervisor.
 # ==========================================================================
 label('movec_to_gen')
+u('MOVEC is privileged -- PRM 6, "if supervisor state then ... else TRAP"',
+  seq='COND', cond='USER', next='exc_priv')
 u('the extension word names both registers',
   asrc='STG_C', alu='A', dst='XW', size='WORD', pf='CONSUME')
 u('the control register into the general one',
   asrc='CREG', alu='A', dst='XREG', size='LONG', pf='ADV', seq='DECODE')
 
 label('movec_to_ctl')
+u('MOVEC is privileged -- PRM 6, "if supervisor state then ... else TRAP"',
+  seq='COND', cond='USER', next='exc_priv')
 u('the extension word names both registers',
   asrc='STG_C', alu='A', dst='XW', size='WORD', pf='CONSUME')
 u('the general register into the control one',
@@ -1799,6 +1831,527 @@ u('the general register into the control one',
 
 opcode('0100111001111010', 'movec_to_gen', 'MOVEC Rc,Rn')
 opcode('0100111001111011', 'movec_to_ctl', 'MOVEC Rn,Rc')
+
+
+# ==========================================================================
+# EXCEPTION PROCESSING -- UM 6.1
+#
+# "Exception processing occurs in four functional steps."
+#
+#   1. copy the status register, set S, clear T1 and T0
+#   2. determine the vector number
+#   3. save the context: a frame on the ACTIVE SUPERVISOR stack
+#   4. vector offset = number x 4, address = VBR + offset, load the PC
+#
+# Step one is one microword, not two: between setting S and clearing the trace
+# bits the processor would be at the supervisor level with tracing still on.
+#
+# The routines below are entered with
+#
+#   T0 = the vector OFFSET, which is the number times four
+#   T1 = the program counter to stack
+#   T2 = the instruction address, for a format $2 frame
+#
+# and they leave the frame built, the vector read and the pipe refilled. The
+# caller says which frame to build by which routine it jumps to.
+#
+# The frame is written from the top down, which is what a stack is: one pointer,
+# no address arithmetic, and it ends where the frame begins. UM 6.4 explicitly
+# allows it -- "the processor does not necessarily read or write the stack frame
+# data in sequential order" -- and says only that the offsets must come out
+# right.
+# ==========================================================================
+def frame_body(frame, six):
+    """The words of a four- or six-word frame, written top down from EA.
+
+    One pointer, walking down: the frame is built from its highest address to
+    its lowest, so every write is `EA -= n` then `store`, and EA ends up where
+    the frame begins -- which is the new stack pointer.
+    """
+    if six:
+        u('+$08: the address of the instruction that caused it',
+          asrc='EA', bsrc='FOUR', alu='SUB', dst='EA', size='LONG')
+        u('... written there',
+          bus='WRITE', fc='DATA', asel='EA', asrc='T2', alu='A', bytes=4)
+    u('+$06: the format and the vector offset',
+      asrc='EA', bsrc='TWO', alu='SUB', dst='EA', size='LONG')
+    u('... written there',
+      bus='WRITE', fc='DATA', asel='EA', asrc='FMTVEC', alu='A', bytes=2,
+      frame=frame)
+    u('+$02: the program counter',
+      asrc='EA', bsrc='FOUR', alu='SUB', dst='EA', size='LONG')
+    u('... written there',
+      bus='WRITE', fc='DATA', asel='EA', asrc='T1', alu='A', bytes=4)
+    u('+$00: the status register as it was',
+      asrc='EA', bsrc='TWO', alu='SUB', dst='EA', size='LONG')
+    u('... written there',
+      bus='WRITE', fc='DATA', asel='EA', asrc='T3', alu='A', bytes=2)
+
+
+def exception(stem, frame, six):
+    label(stem)
+    # Step one. The status register is copied BEFORE it is changed, and the
+    # copy is what goes in the frame.
+    u('a copy of the status register as it was',
+      asrc='SR', alu='A', dst='T3', size='WORD')
+    u('supervisor, and no tracing of the handler -- UM 6.1 step one',
+      asrc='SR', alu='EXCSR', dst='SR', size='WORD')
+    # Setting S may have changed which register A7 is. Everything from here
+    # runs on the supervisor stack, which is what UM 6.1 step three asks for.
+    label(stem + '_stack')
+    u('the stack pointer, now the supervisor one',
+      asrc='SP', alu='A', dst='EA', size='LONG')
+    frame_body(frame, six)
+    u('and the stack pointer is where the frame begins',
+      asrc='EA', alu='A', dst='SP', size='LONG')
+    label(stem + '_vector')
+    u('the vector address: the base plus the offset -- UM 6.1 step four',
+      asrc='VBR', bsrc='T0', alu='ADD', dst='T1', size='LONG')
+    u('read the vector. UM 2.1.2 puts every vector but the reset one in '
+      'supervisor DATA space',
+      bus='READ', fc='DATA', asel='T1', bytes=4)
+    u('... and that is where the handler is',
+      asrc='RDATA', alu='A', pf='FLUSH')
+    u('... then wait for the pipe and decode',
+      seq='DECODE')
+
+
+exception('exc_f0', 'F0', False)
+exception('exc_f2', 'F2', True)
+
+# --------------------------------------------------------------------------
+# The sources that need no operand
+#
+# UM table 6-5 says which frame each takes and what the stacked program counter
+# points at. The two that matter:
+#
+#   format $0, and the FAULTING instruction    illegal, A-line, F-line,
+#                                              privilege violation
+#   format $2, the NEXT instruction, and the   CHK, TRAPcc, TRAPV, zero divide,
+#   faulting one at +$08                       trace
+#
+# "This instruction" is pc_d. "The next instruction" is PC_C once the extension
+# words have been consumed -- the same thing BSR and JSR push, and true for the
+# same reason.
+# --------------------------------------------------------------------------
+def exc_here(stem, vec, executed=False):
+    """Format $0, stacking the address of the instruction that caused it.
+
+    `executed` is false for the four that are raised INSTEAD of running an
+    instruction -- illegal, the two unimplemented lines, and the privilege
+    violation. UM 6.1.7: such an instruction "does not cause a trace exception
+    since it is not executed", which is what notrace says.
+    """
+    label(stem)
+    u('the vector offset',
+      asrc='VECOFF', alu='A', dst='T0', size='LONG', vec=vec,
+      notrace=(0 if executed else 1))
+    u('the frame carries the address of THIS instruction -- UM table 6-5',
+      asrc='PC_D', alu='A', dst='T1', size='LONG', next='exc_f0')
+
+
+def exc_next(stem, vec, vecsrc='VECOFF'):
+    """Format $2: the next instruction, and this one at +$08."""
+    label(stem)
+    u('the vector offset',
+      asrc=vecsrc, alu='A', dst='T0', size='LONG', vec=vec)
+    u('the address of the instruction that caused it',
+      asrc='PC_D', alu='A', dst='T2', size='LONG')
+    u('and the frame carries the address of the NEXT one',
+      asrc='PC_C', alu='A', dst='T1', size='LONG', next='exc_f2')
+
+
+exc_here('exc_illegal',   4)
+exc_here('exc_line_a',   10)
+exc_here('exc_line_f',   11)
+exc_here('exc_priv',      8)
+exc_next('exc_chk',       6)
+exc_next('exc_trapcc',    7)
+exc_next('exc_divzero',   5)
+
+# TRAP #n. PRM 4: vector 32 + n, and the frame carries the address of the next
+# instruction, which for a one-word instruction is simply the word after it.
+label('trap_n')
+u('the vector offset: 32 plus the four bits in the opcode, times four',
+  asrc='TRAPVEC', alu='A', dst='T0', size='LONG')
+u('and the frame carries the address of the next instruction',
+  asrc='PC_C', alu='A', dst='T1', size='LONG', next='exc_f0')
+
+opcode('010011100100----', 'trap_n', 'TRAP #n')
+opcode('1010------------', 'exc_line_a', 'an A-line instruction')
+opcode('1111------------', 'exc_line_f', 'an F-line instruction')
+
+
+# ==========================================================================
+# RTE -- UM 6.1.12
+#
+# "When the processor executes an RTE instruction, it examines the stack frame
+# on top of the active supervisor stack to determine if it is a valid frame and
+# what type of context restoration it requires."
+#
+#   format $0   restore the SR and the PC, add eight to the stack pointer
+#   format $1   restore the SR alone, add eight -- and then START AGAIN, on
+#               whatever stack the restored SR now selects
+#   format $2   restore the SR and the PC, add twelve
+#   anything else   a format error, vector 14
+#
+# The stack pointer is stepped BEFORE the status register is written, because
+# writing the status register is what decides which of the three stack pointers
+# A7 means. Doing it the other way round adds eight to the wrong register.
+# ==========================================================================
+label('rte')
+u('RTE is privileged -- PRM 6',
+  seq='COND', cond='USER', next='exc_priv')
+u('the frame is at the top of the active supervisor stack',
+  asrc='SP', alu='A', dst='T1', size='LONG')
+u('its format word is at +$06',
+  asrc='T1', bsrc='SIX', alu='ADD', dst='T2', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T2', bytes=2)
+u('... and hold it, because the branches below read it',
+  asrc='RDATA', alu='A', dst='XW', size='WORD')
+# The first test gets a microword of its own because the one above WRITES xw,
+# and a condition reads the register as it stands, not as it is about to be.
+u('a throwaway frame?',
+  seq='COND', cond='FMT1', next='rte_throwaway')
+u('a six-word frame?',
+  seq='COND', cond='FMT2', next='rte_six')
+u('a four-word one?',
+  seq='COND', cond='FMT0', next='rte_four')
+u('and anything else is a format error -- UM 6.1.8',
+  next='exc_format')
+
+label('rte_four')
+u('+$00: the status register',
+  bus='READ', fc='DATA', asel='T1', bytes=2)
+u('... held',
+  asrc='RDATA', alu='A', dst='T3', size='WORD')
+u('+$02: the program counter',
+  asrc='T1', bsrc='TWO', alu='ADD', dst='T2', size='LONG')
+u('... read',
+  bus='READ', fc='DATA', asel='T2', bytes=4)
+u('... and held',
+  asrc='RDATA', alu='A', dst='T0', size='LONG')
+u('the stack pointer, eight past the frame, while it is still this stack',
+  asrc='T1', bsrc='EIGHT', alu='ADD', dst='SP', size='LONG')
+u('and now the status register, which may change which stack that was',
+  asrc='T3', alu='A', dst='SR', size='WORD')
+u('the program counter comes back',
+  asrc='T0', alu='A', pf='FLUSH')
+u('... then wait for the pipe and decode',
+  seq='DECODE')
+
+label('rte_six')
+u('+$00: the status register',
+  bus='READ', fc='DATA', asel='T1', bytes=2)
+u('... held',
+  asrc='RDATA', alu='A', dst='T3', size='WORD')
+u('+$02: the program counter',
+  asrc='T1', bsrc='TWO', alu='ADD', dst='T2', size='LONG')
+u('... read',
+  bus='READ', fc='DATA', asel='T2', bytes=4)
+u('... and held',
+  asrc='RDATA', alu='A', dst='T0', size='LONG')
+u('a six-word frame is twelve bytes long',
+  asrc='T1', bsrc='TWELVE', alu='ADD', dst='SP', size='LONG')
+u('and now the status register',
+  asrc='T3', alu='A', dst='SR', size='WORD')
+u('the program counter comes back',
+  asrc='T0', alu='A', pf='FLUSH')
+u('... then wait for the pipe and decode',
+  seq='DECODE')
+
+# The throwaway frame. UM 6.1.12: read the status register, step the stack,
+# write the status register, "and then begins RTE processing again ... on top of
+# the active stack, which may or may not be the same stack used for the previous
+# operation". The second frame may be any format, including another throwaway.
+label('rte_throwaway')
+u('+$00: the status register, which is all this frame carries',
+  bus='READ', fc='DATA', asel='T1', bytes=2)
+u('... held',
+  asrc='RDATA', alu='A', dst='T3', size='WORD')
+u('step this stack past the frame',
+  asrc='T1', bsrc='EIGHT', alu='ADD', dst='SP', size='LONG')
+u('write the status register, which chooses the stack the next frame is on',
+  asrc='T3', alu='A', dst='SR', size='WORD')
+u('and do it all again',
+  next='rte')
+
+exc_here('exc_format', 14, executed=True)
+
+# ==========================================================================
+# THE SUPERVISOR INSTRUCTIONS -- PRM 6
+#
+# Every one of them begins the same way, and it is the only thing that makes
+# the privilege violation of UM 6.1.6 happen at all: "if a user program attempts
+# to execute a privileged instruction, a privilege violation exception occurs".
+# The frame carries the address of the instruction that tried -- table 6-5,
+# "first word of instruction causing privilege violation" -- which is what
+# exc_here stacks.
+# ==========================================================================
+# The check goes in the PROLOGUE, not in front of it. The opcode patterns point
+# straight at mtsr_dn, mtsr_immw and mtsr_mem, so a microword before those
+# labels is not on any path -- which is what it was, and the sweep found MOVE
+# #imm,SR running happily in user mode.
+def _privileged():
+    u('privileged -- UM 6.1.6',
+      seq='COND', cond='USER', next='exc_priv')
+
+
+src_prologues('mtsr', 'FIXED', an_ok=False, size='WORD', prelude=_privileged)
+u('the whole status register, not just the codes',
+  asrc='T0', alu='A', dst='SR', size='WORD', pf='ADV', seq='DECODE')
+
+label('move_from_sr_dn')
+u('MOVE from SR is privileged on this part -- it was not on the MC68000, '
+  'which is why MOVE from CCR exists',
+  seq='COND', cond='USER', next='exc_priv')
+u('the status register, as a word',
+  asrc='SR', alu='A', dst='DREG_R', size='WORD', pf='ADV', seq='DECODE')
+
+label('move_from_sr_mem')
+u('likewise privileged',
+  seq='COND', cond='USER', next='exc_priv')
+u('the address',
+  call=1, seq='EAMODE', size='WORD')
+u('and the status register goes there',
+  bus='WRITE', fc='DATA', asel='EA', asrc='SR', alu='A', bytes=2,
+  pf='ADV', seq='DECODE')
+
+for _stem, _alu, _bits in (('andi_sr', 'AND', '0010'),
+                           ('ori_sr',  'OR',  '0000'),
+                           ('eori_sr', 'EOR', '1010')):
+    label(_stem)
+    u('privileged, because the whole status register is the operand',
+      seq='COND', cond='USER', next='exc_priv')
+    u('the word of immediate that follows',
+      asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
+    u('... against the status register',
+      asrc='SR', bsrc='T0', alu=_alu, dst='SR', size='WORD',
+      pf='ADV', seq='DECODE')
+
+# MOVE USP. PRM 6: the ONLY way to reach the user stack pointer while running
+# at the supervisor level, which is what a kernel needs to build a user frame.
+label('move_usp_to')
+u('privileged',
+  seq='COND', cond='USER', next='exc_priv')
+u('the address register into the user stack pointer',
+  asrc='AREG', alu='A', dst='USP', size='LONG', pf='ADV', seq='DECODE')
+
+label('move_usp_from')
+u('privileged',
+  seq='COND', cond='USER', next='exc_priv')
+u('the user stack pointer into the address register',
+  asrc='USP', alu='A', dst='AREG_EA', size='LONG', pf='ADV', seq='DECODE')
+
+# ==========================================================================
+# RESET and STOP -- PRM 6
+# ==========================================================================
+label('reset_insn')
+u('privileged -- UM 6.1.6',
+  seq='COND', cond='USER', next='exc_priv')
+u('assert RESET for 512 clock periods. PRM 6: "the processor state, other than '
+  'the program counter, is unaffected"',
+  rsto=1, pf='ADV', seq='DECODE')
+
+# PRM 6 STOP: "moves the immediate operand into the status register (both user
+# and supervisor portions), advances the program counter to point to the next
+# instruction, and stops the fetching and executing of instructions".
+#
+# The status register is written by a microword of its own, one BEFORE the one
+# that decodes, and that ordering is the whole of the instruction's subtlety:
+# "if an interrupt request is asserted with a priority higher than the priority
+# level set by the NEW status register value, an interrupt exception occurs;
+# otherwise, the interrupt request is ignored". The decode arm compares the
+# level against the status register as it then stands, so the write has to have
+# retired by the time it looks.
+#
+# The trace falls out of the same arrangement: the write to SR is a change of
+# flow, so T1T0 = 01 traces the STOP, and T1T0 = 10 traces it because it traces
+# everything -- PRM 6, "a trace exception occurs if instruction tracing is
+# enabled when the STOP instruction begins execution". Both are decided at that
+# decode, ahead of the stop bit.
+label('stop_insn')
+u('privileged -- UM 6.1.6',
+  seq='COND', cond='USER', next='exc_priv')
+u('the word of immediate that follows',
+  asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
+u('the whole status register, user half and supervisor half',
+  asrc='T0', alu='A', dst='SR', size='WORD')
+u('... and now stop',
+  stop=1, pf='ADV', seq='DECODE')
+
+opcode('0100111001110000', 'reset_insn',     'RESET')
+opcode('0100111001110010', 'stop_insn',      'STOP #imm')
+opcode('0100111001110011', 'rte',             'RTE')
+opcode('0100011011000---', 'mtsr_dn',         'MOVE Dn,SR')
+opcode('0100011011111100', 'mtsr_immw',       'MOVE #imm,SR')
+opcode('0100011011------', 'mtsr_mem',        'MOVE <ea>,SR')
+opcode('0100000011000---', 'move_from_sr_dn', 'MOVE SR,Dn')
+opcode('0100000011------', 'move_from_sr_mem','MOVE SR,<ea>')
+opcode('0100111001100---', 'move_usp_to',     'MOVE An,USP')
+opcode('0100111001101---', 'move_usp_from',   'MOVE USP,An')
+
+
+# ==========================================================================
+# TRAPV and TRAPcc -- PRM 4
+#
+# TRAPV traps if V is set and does nothing otherwise. TRAPcc is the MC68020's
+# generalisation of it: any of the sixteen conditions, and an optional operand
+# word or long word that the instruction does not look at -- PRM 4, "the
+# immediate data is placed in the instruction stream for use by the trap
+# handler", which means this microcode's only business with it is to eat it.
+#
+# Both take vector 7 and a six-word frame, with the address of the instruction
+# that trapped at +$08 -- UM table 6-5.
+# ==========================================================================
+# TRAPV tests V, and its own condition field -- bits 11:8 of $4E76 -- reads as
+# NE. So it cannot borrow the sequencer's cc evaluation and tests the flag.
+label('trapv')
+u('V set?',
+  seq='COND', cond='VSET', next='trapv_taken')
+u('no, and TRAPV does nothing at all',
+  pf='ADV', seq='DECODE')
+label('trapv_taken')
+u('yes -- vector 7',
+  next='exc_trapcc')
+
+def trapcc(stem, words):
+    label(stem)
+    for i in range(words):
+        u('the operand word the handler may want, which this does not read',
+          pf='CONSUME')
+    u('the condition',
+      seq='COND', cond='CC', next='exc_trapcc')
+    u('not taken, and nothing happens',
+      pf='ADV', seq='DECODE')
+
+
+trapcc('trapcc_n', 0)
+trapcc('trapcc_w', 1)
+trapcc('trapcc_l', 2)
+
+opcode('0100111001110110', 'trapv', 'TRAPV')
+
+
+# ==========================================================================
+# The trace exception -- UM 6.1.7
+#
+# The sequencer puts this in front of the decode arm when the instruction that
+# has just finished was traced, so it is entered at exactly the point the
+# manual names: "at the end of normal processing for the traced instruction and
+# before the start of the next instruction".
+#
+# By then the pipe has advanced, so pc_d is already the NEXT instruction --
+# which is what the frame carries -- and the traced instruction's own address
+# is in pc_prev.
+# ==========================================================================
+label('exc_trace')
+u('vector 9',
+  asrc='VECOFF', alu='A', dst='T0', size='LONG', vec=9)
+u('the instruction that was traced',
+  asrc='PC_PREV', alu='A', dst='T2', size='LONG')
+u('and the frame carries the address of the next one',
+  asrc='PC_D', alu='A', dst='T1', size='LONG', next='exc_f2')
+
+
+# ==========================================================================
+# The interrupt exception -- UM 6.1.9
+#
+# The sequencer dispatches here at an instruction boundary when a request is
+# pending and no trace is, and it has latched the level. What is left is the
+# manual's four steps with one addition: the vector number is not internal.
+#
+#   "For interrupts, the processor performs an interrupt acknowledge cycle (a
+#    read from the CPU address space type 1111) to obtain the vector number."
+#
+# Three things can come back:
+#
+#   DSACK   the device supplied a vector number
+#   AVEC    it wants the autovector for its level, 24 + level
+#   BERR    nobody answered: a spurious interrupt, vector 24
+#
+# The mask is raised to the level BEFORE anything else, which is UM 6.1's "for
+# the reset and interrupt exceptions, the processor also updates the interrupt
+# priority mask" and what stops the same request being taken again the moment
+# the handler's first instruction ends.
+# ==========================================================================
+label('exc_irq')
+# UM 6.1 step one is "an internal copy is made of the status register", and only
+# then "for the reset and interrupt exceptions, the processor also updates the
+# interrupt priority mask". The order is visible in the frame: what is stacked is
+# the mask the interrupted program was running under, not the one this interrupt
+# raised it to. Letting the shared frame builder make the copy would stack the
+# raised mask, and a handler that restored it would come back with interrupts it
+# never asked to block still blocked.
+u('a copy of the status register as it was, before anything moves',
+  asrc='SR', alu='A', dst='T3', size='WORD')
+u('the mask goes up to this level -- UM 6.1 step one, second half',
+  asrc='SR', bsrc='IRQLEVEL', alu='SETMASK', dst='SR', size='WORD')
+u('the acknowledge cycle: CPU space, type $F, the level on A3-A1',
+  bus='READ', fc='CPU', bytes=1, cpuspace='IACK',
+  seq='COND', cond='AVEC', next='exc_irq_auto')
+u('... or nobody answered at all',
+  seq='COND', cond='BERR', next='exc_irq_spurious')
+u('the device supplied a vector number',
+  asrc='IRQVEC', alu='A', dst='T0', size='LONG', next='exc_irq_go')
+
+label('exc_irq_auto')
+u('the autovector for this level -- UM table 6-1, vectors 25 to 31',
+  asrc='AUTOVEC', alu='A', dst='T0', size='LONG', next='exc_irq_go')
+
+label('exc_irq_spurious')
+u('a spurious interrupt -- vector 24',
+  asrc='VECOFF', alu='A', dst='T0', size='LONG', vec=24)
+
+label('exc_irq_go')
+u('the frame carries the address of the next instruction -- UM table 6-5',
+  asrc='PC_D', alu='A', dst='T1', size='LONG',
+  seq='COND', cond='MASTER', next='exc_irq_master')
+u('supervisor, and no tracing of the handler -- UM 6.1 step one again; the '
+  'copy the frame carries was taken above',
+  asrc='SR', alu='EXCSR', dst='SR', size='WORD', next='exc_f0_stack')
+
+# --------------------------------------------------------------------------
+# The throwaway frame -- UM 6.1.9
+#
+#   "If the M-bit in the SR is set, the processor clears the M-bit and creates
+#    a throwaway exception stack frame on top of the interrupt stack as part of
+#    interrupt exception processing. This second frame contains the same PC
+#    value and vector offset as the frame created on top of the master stack,
+#    but has a format number of 1 instead of 0 or 9. The copy of the SR saved
+#    on the throwaway frame is exactly the same as that placed on the master
+#    stack except that the S-bit is set in the version placed on the interrupt
+#    stack."
+#
+# So: the ordinary frame goes on the MASTER stack, because M is still set and
+# that is what `SP` means; then M is cleared, which is what MOVES the meaning of
+# `SP` to the interrupt stack; then the same PC and the same vector offset go
+# there again under format $1. Nothing else about the two frames differs, which
+# is why T1, T0 and T3 are still the right sources the second time round.
+#
+# The point of all this is that a task switch can throw the master frame away:
+# the handler runs on the interrupt stack and its RTE reads format $1, steps
+# past it and starts again on whatever the master stack holds -- which is what
+# `rte_throwaway` does at the other end.
+# --------------------------------------------------------------------------
+label('exc_irq_master')
+u('supervisor, and no tracing of the handler -- UM 6.1 step one',
+  asrc='SR', alu='EXCSR', dst='SR', size='WORD')
+u('the master stack: M is still set, so this is MSP',
+  asrc='SP', alu='A', dst='EA', size='LONG')
+frame_body('F0', False)
+u('and the master stack pointer is where that frame begins',
+  asrc='EA', alu='A', dst='SP', size='LONG')
+u('now clear M, which moves the stack from MSP to ISP',
+  asrc='SR', alu='CLRM', dst='SR', size='WORD')
+u('the saved status register again, with S set this time',
+  asrc='T3', alu='SETS', dst='T3', size='WORD')
+u('the interrupt stack',
+  asrc='SP', alu='A', dst='EA', size='LONG')
+frame_body('F1', False)
+u('and the interrupt stack pointer is where the throwaway begins',
+  asrc='EA', alu='A', dst='SP', size='LONG', next='exc_f0_vector')
 
 # ==========================================================================
 def entry(name):

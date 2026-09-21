@@ -210,10 +210,13 @@ module rd68021_biu #(
   rd68021_pkg::bus_state_e st_n, st_n_nxt;
 
   logic [1:0] dsack_q;       // the port size sampled at the end of S2
+  logic [2:0] end_now;       // how the cycle now ending ended, live
+  logic [2:0] req_end_q;     // ... and the copy the sequencer is given
   logic       term_q;        // ... and whether it terminated the cycle at all
   logic       term_err;      // ... as a bus error (Table 5-8 cases 3 and 4)
   logic       term_rty;      // ... as a retry (cases 5 and 6)
   logic       term_hlt;      // ... normally, but with HALT asserted (case 2)
+  logic       term_avc;      // ... by AVEC, on an interrupt acknowledge cycle
 
   // RMC is a qualifier held across a run of ordinary cycles, not a cycle kind
   // (UM 5.5.2). It is raised by the first request of the run and stays up until
@@ -699,6 +702,7 @@ module rd68021_biu #(
       cyc_rw     <= 1'b1;
       cyc_rmc    <= 1'b0;
       req_ack    <= 1'b0;
+      req_end_q  <= rd68021_pkg::CE_NONE;
       fetch_ack  <= 1'b0;
       rdata_q    <= '0;
       frdata_q   <= '0;
@@ -748,6 +752,7 @@ module rd68021_biu #(
             if (op_rw) frdata_q <= rd_merged[31:0];
           end else begin
             req_ack      <= 1'b1;
+            req_end_q    <= end_now;
             req_fault    <= term_err;
             req_fault_wr <= term_err && !op_rw;
             if (op_rw) rdata_q <= rd_merged;
@@ -820,8 +825,11 @@ module rd68021_biu #(
   // the late path set an end code without raising the fault; the exception was
   // simply not taken. Here the late sample writes term_err and term_rty, which is
   // the same place the early sample writes them.
-  logic berr_s, halt_s;
+  logic berr_s, halt_s, avec_s;
   assign berr_s = ~berr_n_i;
+  // AVEC is active low and is sampled on the same edge as DSACK. Only an
+  // interrupt acknowledge cycle means anything by it -- UM 6.1.9.
+  assign avec_s = avec_n_i;
   assign halt_s = ~halt_n_i;
 
   always_ff @(negedge clk or negedge rst_n) begin
@@ -831,6 +839,7 @@ module rd68021_biu #(
       term_q    <= 1'b0;
       term_err  <= 1'b0;
       term_rty  <= 1'b0;
+      term_avc  <= 1'b0;
       term_hlt  <= 1'b0;
       d_latched <= '0;
       bg_n_o    <= 1'b1;
@@ -848,6 +857,13 @@ module rd68021_biu #(
           term_q   <= 1'b1;  term_rty <= 1'b1;               // case 5
         end else if (berr_s) begin
           term_q   <= 1'b1;  term_err <= 1'b1;               // case 3
+        end else if (!avec_s) begin
+          // UM 6.1.9 and table 5-8: AVEC terminates an interrupt acknowledge
+          // cycle in place of DSACK and says "use the autovector for this
+          // level". It is sampled on the same edge as DSACK, and on any other
+          // kind of cycle it means nothing -- which is why the microcode, and
+          // not the bus unit, decides what to do with it.
+          term_q   <= 1'b1;  term_avc <= 1'b1;
         end else if (dsack_n_i != rd68021_pkg::DSACK_WAIT) begin
           term_q   <= 1'b1;  term_hlt <= halt_s;             // cases 1 and 2
         end else begin
@@ -873,6 +889,7 @@ module rd68021_biu #(
         term_q   <= 1'b0;
         term_err <= 1'b0;
         term_rty <= 1'b0;
+        term_avc <= 1'b0;
         term_hlt <= 1'b0;
       end
     end
@@ -966,7 +983,7 @@ module rd68021_biu #(
   // enable is what asserts them. UM 5.5.4: on a double bus fault "the processor
   // halts and asserts HALT", and only an external reset restarts it.
   assign reset_n_o  = 1'b0;
-  assign reset_n_oe = 1'b0;   // the RESET instruction's 512 clocks are M5
+  assign reset_n_oe = rsto_q;
   assign halt_n_o   = 1'b0;
   assign halt_n_oe  = dbf;
 
@@ -976,13 +993,30 @@ module rd68021_biu #(
   assign req_rdata   = rdata_q;
   assign fetch_rdata = frdata_q;
 
+  // How the cycle ended, as the samples of Table 5-8 leave it. This is the live
+  // verdict, and it lives only until the rising edge that ends S5 consumes it.
   always_comb begin
-    if (term_err)                            req_end = rd68021_pkg::CE_BERR;
-    else if (term_rty)                       req_end = rd68021_pkg::CE_RETRY;
-    else if (term_hlt)                       req_end = rd68021_pkg::CE_HALT;
-    else if (term_q)                         req_end = rd68021_pkg::CE_DSACK;
-    else                                     req_end = rd68021_pkg::CE_NONE;
+    if (term_err)                            end_now = rd68021_pkg::CE_BERR;
+    else if (term_rty)                       end_now = rd68021_pkg::CE_RETRY;
+    else if (term_avc)                       end_now = rd68021_pkg::CE_AVEC;
+    else if (term_hlt)                       end_now = rd68021_pkg::CE_HALT;
+    else if (term_q)                         end_now = rd68021_pkg::CE_DSACK;
+    else                                     end_now = rd68021_pkg::CE_NONE;
   end
+
+  // What the SEQUENCER is told, which has to outlive it.
+  //
+  // The verdict is cleared on the falling edge that ends S5 and `req_ack` is
+  // raised on the rising edge inside it, so the sequencer -- which retires on
+  // the rising edge AFTER it sees the acknowledge -- looked at a verdict that
+  // had already been cleared half a clock earlier. Every microword that tests
+  // how a cycle ended read CE_NONE: the interrupt acknowledge never saw its
+  // AVEC and never saw its bus error, so the autovector and the spurious
+  // interrupt were both unreachable, and a vectored interrupt was the only
+  // one that worked. Latched with `req_ack`, it holds until the next operand
+  // finishes, which is what lets `exc_irq` test AVEC on one microword and BERR
+  // on the next.
+  assign req_end = req_end_q;
   assign req_dsack    = dsack_q;
 
   assign flt_addr  = op_addr;
@@ -993,7 +1027,41 @@ module rd68021_biu #(
   assign flt_dob   = op_data[31:0];
   assign flt_dib   = op_data[31:0];
 
-  assign reset_busy  = 1'b0;    // the RESET instruction is M5
+  // PRM 6 RESET: "asserts the RSTO signal for 512 clock periods, resetting all
+  // external devices". 512 is this part's number -- the MC68000 and the MC68010
+  // used 124 -- and the counter is nine bits plus the state bit that qualifies
+  // it, so the pin is driven on the 512 clocks in which rsto_q is set.
+  //
+  // `reset_busy` answers on the same clock the request arrives, before the
+  // counter has started. Without that the sequencer's microword would see an
+  // idle bus unit and retire immediately; with it, the one clock in which the
+  // request is presented and the counter is not yet running is still a busy
+  // one. The arming bit is the other half of the same problem at the other end:
+  // the request is still asserted on the clock the count expires, and must not
+  // be allowed to start it again.
+  logic [8:0] rsto_cnt;
+  logic       rsto_q;
+  logic       rsto_arm_q;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      rsto_cnt   <= 9'd0;
+      rsto_q     <= 1'b0;
+      rsto_arm_q <= 1'b1;
+    end else if (rsto_q) begin
+      rsto_arm_q <= 1'b0;
+      if (rsto_cnt == 9'd0) rsto_q   <= 1'b0;
+      else                  rsto_cnt <= rsto_cnt - 9'd1;
+    end else if (reset_req && rsto_arm_q) begin
+      rsto_q     <= 1'b1;
+      rsto_cnt   <= 9'd511;
+      rsto_arm_q <= 1'b0;
+    end else if (!reset_req) begin
+      rsto_arm_q <= 1'b1;
+    end
+  end
+
+  assign reset_busy  = rsto_q || (reset_req && rsto_arm_q);
   assign bus_idle    = bus_is_idle;
 
   // ==========================================================================

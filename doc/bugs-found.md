@@ -1175,3 +1175,140 @@ one missing.
 rule is stated in terms of registers. The check was written in terms of the
 microcode, because that was what the assembler already had in front of it, and
 it silently answered a different question for two milestones.
+
+## M8 · A boundary judged against the status register the instruction replaced
+
+**What:** `MOVE #$8700,SR` turns tracing on. The instruction after it is the
+first one traced -- UM 6.1.7 and table 6-2 read T1/T0 at the start of an
+instruction, so the MOVE itself is not traced and its successor is. This core
+traced the one after that.
+
+The trace mode for the instruction about to start was latched at the same clock
+edge as the decode that starts it, from `sr_q`. For every instruction that does
+not touch the status register that is right. `MOVE #imm,SR` writes it on the
+microword that decodes -- one microword, because there is nothing else for the
+instruction to do -- so the latch read the register the write was in the act of
+replacing.
+
+The same edge has the same problem twice more:
+
+- the change-of-flow bit, which is *set* by a write to the status register, is
+  written non-blockingly on that edge, so `T1T0 = 01` never traced a `MOVE` to
+  SR at all -- and the decode arm clears the bit, so "one instruction late"
+  meant "never";
+- the interrupt mask. An instruction that lowers the mask with a request already
+  standing must be followed by the interrupt, not by one more instruction.
+
+**Fixed by:** `sr_eff` and `flow_eff` in `rd68021_seq` -- the status register and
+the change-of-flow bit *as they will be* once the microword now presented
+retires. Three users: the trace-mode latch, the trace condition, and the mask
+comparison at the decode arm. `ipend_n_o` deliberately keeps the plain
+comparison against `sr_q`, so that no pin is driven through the ALU result.
+
+**How it was found:** by a directed test whose expectations were written from
+the manual before the core was run -- `core_exc_tb`'s trace case, which stacked
+the address of the instruction after the one it should have. The vector sweep
+could not have found it: it runs one instruction per vector, and this is a bug
+about the boundary between two.
+
+## M8 · The register scraper could not see a register
+
+**What:** `check_rtl` reads `rtl/` and insists every clocked signal is either
+checkpointed or exempt. It found the signal on the left of a non-blocking
+assignment by requiring the *whole* left-hand side of the line to be an
+identifier, which is what kept `if (a <= b)` out of the answer.
+
+A guarded assignment laid out on one line --
+
+```systemverilog
+else if (retire && ... && irq_pending)             irq_taking_q <= irq_level;
+```
+
+-- has a condition to the left of the name, so it did not match, so
+`irq_taking_q` was not a register as far as the check was concerned. The failure
+direction is the dangerous one: an invisible register is an *unreported* one.
+
+**Fixed by:** looking at every `<=` on the line, taking the identifier before it,
+and rejecting the ones that stand inside an expression -- unbalanced parentheses
+to the left, or a blocking assignment outside parentheses on the same line, which
+is `y = a <= b`. Negative-tested on all five shapes: a comparison in an `if`, a
+comparison in a `for` header, a case label, a guarded assignment and a
+part-select target.
+
+## M8 · The end of a bus cycle was cleared before the sequencer could read it
+
+**What:** an interrupt acknowledge terminated by `AVEC` took the vectored path
+and read whatever happened to be on the bus; one terminated by `BERR` did the
+same. The autovector and the spurious interrupt were both unreachable, and a
+device that supplied a vector number was the only kind that worked.
+
+`req_end` was a continuous assignment over the `term_err` / `term_rty` /
+`term_avc` / `term_hlt` registers. Those are cleared on the **falling** edge
+that ends S5 -- the verdict belongs to one cycle and must not leak into the
+next. `req_ack` is raised on the **rising** edge inside S5, and the sequencer
+retires on the rising edge after it sees the acknowledge. The verdict had been
+cleared half a clock before that.
+
+It is worse than one lost test. `exc_irq` tests `AVEC` on the microword that
+issues the acknowledge and `BERR` on the one after it, which needs the answer to
+outlive the cycle by a microword, not by a clock.
+
+**Fixed by:** latching the end code where `req_ack` is raised. The live verdict
+is `end_now`, internal to the bus unit; `req_end` is the copy the sequencer is
+given, and it holds until the next operand finishes.
+
+**Why nothing caught it earlier:** `sim/tb/bus_error_tb.sv` checks `req_end`
+directly and passes, because the bus harness reads it while the acknowledge is
+still asserted -- inside the window, where the combinational value is right. The
+sequencer is one rising edge later. Two readers, one signal, different clocks.
+
+## M8 · A condition that read the register its own microword was writing
+
+**What:** RTE on a throwaway format `$1` frame became a format error.
+
+The microword that latches the frame's format word into `xw` also carried
+`cond = FMT1`. A condition is evaluated against the register as it stands, and
+the write is a non-blocking assignment landing on the edge the branch steers --
+so the test read the format word of whatever frame the *previous* RTE had
+unwound. The `FMT2` and `FMT0` tests sit on later microwords and read it
+correctly, which is why every other frame shape worked.
+
+**Fixed by:** a microword of its own for the first test, and by `check_cond_dst`
+in `tools/ucode/assemble.py`, which fails the build when a `COND` microword
+writes the register its condition reads. The table is small and explicit:
+`FMT0`/`FMT1`/`FMT2`/`XW10` read `XW`, `MASK0` reads `T0`, `USER`/`MASTER` read
+`SR`. The conditions that read the ALU result -- `RESNEG`, `GTZ`, `RESM1` --
+are deliberately not in it: testing what the current microword computes is what
+they are for. Negative-tested by putting the bug back.
+
+**This is the third of its family in one milestone**, after the status register
+at a decode boundary and the change-of-flow bit. Each is the same mistake:
+reading state that the retiring microword is in the act of changing. The other
+two needed a bypass because the write and the read genuinely belong on the same
+microword; this one did not, and got a microword instead.
+
+## M8 · A traced branch stacked the address of its own target
+
+**What:** with `T1T0 = 01` -- trace on change of flow -- a traced `BRA` built a
+format `$2` frame whose `+$08` field, "the address of the instruction that
+caused the trace", was the branch *target* rather than the branch.
+
+`pc_prev_q` was latched at the decode that ends an instruction, from `pc_d`,
+with the reasoning that the pipe advance which moves `pc_d` on is a non-blocking
+write landing on that same edge. That is true for `pf = ADV`, which is always on
+the last microword. It is not true for `pf = FLUSH`, which a branch does several
+microwords earlier: by the time the branch's decode retires, `pc_d` has been the
+new stream for some clocks.
+
+A handler reading `+$08` would have been told that the instruction it was
+stopped on had already run.
+
+**Fixed by:** taking `pc_prev_q` at the flush when there is one -- the last
+moment at which `pc_d` is still the instruction's own address -- and a one-bit
+`pc_kept_q` so the decode does not overwrite it. Both are checkpointed: they are
+per-instruction state and a fault in the middle of a traced instruction must not
+lose them.
+
+**How it was found:** the trace-on-change-of-flow case of `core_exc_tb`. The
+trace-everything case cannot find it, because `T1` traces instructions that do
+not branch, and those are exactly the ones for which the old rule was right.

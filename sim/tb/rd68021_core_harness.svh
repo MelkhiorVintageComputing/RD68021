@@ -35,6 +35,18 @@ logic        bg_n_o;
 logic        reset_n_o, reset_n_oe;
 logic        halt_n_o, halt_n_oe;
 
+// The asynchronous inputs, driven rather than tied, so a testbench can raise an
+// interrupt or answer an acknowledge cycle. Everything that does not care gets
+// the idle level and never touches them.
+logic  [2:0] ipl_n_i;
+logic        avec_n_i;
+logic        berr_n_i;
+initial begin
+  ipl_n_i  = 3'b111;
+  avec_n_i = 1'b1;
+  berr_n_i = 1'b1;
+end
+
 wire [31:0] dbus;
 assign dbus = d_oe ? d_o : 32'bz;
 
@@ -51,9 +63,9 @@ rd68021_top dut (
     .ds_n_o (ds_n_o), .ds_oe (ds_oe),
     .dben_o (dben_o), .dben_oe (dben_oe),
     .dsack_n_i (dsack_n_i),
-    .ipl_n_i (3'b111), .ipend_n_o (ipend_n_o), .avec_n_i (1'b1),
+    .ipl_n_i (ipl_n_i), .ipend_n_o (ipend_n_o), .avec_n_i (avec_n_i),
     .br_n_i (1'b1), .bg_n_o (bg_n_o), .bgack_n_i (1'b1),
-    .berr_n_i (1'b1),
+    .berr_n_i (berr_n_i),
     .reset_n_i (1'b1), .reset_n_o (reset_n_o), .reset_n_oe (reset_n_oe),
     .halt_n_i (1'b1), .halt_n_o (halt_n_o), .halt_n_oe (halt_n_oe),
     .cdis_n_i (1'b1)
@@ -63,10 +75,24 @@ logic [1:0] dsack32, dsack16, dsack8;
 wire [31:0] d32, d16, d8;
 logic       oe32, oe16, oe8;
 
+// One more device, for a testbench to wire in whatever the three memories are
+// not. The interrupt acknowledge is the reason: its address is SYNTHESISED in
+// CPU space, so no memory can ever be selected by it and something else has to
+// answer. Left idle, it changes nothing.
+logic  [1:0] dsack_ext;
+logic [31:0] d_ext;
+logic        oe_ext;
+initial begin
+  dsack_ext = 2'b11;
+  d_ext     = 32'd0;
+  oe_ext    = 1'b0;
+end
+
 assign dbus = oe32 ? d32 : 32'bz;
 assign dbus = oe16 ? d16 : 32'bz;
 assign dbus = oe8  ? d8  : 32'bz;
-assign dsack_n_i = dsack32 & dsack16 & dsack8;
+assign dbus = oe_ext ? d_ext : 32'bz;
+assign dsack_n_i = dsack32 & dsack16 & dsack8 & dsack_ext;
 
 rd68021_slave #(.PORT_BYTES (4), .WAITS (0), .BASE (32'h0000_0000),
                 .MASK (32'hF000_0000), .ABITS (16)) s32 (
@@ -136,6 +162,21 @@ task automatic poke_l(input logic [31:0] a, input logic [31:0] v);
   poke_w(a,        v[31:16]);
   poke_w(a + 2,    v[15:0]);
 endtask
+
+// ... and back out again, for a test that has to look at what the core wrote --
+// a stack frame, say, which is only ever visible as memory.
+function automatic logic [15:0] peek_w(input logic [31:0] a);
+  case (a[31:28])
+    4'h0: peek_w = {s32.mem[a[15:0]], s32.mem[a[15:0] + 1]};
+    4'h1: peek_w = {s16.mem[a[15:0]], s16.mem[a[15:0] + 1]};
+    4'h2: peek_w = {s8.mem[a[15:0]],  s8.mem[a[15:0] + 1]};
+    default: peek_w = 16'hXXXX;
+  endcase
+endfunction
+
+function automatic logic [31:0] peek_l(input logic [31:0] a);
+  peek_l = {peek_w(a), peek_w(a + 2)};
+endfunction
 
 // ---------------------------------------------------------------------------
 // Instruction boundaries, and the pipe invariant

@@ -845,6 +845,171 @@ static void g_ccr(void)
     }
 }
 
+/* The exceptions that no other group reaches: the traps, the illegal and
+ * unimplemented instruction lines, the privilege violation and the return.
+ *
+ * These are compared like any other instruction. What makes them a test of
+ * exception processing is that the frame they build is in the access list --
+ * four or six words, each with its address and its value -- and that the
+ * program counter afterwards says which vector was taken, because every vector
+ * in the table points somewhere different. */
+/* One privileged instruction, run in USER mode, where it must trap.
+ *
+ * The user stack has to be somewhere real: the frame goes on the SUPERVISOR
+ * stack -- UM 6.1 step three builds it on the active supervisor stack, and the
+ * first step has already set S -- but the instruction runs with A7 meaning the
+ * user one, and an instruction that touches it before trapping would go
+ * somewhere undefined otherwise. */
+static void user_mode(unsigned int w0, unsigned int w1, int words)
+{
+    int i;
+    if (words) plain2(w0, w1, 2, 1);
+    else       plain(w0, 2, 1);
+    for (i = 0; i < 2; i++) {
+        struct test *t = &tests[ntests - 1 - i];
+        t->sr  = (t->sr & ~0x2000u);      /* S clear: the user level */
+        t->usp = STACK - 0x100;
+    }
+}
+
+
+/* One RTE, with a frame poked under the stack pointer. */
+static void rte_frame(unsigned int sr, unsigned int pc, unsigned int fmtvec)
+{
+    plain(0x4E73, 2, 1);
+    poke_n(2, STACK,     (sr << 16) | (pc >> 16));
+    poke_n(2, STACK + 4, ((pc & 0xFFFFu) << 16) | fmtvec);
+}
+
+
+static void g_traps(void)
+{
+    int i;
+
+    /* TRAP #0 to #15. */
+    for (i = 0; i < 16; i++)
+        plain(0x4E40 | (unsigned)i, 2, 1);
+
+    /* TRAPV, both ways: the condition codes are random, so about half of these
+     * trap and about half do nothing. */
+    plain(0x4E76, NPER * 2, 1);
+
+    /* TRAPcc over every condition, and all three operand forms. */
+    for (i = 0; i < 16; i++) {
+        plain(0x50FC | (unsigned)(i << 8), 3, 1);              /* no operand */
+        plain2(0x50FA | (unsigned)(i << 8), 0x1234, 3, 1);     /* a word     */
+        {
+            unsigned int w[6];
+            memset(w, 0, sizeof w);
+            w[0] = 0x50FB | (unsigned)(i << 8);
+            w[1] = 0x1234; w[2] = 0x5678;
+            emitn(3, 3, w, 0, 1);                              /* a long word */
+        }
+    }
+
+    /* ILLEGAL, and the two lines the MC68020 leaves unimplemented so that a
+     * coprocessor or an emulator can have them -- UM 6.1.5. */
+    plain(0x4AFC, 2, 1);                                       /* ILLEGAL */
+    plain(0xA000, 2, 1);                                       /* A-line  */
+    plain(0xA5A5, 2, 1);
+    plain(0xF000, 2, 1);                                       /* F-line  */
+    plain(0xF5A5, 2, 1);
+
+    /* The privileged instructions, run at the supervisor level, where they are
+     * legal: this half is the test that each one does what it says. The other
+     * half -- that each one TRAPS in user mode -- is user_mode() below, which
+     * clears S in the starting state and expects vector 8 every time. */
+    /* RTE, over the frames UM 6.1.12 says it understands and one it does not.
+     *
+     * A frame is a WORD of status register at +$00, a LONG program counter at
+     * +$02 and a WORD of format and vector at +$06, so a long-word poke at the
+     * base carries the status register and the TOP HALF of the program
+     * counter. Writing the obvious thing there instead put $1010 in the format
+     * word, which is a throwaway frame, and the test then measured something
+     * nobody meant to ask about. */
+    rte_frame(0x0000, 0x00001010u, 0x0000);   /* $0, returning to user mode */
+    rte_frame(0x2700, 0x00001010u, 0x0000);   /* $0, staying supervisor     */
+    rte_frame(0x2000, 0x00001010u, 0x2000);   /* $2, a six-word frame       */
+    rte_frame(0x2700, 0x00001010u, 0x7000);   /* and a format error          */
+    plain2(0x46FC, 0x2700, 2, 0);                              /* MOVE #imm,SR */
+    plain(0x40C0 | 3, 2, 0);                                   /* MOVE SR,D3   */
+    plain2(0x027C, 0xF8FF, 2, 0);                              /* ANDI #x,SR   */
+    plain2(0x007C, 0x0700, 2, 0);                              /* ORI  #x,SR   */
+    plain2(0x0A7C, 0x1000, 2, 0);                              /* EORI #x,SR   */
+    plain(0x4E60 | 3, 2, 0);                                   /* MOVE A3,USP  */
+    plain(0x4E68 | 3, 2, 0);                                   /* MOVE USP,A3  */
+
+    /* And a divide by zero, which no other group produces on purpose. */
+    plain2(0x82BC, 0x0000, 2, 1);                              /* DIVU.L #0,D1 */
+    poke_n(2, DATA_BASE, 0);
+
+    /* UM 6.1.6: "if a user program attempts to execute a privileged
+     * instruction, a privilege violation exception occurs". Every one of these
+     * is the same instruction as above with the S bit clear, and every one of
+     * them must end at vector 8 with a four-word frame carrying the address of
+     * the instruction that tried. */
+    user_mode(0x4E73, 0, 0);                                   /* RTE          */
+    user_mode(0x46FC, 0x2700, 1);                              /* MOVE #imm,SR */
+    user_mode(0x40C0 | 3, 0, 0);                               /* MOVE SR,D3   */
+    user_mode(0x027C, 0xF8FF, 1);                              /* ANDI #x,SR   */
+    user_mode(0x007C, 0x0700, 1);                              /* ORI  #x,SR   */
+    user_mode(0x0A7C, 0x1000, 1);                              /* EORI #x,SR   */
+    user_mode(0x4E60 | 3, 0, 0);                               /* MOVE A3,USP  */
+    user_mode(0x4E68 | 3, 0, 0);                               /* MOVE USP,A3  */
+    user_mode(0x4E7A, 0x0000, 1);                              /* MOVEC SFC,D0 */
+    user_mode(0x4E7B, 0x0000, 1);                              /* MOVEC D0,SFC */
+}
+
+/* Tracing -- UM 6.1.7 and table 6-2.
+ *
+ * The same instructions run three times: with tracing off, with T1 set (every
+ * instruction is traced) and with T0 set (only those that change the flow). The
+ * mix is chosen so that the second and third disagree -- a MOVEQ is traced by
+ * one and not the other, a BRA by both -- because a test where they agree
+ * cannot tell the two modes apart.
+ *
+ * T1 T0 = 11 is "undefined, reserved" in table 6-2 and is not swept.
+ */
+static void trace_at(unsigned int w0, unsigned int w1, int words, int flow)
+{
+    int i, k;
+    static const unsigned int mode[3] = { 0x0000u, 0x8000u, 0x4000u };
+    for (k = 0; k < 3; k++) {
+        if (words) plain2(w0, w1, 2, flow);
+        else       plain(w0, 2, flow);
+        for (i = 0; i < 2; i++) {
+            struct test *t = &tests[ntests - 1 - i];
+            t->sr = (t->sr & 0x3FFFu) | mode[k];
+        }
+    }
+}
+
+static void g_trace(void)
+{
+    /* Instructions that do NOT change the flow. */
+    trace_at(0x7042, 0, 0, 0);                  /* MOVEQ #$42,D0   */
+    trace_at(0x2200, 0, 0, 0);                  /* MOVE.L D0,D1    */
+    trace_at(0xD282, 0, 0, 0);                  /* ADD.L  D2,D1    */
+    trace_at(0x4E71, 0, 0, 0);                  /* NOP             */
+
+    /* ... and instructions that do. */
+    trace_at(0x6004, 0, 0, 1);                  /* BRA.B  *+6      */
+    trace_at(0x6000, 0x0006, 1, 1);             /* BRA.W           */
+    trace_at(0x4EF8, 0x1010, 1, 1);             /* JMP $1010.W     */
+    trace_at(0x4E40, 0, 0, 1);                  /* TRAP #0         */
+    trace_at(0x4E76, 0, 0, 1);                  /* TRAPV           */
+
+    /* A status register write counts as a change of flow -- UM 6.1.7, because
+     * a real part re-prefetches after one. */
+    trace_at(0x46FC, 0x2700, 1, 1);             /* MOVE #imm,SR    */
+    trace_at(0x007C, 0x0000, 1, 1);             /* ORI  #0,SR      */
+
+    /* And an instruction that is never executed, which UM 6.1.7 says is NOT
+     * traced however the bits are set. */
+    trace_at(0x4AFC, 0, 0, 1);                  /* ILLEGAL         */
+    trace_at(0xA000, 0, 0, 1);                  /* A-line          */
+}
+
 /* MOVEC, both directions, over the control registers PRM 6 gives the MC68020.
  *
  * CACR is deliberately absent: which of its bits are implemented is a property
@@ -900,6 +1065,8 @@ static const struct group GROUPS[] = {
     { "ccr",     g_ccr     },
     { "chk",     g_chk     },
     { "movec",   g_movec   },
+    { "traps",   g_traps   },
+    { "trace",   g_trace   },
 };
 #define NGROUPS ((int)(sizeof GROUPS / sizeof GROUPS[0]))
 
@@ -955,9 +1122,11 @@ int main(int argc, char **argv)
         r = &res[i];
 
         memset(mem, 0, sizeof mem);
-        /* Every exception vector points at one sentinel, so a test that trapped
-         * is recognisable without asking Musashi whether it did. */
-        for (j = 0; j < 256; j++) wr32((unsigned)j * 4, 0x00009000);
+        /* Each exception vector points somewhere DIFFERENT, so that an
+         * instruction which trapped through the wrong one shows as a wrong
+         * program counter rather than as nothing at all. */
+        for (j = 0; j < 256; j++)
+            wr32((unsigned)j * 4, 0x00009000u + (unsigned)j * 4);
         wr32(0, STACK);
         wr32(4, PROG_BASE);
         for (j = 0; j < DATA_SIZE; j += 4) {
@@ -984,9 +1153,21 @@ int main(int argc, char **argv)
         m68k_execute(0);
         for (j = 0; j < 8; j++) m68k_set_reg(M68K_REG_D0 + j, t->d[j]);
         for (j = 0; j < 7; j++) m68k_set_reg(M68K_REG_A0 + j, t->a[j]);
+        /* The STATUS REGISTER first, and not as a matter of taste. Musashi
+         * keeps the active stack pointer in A7 and the other two beside it, so
+         * m68k_set_reg for USP, ISP or MSP writes A7 or the saved copy
+         * depending on the S and M flags AS THEY ARE AT THAT MOMENT:
+         *
+         *     case M68K_REG_ISP: if(FLAG_S && !FLAG_M) REG_SP = value;
+         *                        else                  REG_ISP = value;
+         *
+         * Setting them before the status register leaves them wherever the
+         * PREVIOUS test's flags put them. RTE returning to user mode is what
+         * showed it: the oracle came back with a user stack pointer eight
+         * higher than it started, which is not something RTE does. */
+        m68k_set_reg(M68K_REG_SR,  t->sr);
         m68k_set_reg(M68K_REG_USP, t->usp);
         m68k_set_reg(M68K_REG_ISP, t->isp);
-        m68k_set_reg(M68K_REG_SR,  t->sr);
         m68k_set_reg(M68K_REG_MSP,  t->imsp);
         m68k_set_reg(M68K_REG_SFC,  t->isfc);
         m68k_set_reg(M68K_REG_DFC,  t->idfc);
@@ -1033,8 +1214,26 @@ int main(int argc, char **argv)
             div_ovf_c = (is_divw || is_divl) && (sr_after & 2);
         }
 
+        /* UM 6.1.8: "the stacked PC value is the logical address of the
+         * instruction that DETECTED the format error" -- the RTE itself, not
+         * the instruction after it. Musashi stacks the one after. The manual
+         * is the arbiter, so the recorded frame is corrected; the alternative
+         * was to stop comparing the one word this test exists to check.
+         * doc/divergences.md. */
+        if (t->w[0] == 0x4E73u
+            && m68k_get_reg(NULL, M68K_REG_PC) == 0x9000u + 14u * 4u) {
+            for (j = 0; j < nacc; j++)
+                if (!acc[j].rw && acc[j].bytes == 4
+                    && acc[j].value == PROG_BASE + 2)
+                    acc[j].value = PROG_BASE;
+        }
+
+        /* Only a test that made more accesses than there is room to record is
+         * dropped now. Up to M7 a test that touched the vector table was
+         * dropped too, because exception processing did not exist; it does
+         * now, and the frame such a test builds is in the access list with the
+         * value of every word in it. */
         r->keep = !overflowed;
-        for (j = 0; j < nacc; j++) if (acc[j].addr < 0x400) r->keep = 0;
         if (!r->keep) { dropped++; continue; }
         kept++;
 

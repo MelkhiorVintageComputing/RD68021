@@ -389,3 +389,68 @@ instruction, not what a reset happened to leave behind.
 
 **What could differ:** nothing a program can rely on. A supervisor that reads
 SFC before writing it is reading an undefined register on any MC68020.
+
+---
+
+## Musashi stacks the wrong program counter for a format error
+
+UM 6.1.8, on the exception RTE raises when the frame it is handed has a format
+code it does not understand:
+
+> **The stacked PC value is the logical address of the instruction that detected
+> the format error.**
+
+The instruction that detected it is the RTE. Musashi stacks the address of the
+instruction *after* it, which is what every other four-word frame carries -- and
+which is right for a TRAP and wrong here, because a format error is not
+something the program asked for and the handler's job is to look at the
+instruction that hit it.
+
+The same paragraph is also the source of `doc/manual-contradictions.md`'s entry
+about which frame a format error builds. This core follows table 6-5 and builds
+a four-word one.
+
+**What is done about it:** `tools/vectors/gen.c` corrects the stacked value in
+the frame it records. The alternative was to stop comparing the one word the
+test exists to check.
+
+**What could differ:** a handler that reports where a bad frame was found would
+name the instruction after the RTE. There is no way to recover the right answer
+from the frame.
+
+---
+
+## CHK leaves Z, V and C clear, which the manual does not require
+
+PRM 4, CHK, on the condition codes:
+
+> **N** — set if the compared value is less than zero; cleared if it is greater
+> than the upper bound; undefined otherwise.
+> **Z, V, C** — undefined.
+
+N is defined in exactly the two cases that trap, so it is a statement about what
+the handler finds in the stacked status register. This core produces it from the
+sign of what each comparison already computes: the register on the first test,
+and the register minus the bound on the second, whose sign is clear exactly when
+the register is the greater.
+
+The second rule is about *why* the trap happened and not about the sign of
+anything: when the upper bound is negative the subtraction overflows and its
+sign is the opposite of the answer, so that path clears N outright. Eight of the
+8126 vectors were exactly that case.
+
+Z, V and C are zero on both trapping paths, and carry the result of the last
+comparison when the instruction does not trap -- the case the manual calls
+"undefined otherwise".
+
+**What is done about it:** nothing. `tools/vectors/gen.c` already masks N, Z, V
+and C out of the final status register for this group, because they are
+undefined; the stacked copy in the frame is compared exactly, and it now agrees.
+
+**What could differ:** a program that reads Z, V or C after a CHK that did not
+trap. Nothing may, and the manual says so.
+
+**Before this:** the instruction wrote no condition codes at all, so the frame
+carried whatever the previous instruction had left -- including an N that the
+manual *defines* for a trapping CHK. That was a bug and not a divergence; 75 of
+the 8126 vectors found it.

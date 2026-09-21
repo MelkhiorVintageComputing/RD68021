@@ -113,7 +113,12 @@ module core_vec_tb;
     // The vector table and the reset vectors are the same for every test, so
     // they are written once. Refilling them per test was a third of the work
     // this sweep did.
-    for (n = 0; n < 256; n = n + 1) put_l(32'(n) * 4, 32'h0000_9000);
+    //
+    // Every vector points somewhere DIFFERENT -- tools/vectors/gen.c lays it
+    // out the same way -- so that an instruction which trapped through the
+    // wrong vector shows as a wrong program counter.
+    for (n = 0; n < 256; n = n + 1)
+      put_l(32'(n) * 4, 32'h0000_9000 + 32'(n) * 4);
     put_l(32'h0, 32'h0000_2700);
     put_l(32'h4, PROG_BASE);
 

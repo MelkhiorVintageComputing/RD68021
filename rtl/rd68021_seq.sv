@@ -198,6 +198,21 @@ module rd68021_seq #(
 
   logic super_mode;
   logic master_mode;
+  // The status register as it WILL be once the microword now presented retires.
+  //
+  // A microword that writes the status register and decodes is one microword --
+  // MOVE #imm,SR is exactly that -- and everything decided at that boundary is
+  // decided by the register it has just written, not the one it replaced. UM
+  // 6.1.7 traces the instruction AFTER one that turns tracing on, and UM 6.1.9
+  // compares the interrupt level against the mask an instruction has just
+  // lowered. Reading sr_q there is one instruction late in both cases, which a
+  // MOVE #$8700,SR followed by a MOVEQ shows: the MOVEQ is the instruction the
+  // manual traces, and it was the one after it that got traced.
+  logic [15:0] sr_eff;
+  assign sr_eff = (retire && (`UF(DST) == rd68021_ucode_pkg::U_DST_SR))
+                  ? (y[15:0] & rd68021_pkg::SR_IMPLEMENTED)
+                  : sr_q;
+
   assign super_mode  = sr_q[rd68021_pkg::SR_S];
   assign master_mode = sr_q[rd68021_pkg::SR_M];
 
@@ -363,7 +378,32 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_ASRC_IMM8:  a_bus = {{24{stg_d[7]}}, stg_d[7:0]};
       rd68021_ucode_pkg::U_ASRC_DISP8: a_bus = {{24{stg_d[7]}}, stg_d[7:0]};
       rd68021_ucode_pkg::U_ASRC_SP:    a_bus = sp_read;
+      rd68021_ucode_pkg::U_ASRC_USP:   a_bus = usp_q;
       rd68021_ucode_pkg::U_ASRC_CCRW:  a_bus = {27'd0, sr_q[4:0]};
+      // UM 6.1 step four: "the processor multiplies the vector number by four
+      // to determine the exception vector offset". The offset is what both the
+      // format word and the vector address want, so it is what this gives.
+      rd68021_ucode_pkg::U_ASRC_VECOFF:
+        a_bus = {22'd0, `UF(VEC), 2'b00};
+      // PRM 4: TRAP #n takes vector 32 + n, and n is bits 3:0 of the opcode.
+      rd68021_ucode_pkg::U_ASRC_TRAPVEC:
+        // Vector 32 + n, times four, which is 128 plus four times n.
+        a_bus = 32'd128 + {26'd0, stg_d[3:0], 2'b00};
+      // The format word at +$06 of every frame: the format in bits 15:12 and
+      // the vector offset, which T0 is holding, in bits 11:0.
+      rd68021_ucode_pkg::U_ASRC_FMTVEC:
+        a_bus = {16'd0, frame_code, t_q[0][11:0]};
+      rd68021_ucode_pkg::U_ASRC_VBR:   a_bus = vbr_q;
+      rd68021_ucode_pkg::U_ASRC_PC_PREV: a_bus = pc_prev_q;
+      rd68021_ucode_pkg::U_ASRC_IRQLEVEL: a_bus = {29'd0, irq_taking_q};
+      // UM table 6-1: the autovectors are 25 to 31 for levels 1 to 7, which is
+      // 24 plus the level.
+      rd68021_ucode_pkg::U_ASRC_AUTOVEC:
+        a_bus = 32'd96 + {27'd0, irq_taking_q, 2'b00};
+      // The vector a device returned on an acknowledge cycle is a BYTE, and
+      // UM 6.1 multiplies it by four like any other.
+      rd68021_ucode_pkg::U_ASRC_IRQVEC:
+        a_bus = {22'd0, req_rdata[7:0], 2'b00};
       rd68021_ucode_pkg::U_ASRC_REGN:  a_bus = regn_val;
       rd68021_ucode_pkg::U_ASRC_REGNR: a_bus = regnr_val;
       rd68021_ucode_pkg::U_ASRC_MULLO: a_bus = mul_full[31:0];
@@ -391,8 +431,12 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_BSRC_ZERO:  b_bus = 32'd0;
       rd68021_ucode_pkg::U_BSRC_TWO:   b_bus = 32'd2;
       rd68021_ucode_pkg::U_BSRC_FOUR:  b_bus = 32'd4;
+      rd68021_ucode_pkg::U_BSRC_SIX:    b_bus = 32'd6;
+      rd68021_ucode_pkg::U_BSRC_EIGHT:  b_bus = 32'd8;
+      rd68021_ucode_pkg::U_BSRC_TWELVE: b_bus = 32'd12;
       rd68021_ucode_pkg::U_BSRC_BITMASK: b_bus = bit_mask;
       rd68021_ucode_pkg::U_BSRC_DIVQ:    b_bus = div_q;
+      rd68021_ucode_pkg::U_BSRC_IRQLEVEL: b_bus = {29'd0, irq_taking_q};
       rd68021_ucode_pkg::U_BSRC_T0:    b_bus = t_q[0];
       rd68021_ucode_pkg::U_BSRC_T1:    b_bus = t_q[1];
       rd68021_ucode_pkg::U_BSRC_T2:    b_bus = t_q[2];
@@ -532,6 +576,19 @@ module rd68021_seq #(
       .left (sh_left), .x_in (sh_x_in),
       .res (sh_res), .c_out (sh_c), .v_out (sh_v), .x_out (sh_x),
       .x_write (sh_xwr));
+
+  // The four bits of the format word. UM table 6-5.
+  logic [3:0] frame_code;
+  always_comb begin
+    unique case (`UF(FRAME))
+      rd68021_ucode_pkg::U_FRAME_F0: frame_code = 4'h0;
+      rd68021_ucode_pkg::U_FRAME_F1: frame_code = 4'h1;
+      rd68021_ucode_pkg::U_FRAME_F2: frame_code = 4'h2;
+      rd68021_ucode_pkg::U_FRAME_F9: frame_code = 4'h9;
+      rd68021_ucode_pkg::U_FRAME_FA: frame_code = 4'hA;
+      default:                       frame_code = 4'hB;
+    endcase
+  end
 
   // ==========================================================================
   // MOVEC's control registers -- PRM 6
@@ -828,6 +885,23 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_ALU_SETB7:   y = a_bus | 32'h0000_0080;
       rd68021_ucode_pkg::U_ALU_SHL16:   y = {a_bus[15:0], 16'd0};
       rd68021_ucode_pkg::U_ALU_ORLOW16: y = {a_bus[31:16], b_bus[15:0]};
+      // UM 6.1 step one, as one operation. Splitting it would leave a clock in
+      // which the processor is at the supervisor level with tracing still on.
+      // UM 6.1: the level replaces I2-I0 and nothing else moves.
+      rd68021_ucode_pkg::U_ALU_SETMASK:
+        y = (a_bus & ~(32'd7 << rd68021_pkg::SR_I0))
+            | ({29'd0, b_bus[2:0]} << rd68021_pkg::SR_I0);
+      rd68021_ucode_pkg::U_ALU_EXCSR:
+        y = (a_bus | (32'd1 << rd68021_pkg::SR_S))
+            & ~((32'd1 << rd68021_pkg::SR_T1) | (32'd1 << rd68021_pkg::SR_T0));
+      // UM 6.1.9: clearing M is what moves the active supervisor stack from the
+      // master one to the interrupt one, mid-exception.
+      rd68021_ucode_pkg::U_ALU_CLRM:
+        y = a_bus & ~(32'd1 << rd68021_pkg::SR_M);
+      // ... and the throwaway frame's copy of the status register is the one
+      // already stacked "except that the S-bit is set".
+      rd68021_ucode_pkg::U_ALU_SETS:
+        y = a_bus | (32'd1 << rd68021_pkg::SR_S);
       rd68021_ucode_pkg::U_ALU_SX:
         unique case (eff_size)
           rd68021_ucode_pkg::U_SIZE_BYTE: y = {{24{a_bus[7]}},  a_bus[7:0]};
@@ -890,6 +964,98 @@ module rd68021_seq #(
   assign div_stall = div_req && !div_fin_q;
 
   // ==========================================================================
+  // Interrupts -- UM 6.1.9 and figures 6-2 and 6-3
+  //
+  // IPL2-IPL0 are active low and carry the level inverted: all negated is level
+  // zero, and the pins reading 001 mean level 6. The bus unit has already
+  // synchronised them on consecutive falling edges, which is UM 6.1.9's "an
+  // interrupt request that is the same for two consecutive falling clock edges
+  // is considered a valid input".
+  //
+  // An interrupt becomes pending when its level is GREATER than the mask --
+  // "the value in the interrupt mask is the highest priority level that the
+  // processor ignores" -- or on a TRANSITION to level 7, which no mask value
+  // can inhibit. Level 7 is therefore both level- and edge-sensitive, and
+  // figure 6-3 spells out the difference: at level 6 a request lowered and
+  // raised again is not a second interrupt, and at level 7 it is.
+  // ==========================================================================
+  logic [2:0] irq_level;
+  logic [2:0] irq_prev_q;
+  // The level this interrupt is being taken at, latched when the sequencer
+  // dispatches to the handler. UM 6.1.9 requires the device to hold IPL until
+  // the acknowledge, but the mask and the acknowledge address must both come
+  // from ONE reading of the pins and not from two.
+  logic [2:0] irq_taking_q;
+  logic       irq_nmi_edge;
+  logic       irq_pending;
+  logic       irq_ipend;
+
+  assign irq_level = ~ipl_sync_n;
+
+  // A transition TO level 7, which is what makes a second non-maskable
+  // interrupt happen where a second level-6 one would not.
+  assign irq_nmi_edge = (irq_level == 3'd7) && (irq_prev_q != 3'd7);
+
+  // What the sequencer acts on at an instruction boundary, judged against the
+  // mask the instruction now retiring may itself be writing.
+  assign irq_pending = (irq_level > sr_eff[rd68021_pkg::SR_I0 +: 3])
+                    || irq_nmi_edge;
+
+  // ... and what the pin says, which is the same comparison against the
+  // register as it stands. The pin is a statement about the outside world and
+  // nothing is timed off it, so it is kept off the arithmetic result sr_eff
+  // carries: UM 3.10 asks only that IPEND reflect a request the mask admits.
+  assign irq_ipend   = (irq_level > sr_q[rd68021_pkg::SR_I0 +: 3])
+                    || irq_nmi_edge;
+
+  // UM 6.1.9: IPEND "signals to external devices that an interrupt exception
+  // will be taken at an upcoming instruction boundary". It is a pin and is
+  // never three-stated.
+  assign ipend_n_o = ~irq_ipend;
+
+  // ==========================================================================
+  // Tracing -- UM 6.1.7 and table 6-2
+  //
+  //   T1 T0   what is traced
+  //    0  0   nothing
+  //    0  1   instructions that change the flow
+  //    1  0   every instruction
+  //    1  1   undefined, reserved
+  //
+  // "The state of these bits WHEN AN INSTRUCTION BEGINS EXECUTION determines
+  // whether the instruction generates a trace exception after the instruction
+  // completes." So the mode is latched at the boundary that starts each
+  // instruction, and the instruction's own writes to the status register --
+  // which is one of the things that counts as a change of flow -- cannot
+  // change whether it is traced.
+  //
+  // A change of flow is a pipe FLUSH, or a write to the status register. The
+  // manual counts the second because a real part "must re-prefetch instruction
+  // words to fill the pipe again any time an instruction that can modify the
+  // SR is executed"; this design does not have to, so it says so explicitly
+  // rather than getting it for free.
+  // ==========================================================================
+  logic [1:0] trace_mode_q;
+  logic       flow_q;
+  logic       notrace_q;
+  logic [31:0] pc_prev_q;   // the address of the instruction just finished
+  logic        pc_kept_q;   // ... and it was taken early, before a flush
+  logic       trace_take;
+  logic       flow_eff;
+
+  // The same one-microword problem sr_eff has: MOVE #imm,SR writes the status
+  // register on the microword that decodes, so the change of flow it is has to
+  // count at that very boundary. flow_q alone is one instruction late, and
+  // since the DECODE arm also clears it, one instruction late means never.
+  assign flow_eff = flow_q
+                 || (retire && ((`UF(PF) == rd68021_ucode_pkg::U_PF_FLUSH)
+                                || (`UF(DST) == rd68021_ucode_pkg::U_DST_SR)));
+
+  assign trace_take = !notrace_q
+                   && ((trace_mode_q == 2'b10)
+                       || ((trace_mode_q == 2'b01) && flow_eff));
+
+  // ==========================================================================
   // The conditional tests -- PRM table 3-19
   //
   // Sixteen conditions on four flags, written out rather than factored: the
@@ -934,6 +1100,19 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_COND_CNT16: cond_true = (cnt_q == 5'd16);
       // Bit 10 of the extension word: the long forms' 64-bit selector.
       rd68021_ucode_pkg::U_COND_XW10:  cond_true = xw_q[10];
+      // RTE's format word. Its only source is read data, which is what
+      // doc/checkpoint.md's rule on bus-steering conditions admits.
+      rd68021_ucode_pkg::U_COND_FMT0:  cond_true = (xw_q[15:12] == 4'h0);
+      rd68021_ucode_pkg::U_COND_FMT1:  cond_true = (xw_q[15:12] == 4'h1);
+      rd68021_ucode_pkg::U_COND_FMT2:  cond_true = (xw_q[15:12] == 4'h2);
+      rd68021_ucode_pkg::U_COND_MASTER: cond_true = master_mode;
+      rd68021_ucode_pkg::U_COND_USER:  cond_true = ~super_mode;
+      rd68021_ucode_pkg::U_COND_DIVZERO: cond_true = div_zero;
+      rd68021_ucode_pkg::U_COND_VSET:    cond_true = flag_v;
+      rd68021_ucode_pkg::U_COND_AVEC:
+        cond_true = (req_end == rd68021_pkg::CE_AVEC);
+      rd68021_ucode_pkg::U_COND_BERR:
+        cond_true = (req_end == rd68021_pkg::CE_BERR);
       // Tested on the result the CURRENT microword is computing, not on the
       // status register, which it has not written yet.
       rd68021_ucode_pkg::U_COND_RESNEG: cond_true = res_n;
@@ -955,6 +1134,11 @@ module rd68021_seq #(
   logic bus_req;
   logic needs_c;
   logic stall;
+  // PRM 6 STOP. While this is set the sequencer does nothing at all: no
+  // microword retires, so nothing commits, no bus request is presented and the
+  // pipe does not move. UM 2.3: "the stopped state ... no further bus cycles
+  // are generated".
+  logic stopped_q;
 
   assign bus_req = (`UF(BUS) != rd68021_ucode_pkg::U_BUS_NONE);
   assign needs_c = (`UF(PF) == rd68021_ucode_pkg::U_PF_ADV)
@@ -981,6 +1165,8 @@ module rd68021_seq #(
   // the next instruction.
   logic other_stall;
   assign other_stall = div_stall
+                    || stopped_q
+                    || (`UF(RSTO) && reset_busy)
                     || (needs_c && !pf_ready)
                     || ((`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE)
                         && (`UF(PF) != rd68021_ucode_pkg::U_PF_ADV)
@@ -1001,6 +1187,8 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_ASEL_FOUR: req_addr_sel = 32'd4;
       rd68021_ucode_pkg::U_ASEL_T0:   req_addr_sel = t_q[0];
       rd68021_ucode_pkg::U_ASEL_T1:   req_addr_sel = t_q[1];
+      rd68021_ucode_pkg::U_ASEL_T2:   req_addr_sel = t_q[2];
+      rd68021_ucode_pkg::U_ASEL_T3:   req_addr_sel = t_q[3];
       rd68021_ucode_pkg::U_ASEL_EA:   req_addr_sel = ea_q;
       rd68021_ucode_pkg::U_ASEL_PC_D: req_addr_sel = pc_d;
       default:                        req_addr_sel = 32'd0;
@@ -1060,8 +1248,20 @@ module rd68021_seq #(
   // inside it is an ordinary one that is retried on its own. TAS is the only
   // instruction in this milestone that asserts it; CAS and CAS2 join it in M10.
   assign req_rmc      = `UF(RMC);
-  assign req_cpuspace = rd68021_pkg::CPUS_IACK;
-  assign req_cpuaddr  = 8'd0;
+  // UM figure 5-31 lays out the CPU address spaces. Only the interrupt
+  // acknowledge is reached before M10; the breakpoint and the module call join
+  // it there, and the coprocessor in M13.
+  always_comb begin
+    unique case (`UF(CPUSPACE))
+      rd68021_ucode_pkg::U_CPUSPACE_BKPT:   req_cpuspace = rd68021_pkg::CPUS_BKPT;
+      rd68021_ucode_pkg::U_CPUSPACE_COPROC: req_cpuspace = rd68021_pkg::CPUS_COPROC;
+      default:                              req_cpuspace = rd68021_pkg::CPUS_IACK;
+    endcase
+  end
+
+  // An acknowledge cycle puts the level on A3-A1 -- the bus unit builds the
+  // rest of the address.
+  assign req_cpuaddr  = {5'd0, irq_taking_q};
 
   // ==========================================================================
   // The instruction pipe
@@ -1074,11 +1274,30 @@ module rd68021_seq #(
   // The next micro-address
   // ==========================================================================
   always_comb begin
-    if (!retire) begin
+    // The only ways out of the stopped state are an interrupt above the mask
+    // STOP wrote and a reset -- PRM 6. The decode that stopped the processor
+    // has already put the next instruction's entry in `upc`, so leaving by way
+    // of an interrupt means overriding it here: the interrupt is taken instead
+    // of that instruction, not after it.
+    if (stopped_q) begin
+      upc_nxt = irq_pending ? rd68021_ucode_pkg::ENTRY_IRQ : upc;
+    end else if (!retire) begin
       upc_nxt = upc;
     end else begin
       unique case (`UF(SEQ))
-        rd68021_ucode_pkg::U_SEQ_DECODE: upc_nxt = dec_entry;
+        // The decode arm, with the trace exception in front of it. UM 6.1.7:
+        // "the exception processing for a trace starts at the end of normal
+        // processing for the traced instruction and BEFORE THE START OF THE
+        // NEXT INSTRUCTION", which is exactly this point and no other.
+        // UM 6.1.7: "if an interrupt is pending at the completion of an
+        // instruction, the trace exception processing occurs BEFORE the
+        // interrupt exception processing starts". So the trace comes first and
+        // the interrupt is taken at the boundary the trace handler's own first
+        // instruction ends on.
+        rd68021_ucode_pkg::U_SEQ_DECODE:
+          upc_nxt = trace_take   ? rd68021_ucode_pkg::ENTRY_TRACE
+                  : irq_pending  ? rd68021_ucode_pkg::ENTRY_IRQ
+                                 : dec_entry;
         rd68021_ucode_pkg::U_SEQ_EADEC:  upc_nxt = ea_entry;
         rd68021_ucode_pkg::U_SEQ_EAMODE: upc_nxt = eam_entry;
         rd68021_ucode_pkg::U_SEQ_RET:    upc_nxt = link_q;
@@ -1113,6 +1332,11 @@ module rd68021_seq #(
       eapc_q  <= 1'b0;
       eadst_q <= 1'b0;
       cnt_q   <= 5'd0;
+      trace_mode_q <= 2'b00;
+      flow_q       <= 1'b0;
+      notrace_q    <= 1'b0;
+      pc_prev_q    <= '0;
+      pc_kept_q    <= 1'b0;
       size_q  <= rd68021_ucode_pkg::U_SIZE_LONG;
       for (i_r = 0; i_r < 8; i_r = i_r + 1) dreg[i_r] <= '0;
       for (i_r = 0; i_r < 7; i_r = i_r + 1) areg[i_r] <= '0;
@@ -1147,6 +1371,37 @@ module rd68021_seq #(
         if (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE) begin
           eapc_q  <= 1'b0;
           eadst_q <= 1'b0;
+          // The instruction that is about to start. Its trace mode is the one
+          // the status register holds NOW -- UM 6.1.7 -- and it has not
+          // changed the flow yet.
+          trace_mode_q <= {sr_eff[rd68021_pkg::SR_T1], sr_eff[rd68021_pkg::SR_T0]};
+          flow_q       <= 1'b0;
+          notrace_q    <= 1'b0;
+          // And the address of the instruction that has just finished, which
+          // is what a trace frame carries at +$08. pc_d is still it at this
+          // edge: the pipe advance that moves it on is a non-blocking write on
+          // this same edge.
+          //
+          // Unless the instruction FLUSHED the pipe, which moves pc_d to the
+          // new stream several microwords before the instruction ends. A
+          // traced BRA stacked the address of its own target at +$08, which
+          // reads as a trace of the instruction that had not run yet. The
+          // value is therefore taken at the flush when there was one, and
+          // pc_kept_q says so.
+          if (!pc_kept_q) pc_prev_q <= pc_d;
+          pc_kept_q    <= 1'b0;
+        end else begin
+          // The last moment at which pc_d is still this instruction's own
+          // address. Only the first flush of an instruction counts: RTE
+          // flushes once, and nothing flushes twice, but the guard costs
+          // nothing and makes that an assumption the design does not rest on.
+          if ((`UF(PF) == rd68021_ucode_pkg::U_PF_FLUSH) && !pc_kept_q) begin
+            pc_prev_q <= pc_d;
+            pc_kept_q <= 1'b1;
+          end
+          if (`UF(PF) == rd68021_ucode_pkg::U_PF_FLUSH
+              || `UF(DST) == rd68021_ucode_pkg::U_DST_SR) flow_q <= 1'b1;
+          if (`UF(NOTRACE)) notrace_q <= 1'b1;
         end
 
         unique case (`UF(DST))
@@ -1196,6 +1451,10 @@ module rd68021_seq #(
           // CACR only two of its thirty-two are implemented here; PRM 6 says
           // the transfer is thirty-two bits wide either way and the rest read
           // back as zero, which is what narrow registers give.
+          // The user stack pointer by name. MOVE USP reaches it while running
+          // at the supervisor level, which is the only way a kernel can build
+          // a frame on a user stack -- PRM 6.
+          rd68021_ucode_pkg::U_DST_USP: usp_q <= y;
           rd68021_ucode_pkg::U_DST_CREG: begin
             unique case (creg_sel)
               12'h000: sfc_q  <= y[2:0];
@@ -1263,6 +1522,16 @@ module rd68021_seq #(
           rd68021_ucode_pkg::U_CCR_LOGIC: begin
             sr_q[rd68021_pkg::SR_N] <= res_n;
             sr_q[rd68021_pkg::SR_Z] <= res_z;
+            sr_q[rd68021_pkg::SR_V] <= 1'b0;
+            sr_q[rd68021_pkg::SR_C] <= 1'b0;
+          end
+          // PRM 4, CHK: N is "cleared if the compared value is greater than the
+          // upper bound". That is the reason for the trap, not the sign of the
+          // difference -- a negative bound makes the subtraction overflow and
+          // the two disagree.
+          rd68021_ucode_pkg::U_CCR_CLRNZVC: begin
+            sr_q[rd68021_pkg::SR_N] <= 1'b0;
+            sr_q[rd68021_pkg::SR_Z] <= 1'b0;
             sr_q[rd68021_pkg::SR_V] <= 1'b0;
             sr_q[rd68021_pkg::SR_C] <= 1'b0;
           end
@@ -1354,6 +1623,43 @@ module rd68021_seq #(
     end
   end
 
+  // Entered by the decode arm, once the trace and the interrupt have had their
+  // chance at that same boundary, and left only by an interrupt or by reset.
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+      stopped_q <= 1'b0;
+    else if (irq_pending)
+      stopped_q <= 1'b0;
+    else if (retire && (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE)
+             && `UF(STOP) && !trace_take)
+      stopped_q <= 1'b1;
+  end
+
+  // PRM 6 RESET. The bus unit holds the pin for 512 clocks and says so; this
+  // microword stalls until it lets go.
+  assign reset_req = `UF(RSTO);
+
+  // The level as it was at the last boundary, for the level-7 edge.
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)                                        irq_prev_q <= 3'd0;
+    else if (retire && (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE))
+                                                       irq_prev_q <= irq_level;
+  end
+
+  // The level this acknowledge cycle is for. Latched on the step INTO the
+  // interrupt entry point, wherever that step comes from -- the decode arm or
+  // the stopped state -- and not while sitting on it, which a stalled first
+  // microword would otherwise do once per clock with whatever the pins then
+  // said.
+  logic irq_enter;
+  assign irq_enter = (upc != rd68021_ucode_pkg::ENTRY_IRQ)
+                  && (upc_nxt == rd68021_ucode_pkg::ENTRY_IRQ);
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)          irq_taking_q <= 3'd0;
+    else if (irq_enter)  irq_taking_q <= irq_level;
+  end
+
   assign cacr      = cacr_q;
   assign caar      = caar_q;
   assign cach_op   = 2'b00;
@@ -1368,9 +1674,7 @@ module rd68021_seq #(
   assign rst_rmc      = 1'b0;
   assign rst_dob      = '0;
 
-  assign reset_req    = 1'b0;
   assign dbf          = 1'b0;
-  assign ipend_n_o    = 1'b1;
 
   // ==========================================================================
   // Not consumed yet.
@@ -1378,7 +1682,7 @@ module rd68021_seq #(
   logic unused_seq;
   assign unused_seq = &{1'b1,
                         req_last, req_end, req_fault, req_fault_wr, req_dsack,
-                        eam_illegal, div_zero, mul_full66[65:64],
+                        eam_illegal, mul_full66[65:64], req_rdata[39:8],
                         // The bit number is taken modulo 32 at most, so its
                         // top bit is never part of an answer -- PRM 4.
                         bit_num[5],
