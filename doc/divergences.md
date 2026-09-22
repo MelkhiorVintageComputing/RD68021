@@ -604,3 +604,38 @@ CHK2's trap.
 the opposite verdict under Musashi. A program whose bounds are sensible under
 both — which is any range that does not straddle the signed/unsigned boundary —
 gets the same answer from either.
+
+---
+
+## Musashi reads a long word for every bit field
+
+PRM 4 attaches the same NOTE to all eight bit-field instruction pages:
+
+> For the MC68020, MC68030, and MC68040, all bit field instructions access only
+> those bytes in memory that contain some portion of the bit field. The possible
+> accesses are byte, word, 3-byte, long word, and long word with byte (for a
+> 5-byte access).
+
+This core does that: the access is `(offset mod 8 + width + 7) / 8` bytes, one
+to five of them, starting at `<ea> + offset/8`. Musashi reads and writes a long
+word whatever the field is, so for a one-bit field at offset zero it makes a
+four-byte access where the manual says one byte.
+
+The architectural result is the same either way — the bytes outside the field
+are written back unchanged — but the access lists are not comparable, and the
+access list is most of what the sweep checks.
+
+**What is done about it:** the sweep runs the register-direct forms, which touch
+no memory at all and where the oracle is exact. It is the same field arithmetic
+in both: the extract, the sign extension, the first-one scan, the merge, and the
+wrap. What the memory forms add on top is the base address, the byte count and
+the write-back, and `sim/tb/core_bitfield_tb.sv` covers those against a model
+computed one bit at a time from the manual's own definition -- 2412 checks over
+eight instructions, six offsets and six widths, spanning one to five bytes.
+
+`sim/tb/bitfield_tb.sv` checks the unit itself the same way, 24000 random cases
+against an independent bit-at-a-time model.
+
+**What could differ:** a device that cares which bytes are touched -- memory
+with side effects on read, or a bus analyser -- sees four accesses where this
+core makes one. Ordinary memory cannot tell.

@@ -325,6 +325,12 @@ module rd68021_seq #(
           2'b01:   eff_size = rd68021_ucode_pkg::U_SIZE_WORD;
           default: eff_size = rd68021_ucode_pkg::U_SIZE_LONG;
         endcase
+      // A bit-field access is as many bytes as the field touches, so the size
+      // is not one of the three the rest of the machine uses. The two selectors
+      // differ only in whether the field is in a register or in memory.
+      rd68021_ucode_pkg::U_SZSEL_BFMEM,
+      rd68021_ucode_pkg::U_SZSEL_BFREG:
+        eff_size = rd68021_ucode_pkg::U_SIZE_LONG;
       rd68021_ucode_pkg::U_SZSEL_CHK:
         eff_size = stg_d[7] ? rd68021_ucode_pkg::U_SIZE_WORD
                             : rd68021_ucode_pkg::U_SIZE_LONG;
@@ -430,6 +436,21 @@ module rd68021_seq #(
         a_bus = {16'd0, frame_code, flt_odd_q ? 12'h00C : 12'h008};
       rd68021_ucode_pkg::U_ASRC_FMTVECI:
         a_bus = {16'd0, frame_code, 2'b00, `UF(VEC), 2'b00};
+      // The bit field's results -- PRM 4.
+      rd68021_ucode_pkg::U_ASRC_BF_FIELD:   a_bus = bf_field;
+      rd68021_ucode_pkg::U_ASRC_BF_SXFIELD: a_bus = bf_sxfield;
+      // BFFFO: "the bit offset in the instruction plus the offset of the first
+      // one bit", and the field's width when there is none.
+      //
+      // For a DATA REGISTER the offset that goes into that sum is the one the
+      // field was actually taken at -- the low five bits -- and not the whole
+      // register. The two are congruent modulo 32, so either serves equally as
+      // an offset into the same field, and doc/manual-contradictions.md records
+      // that the manual does not choose between them.
+      rd68021_ucode_pkg::U_ASRC_BF_FFO:
+        a_bus = ((`UF(SZSEL) == rd68021_ucode_pkg::U_SZSEL_BFREG)
+                 ? {27'd0, bf_offset[4:0]} : bf_offset) + {26'd0, bf_ffo};
+      rd68021_ucode_pkg::U_ASRC_BF_MERGED:  a_bus = bf_merged_reg;
       rd68021_ucode_pkg::U_ASRC_VBR:   a_bus = vbr_q;
       // The fault frame's fields -- doc/ssw.md and doc/checkpoint.md.
       rd68021_ucode_pkg::U_ASRC_SSW:        a_bus = {16'd0, ssw};
@@ -489,6 +510,7 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_BSRC_FOUR:  b_bus = 32'd4;
       rd68021_ucode_pkg::U_BSRC_SIX:    b_bus = 32'd6;
       rd68021_ucode_pkg::U_BSRC_EIGHT:  b_bus = 32'd8;
+      rd68021_ucode_pkg::U_BSRC_BF_BYTEOFF: b_bus = bf_byteoff;
       rd68021_ucode_pkg::U_BSRC_TWELVE: b_bus = 32'd12;
       // From rd68021_frame_pkg, which is generated from the same table the
       // frame is laid out by, so the step down to the frame base cannot drift
@@ -689,6 +711,77 @@ module rd68021_seq #(
     else if (xw_q[14:12] == 3'd7) xreg_read = sp_read;
     else                         xreg_read = areg[xw_q[14:12]];
   end
+
+  // ==========================================================================
+  // The bit field -- PRM 4, the eight BFxxx instructions
+  //
+  // Offset and width are not operands the microcode fetches; they are functions
+  // of the extension word and, when it says so, of a data register. So they are
+  // wires, and the microcode never has to move them anywhere.
+  //
+  // PRM 4: the offset is an unsigned five-bit immediate or the SIGNED
+  // thirty-two-bit value in a data register; the width is an immediate or a
+  // register modulo 32, and a zero means 32 in either case.
+  // ==========================================================================
+  logic [31:0] bf_offset;
+  logic  [4:0] bf_width_enc;
+  logic  [5:0] bf_width;
+  logic  [2:0] bf_nbytes;
+  logic [31:0] bf_byteoff;
+
+  assign bf_offset    = xw_q[11] ? dreg[xw_q[8:6]] : {27'd0, xw_q[10:6]};
+  assign bf_width_enc = xw_q[5]  ? dreg[xw_q[2:0]][4:0] : xw_q[4:0];
+  assign bf_width     = (bf_width_enc == 5'd0) ? 6'd32 : {1'b0, bf_width_enc};
+
+  // How far the base byte is from the effective address, and how many bytes the
+  // field touches. A negative offset divides DOWNWARD -- an arithmetic shift --
+  // and the remainder is still the non-negative one the low three bits give,
+  // which is what makes the same two expressions right on both sides of zero.
+  assign bf_byteoff   = {{3{bf_offset[31]}}, bf_offset[31:3]};
+  assign bf_nbytes    = 3'(({3'd0, bf_offset[2:0]} + bf_width + 6'd7) >> 3);
+
+  // The bytes the read returned, left justified: the bus unit hands them back
+  // right justified, and the field is measured from the FIRST of them.
+  logic [39:0] bf_window;
+  always_comb begin
+    unique case (bf_nbytes)
+      3'd1:    bf_window = {req_rdata[7:0],  32'd0};
+      3'd2:    bf_window = {req_rdata[15:0], 24'd0};
+      3'd3:    bf_window = {req_rdata[23:0], 16'd0};
+      3'd4:    bf_window = {req_rdata[31:0],  8'd0};
+      default: bf_window = req_rdata[39:0];
+    endcase
+  end
+
+  // The bit of the value being inserted that becomes the field's most
+  // significant one. The width is one to thirty-two, so this is zero to
+  // thirty-one and fits a register index exactly.
+  logic  [4:0] bf_msb_ix;
+  assign bf_msb_ix = 5'(bf_width - 6'd1);
+
+  logic [31:0] bf_field, bf_sxfield, bf_merged_reg;
+  logic [39:0] bf_merged_mem;
+  logic        bf_msb, bf_zero;
+  logic  [5:0] bf_ffo;
+
+  rd68021_bitfield u_bf (
+      .is_reg     (`UF(SZSEL) == rd68021_ucode_pkg::U_SZSEL_BFREG),
+      .reg_data   (dreg[rsel]),
+      .mem_data   (bf_window),
+      .roff       (bf_offset[4:0]),
+      .boff       (bf_offset[2:0]),
+      .width      (bf_width),
+      // What goes back in is always held in T3 first. It cannot be the ALU
+      // result of the microword that writes it: that microword's result IS the
+      // merge, so the two would depend on each other.
+      .ins        (t_q[3]),
+      .field      (bf_field),
+      .sxfield    (bf_sxfield),
+      .msb        (bf_msb),
+      .zero       (bf_zero),
+      .ffo        (bf_ffo),
+      .merged_reg (bf_merged_reg),
+      .merged_mem (bf_merged_mem));
 
   // ==========================================================================
   // The binary-coded decimal adjust -- PRM 4
@@ -1496,8 +1589,26 @@ module rd68021_seq #(
     endcase
   end
 
-  assign req_bytes    = (`UF(BYTES) == 3'd0) ? size_bytes : `UF(BYTES);
-  assign req_wdata    = {8'd0, y};
+  assign req_bytes    = (`UF(SZSEL) == rd68021_ucode_pkg::U_SZSEL_BFMEM)
+                        ? bf_nbytes
+                        : (`UF(BYTES) == 3'd0) ? size_bytes : `UF(BYTES);
+  // A bit-field write puts back all the bytes the field touches, up to five of
+  // them, with only the field itself changed -- and RIGHT justified, because
+  // that is how the bus unit takes an operand of any length. The window the
+  // field is measured in is left justified, so this is that undone.
+  logic [39:0] bf_wdata;
+  always_comb begin
+    unique case (bf_nbytes)
+      3'd1:    bf_wdata = {32'd0, bf_merged_mem[39:32]};
+      3'd2:    bf_wdata = {24'd0, bf_merged_mem[39:24]};
+      3'd3:    bf_wdata = {16'd0, bf_merged_mem[39:16]};
+      3'd4:    bf_wdata = { 8'd0, bf_merged_mem[39:8]};
+      default: bf_wdata = bf_merged_mem;
+    endcase
+  end
+
+  assign req_wdata    = (`UF(SZSEL) == rd68021_ucode_pkg::U_SZSEL_BFMEM)
+                        ? bf_wdata : {8'd0, y};
   // UM 5.5.2: RMC is held across the whole read-modify-write, and each cycle
   // inside it is an ordinary one that is retried on its own. TAS is the only
   // instruction in this milestone that asserts it; CAS and CAS2 join it in M10.
@@ -1894,6 +2005,26 @@ module rd68021_seq #(
           rd68021_ucode_pkg::U_CCR_CMP2: begin
             if (res_z) sr_q[rd68021_pkg::SR_Z] <= 1'b1;
             sr_q[rd68021_pkg::SR_C] <= alu_c;
+          end
+          // PRM 4, every bit-field instruction: "N -- set if the most
+          // significant bit of the field is set. Z -- set if all bits of the
+          // field are zero. V -- always cleared. C -- always cleared."
+          rd68021_ucode_pkg::U_CCR_BF: begin
+            sr_q[rd68021_pkg::SR_N] <= bf_msb;
+            sr_q[rd68021_pkg::SR_Z] <= bf_zero;
+            sr_q[rd68021_pkg::SR_V] <= 1'b0;
+            sr_q[rd68021_pkg::SR_C] <= 1'b0;
+          end
+          // ... except BFINS, whose page says "the instruction sets the
+          // condition codes according to the INSERTED value" -- which is the
+          // field only after the write, and is in T3 before it.
+          // doc/manual-contradictions.md.
+          rd68021_ucode_pkg::U_CCR_BFINS: begin
+            sr_q[rd68021_pkg::SR_N] <= t_q[3][bf_msb_ix];
+            sr_q[rd68021_pkg::SR_Z] <=
+                ((t_q[3] & ~(32'hFFFF_FFFF << bf_width)) == 32'd0);
+            sr_q[rd68021_pkg::SR_V] <= 1'b0;
+            sr_q[rd68021_pkg::SR_C] <= 1'b0;
           end
           rd68021_ucode_pkg::U_CCR_CLRNZVC: begin
             sr_q[rd68021_pkg::SR_N] <= 1'b0;

@@ -148,3 +148,75 @@ four-word frame.
 
 **What could differ:** a handler that reads a format error's frame as sixteen
 words gets four. It would be reading fifteen words of somebody else's stack.
+
+---
+
+## What BFFFO adds to its scan result, when the field is in a register
+
+**PRM 4**, BFFFO:
+
+> The bit offset of that bit (the bit offset in the instruction plus the offset
+> of the first one bit) is placed in Dn.
+
+and, on the offset when it comes from a register:
+
+> If Do = 1, the offset field specifies a data register that contains the
+> offset. The value is in the range of –2³¹ to 2³¹ – 1.
+
+For a field in **memory** those two sentences are complete: the offset is a byte
+displacement and a bit position within it, nothing is reduced, and the sum is
+the obvious one.
+
+For a field in a **data register** the manual never says what happens to an
+offset outside 0–31 at all — yet it must say something, because there are only
+thirty-two bits to index. Every implementation takes it modulo 32, which is what
+makes the field wrap, and this core does too. The question the manual leaves is
+which offset then goes into BFFFO's sum: the register's whole value, or the
+reduced one the field was actually taken at.
+
+**Both are defensible and they differ.** The two are congruent modulo 32, so
+either serves equally as an offset into the same field — feed either back to a
+later bit-field instruction on the same register and you address the same bits.
+The literal reading of "the bit offset in the instruction" is the whole value;
+the reading that matches how the field was located is the reduced one.
+
+**This core reduces**, for two reasons. A machine that locates the field by
+rotating has the reduced offset in hand and would have to keep the original
+specially to produce the other answer; and the oracle does the same, so the
+sweep can check the instruction rather than step around it. It is recorded here
+rather than in `doc/divergences.md` because it is not a divergence from anything
+the manual says — it is a gap in what it says.
+
+**The memory case is not affected.** Nothing is reduced there and the sum is the
+manual's, unambiguously.
+
+---
+
+## BFINS sets its codes from the field before or after the insert
+
+**PRM 3.1.6**, on all eight bit-field instructions at once:
+
+> NOTE: All bit field instructions set the CCR N and Z bits as shown for BFTST
+> before performing the specified operation.
+
+**PRM 4**, on BFINS alone:
+
+> Inserts a bit field taken from the low-order bits of the specified data
+> register into a bit field at the effective address location. **The instruction
+> sets the condition codes according to the inserted value.**
+
+For the other seven the two agree, because reading the field is the operation.
+For BFINS they cannot: the field before the insert and the value being inserted
+are different things.
+
+**This core follows the BFINS page** — N is the most significant bit of the value
+inserted and Z says that value's low `width` bits are all zero. Three reasons,
+in order of weight: the per-instruction page is the detailed specification and
+the summary is a summary; the general note says "as shown for BFTST", and
+BFTST's N and Z are defined in terms of *the field*, which after a BFINS is the
+inserted value; and it is the only reading under which the codes tell the
+program something it does not already know — the field before an insert is
+about to be destroyed.
+
+`sim/tb/core_bitfield_tb.sv` checks both halves: the other seven against the
+field as found, BFINS against the value inserted.

@@ -38,6 +38,7 @@ SRCS := rtl/rd68021_sync.sv \
         rtl/rd68021_dedge_ff.sv \
         rtl/rd68021_shifter.sv \
         rtl/rd68021_divider.sv \
+        rtl/rd68021_bitfield.sv \
         rtl/rd68021_biu.sv \
         rtl/rd68021_ifu.sv \
         rtl/rd68021_seq.sv \

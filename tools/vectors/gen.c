@@ -831,6 +831,56 @@ static void g_moves(void)
             sweep(SZ[i], EA_MEM, N_EA_MEM, 1, &XW[j], NPER, 0);
 }
 
+/* The eight bit-field instructions -- PRM 4.
+ *
+ * The extension word is the instruction: offset and width, each either an
+ * immediate or a data register. The immediates are swept over the values that
+ * matter -- a field inside one byte, one that straddles a byte, one that fills
+ * a long word, and the encoded zero that means thirty-two -- and the register
+ * forms let the operand generator's random registers supply offsets that are
+ * large, negative, and not multiples of eight, which is where the byte count
+ * and the base address are earned.
+ *
+ * Both the register-direct and the memory forms are run, because they share
+ * nothing but the extension word: one wraps inside thirty-two bits and the
+ * other walks up to five bytes of memory. */
+static void g_bitfield(void)
+{
+    static const unsigned int OPS[] = {
+        0xE8C0u,  /* BFTST  */ 0xE9C0u,  /* BFEXTU */
+        0xEAC0u,  /* BFCHG  */ 0xEBC0u,  /* BFEXTS */
+        0xECC0u,  /* BFCLR  */ 0xEDC0u,  /* BFFFO  */
+        0xEEC0u,  /* BFSET  */ 0xEFC0u,  /* BFINS  */
+    };
+    /* {Do,offset,Dw,width} as the extension word packs them, plus a data
+     * register in bits 14-12 for the four that name one. */
+    static const unsigned int XW[] = {
+        0x0000u,          /* offset 0,  width 32 (the encoded zero) */
+        0x0001u,          /* offset 0,  width 1                     */
+        0x0008u,          /* offset 0,  width 8                     */
+        0x01C7u,          /* offset 7,  width 7  -- inside one byte  */
+        0x0148u,          /* offset 5,  width 8  -- straddles one    */
+        0x07C0u,          /* offset 31, width 32 -- five bytes       */
+        0x0820u,          /* offset in D0, width 32                  */
+        0x0925u,          /* offset in D4, width in D5               */
+        0x08A0u,          /* offset in D2, width 32                  */
+    };
+    int i, j;
+    /* The register-direct forms only. PRM 4's NOTE says a bit-field instruction
+     * "accesses only those bytes in memory that contain some portion of the bit
+     * field"; Musashi always reads and writes a long word, so the access lists
+     * cannot be compared -- doc/divergences.md. A register field touches no
+     * memory at all, so the oracle is exact there, and it is the same field
+     * arithmetic either way: the extract, the sign extension, the first-one
+     * scan, the merge and the wrap. sim/tb/core_bitfield_tb.sv covers what the
+     * memory forms add on top, which is the base address and the byte count. */
+    for (i = 0; i < 8; i++)
+        for (j = 0; j < (int)(sizeof XW / sizeof XW[0]); j++) {
+            unsigned int xw = XW[j] | 0x3000u;   /* D3 for the four that use one */
+            plain2(OPS[i] | 0x0003u, xw, NPER, 0);        /* ... on D3 */
+        }
+}
+
 static void g_bcd(void)
 {
     plain(0xC100 | (2 << 9) | 5, NPER * 2, 0);
@@ -1113,6 +1163,7 @@ static const struct group GROUPS[] = {
     { "muldiv",  g_muldiv  },
     { "bcd",     g_bcd     },
     { "packunpk",g_packunpk},
+    { "bitfield",g_bitfield},
     { "moves",   g_moves   },
     { "tas",     g_tas     },
     { "movem",   g_movem   },

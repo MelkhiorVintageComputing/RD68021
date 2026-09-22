@@ -2024,6 +2024,99 @@ opcode('0000111000------', 'moves', 'MOVES.B')
 opcode('0000111001------', 'moves', 'MOVES.W')
 opcode('0000111010------', 'moves', 'MOVES.L')
 
+
+# ==========================================================================
+# THE BIT FIELD INSTRUCTIONS -- PRM 4, eight of the MC68020's twenty-seven
+#
+# A field is one to thirty-two bits starting `offset` bits after a base, and the
+# base is either a data register -- where the offset is taken modulo 32 and the
+# field WRAPS -- or memory, where it runs downward from bit 7 of the byte at
+# base + offset/8 through as many as five bytes.
+#
+# Offset and width are not operands this microcode fetches: they are functions
+# of the extension word and, when it says so, of a data register, and
+# rd68021_bitfield is handed them as wires. What the microcode does is find the
+# base, read the bytes the field touches, and say what to do with it.
+#
+# PRM 3.1.6: "All bit field instructions set the CCR N and Z bits as shown for
+# BFTST before performing the specified operation" -- from the field as it was
+# found. BFINS is the exception its own page names, and
+# doc/manual-contradictions.md records the disagreement.
+#
+# What goes back into the field is always put in T3 first, because the microword
+# that writes it computes the MERGE, and the merge cannot depend on that same
+# microword's result.
+# ==========================================================================
+def bitfield(stem, ttt, ins=None, result=None, ccr='BF'):
+    """One bit-field instruction, in its register and its memory form.
+
+    `ins` is the microword that loads T3 with what goes back into the field,
+    and `result` the source that goes into the register the extension word
+    names. An instruction has one or the other or neither.
+    """
+    for mem in (False, True):
+        sz = 'BFMEM' if mem else 'BFREG'
+        label(stem + ('_mem' if mem else '_dn'))
+        if mem:
+            # The extension word is the word after the opcode and has to be
+            # read before the address routine's own -- and kept out of `xw`
+            # while that routine uses it, which is what T0 is for here.
+            u('the extension word: the field, and where its offset comes from',
+              asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
+            u('the base address',
+              call=1, seq='EAMODE', size='LONG')
+            u('... and now the extension word can come back',
+              asrc='T0', alu='A', dst='XW', size='WORD')
+            u('the first byte the field touches -- PRM 4, the offset over eight',
+              asrc='EA', bsrc='BF_BYTEOFF', alu='ADD', dst='EA', size='LONG')
+            u('read every byte it touches, and no others',
+              bus='READ', fc='DATA', asel='EA', szsel=sz)
+        else:
+            u('the extension word: the field, and where its offset comes from',
+              asrc='STG_C', alu='A', dst='XW', size='WORD', pf='CONSUME')
+
+        last = (ins is None and result is None)
+        if ccr == 'BF':
+            u('the codes come from the field as it was found -- PRM 3.1.6',
+              ccr='BF', szsel=sz,
+              **({'pf': 'ADV', 'seq': 'DECODE'} if last else {}))
+
+        if result is not None:
+            u('and the result goes to the register the extension word names',
+              asrc=result, alu='A', dst='DREG_XQ', size='LONG', szsel=sz,
+              pf='ADV', seq='DECODE')
+
+        if ins is not None:
+            u('what goes back into the field',
+              asrc=ins[0], alu=ins[1], dst='T3', size='LONG', szsel=sz)
+            if ccr == 'BFINS':
+                u('BFINS sets the codes from the value it is inserting',
+                  ccr='BFINS', szsel=sz)
+            if mem:
+                u('the bytes back, with only the field changed',
+                  bus='WRITE', fc='DATA', asel='EA', szsel=sz,
+                  pf='ADV', seq='DECODE')
+            else:
+                u('the register back, with only the field changed',
+                  asrc='BF_MERGED', alu='A', dst='DREG_R', size='LONG',
+                  szsel=sz, pf='ADV', seq='DECODE')
+
+    base = '1110' + ttt + '11'
+    opcode(base + '000---', stem + '_dn',  stem.upper() + ' Dn{o:w}')
+    opcode(base + '------', stem + '_mem', stem.upper() + ' <ea>{o:w}')
+
+
+bitfield('bftst',  '1000')
+bitfield('bfextu', '1001', result='BF_FIELD')
+bitfield('bfchg',  '1010', ins=('BF_FIELD', 'NOT'))
+bitfield('bfexts', '1011', result='BF_SXFIELD')
+bitfield('bfclr',  '1100', ins=('ZERO', 'A'))
+bitfield('bfffo',  '1101', result='BF_FFO')
+bitfield('bfset',  '1110', ins=('ZERO', 'NOT'))
+# PRM 4: "inserts a bit field taken from the low-order bits of the specified
+# data register", which is the one in bits 14-12 of the extension word.
+bitfield('bfins',  '1111', ins=('DREG_XQ', 'A'), ccr='BFINS')
+
 # ==========================================================================
 # MOVEC -- PRM 6
 #

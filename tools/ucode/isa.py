@@ -227,6 +227,12 @@ ASRC = enc(
     'DREG_XR',   # ... and its bits 2:0
     # The fault frame's own fields -- doc/ssw.md and doc/checkpoint.md. Each is
     # read exactly once, by the microword that writes it into the frame.
+    # PRM 4, the bit field. Offset and width are wires off the extension word,
+    # so these are the only things the microcode has to name.
+    'BF_FIELD',    # the field, right justified and zero extended
+    'BF_SXFIELD',  # ... and sign extended
+    'BF_FFO',      # the instruction's offset plus the first one bit's
+    'BF_MERGED',   # a data register with the field replaced
     'FLTVEC',    # the vector offset this bus fault takes: 8 or 12
     'FLTFMT',    # ... and the same, packed with the frame format code
     'SSW',       # assembled from the pipe's half and the bus unit's
@@ -276,6 +282,9 @@ BSRC = enc(
     # stack down to the frame base in one microword. They come from
     # rd68021_frame_pkg, which comes from frames.py, so they cannot drift from
     # the table the frame is laid out by.
+    # How far the field's first byte is from the effective address -- PRM 4,
+    # the offset divided by eight, rounding DOWN on both sides of zero.
+    'BF_BYTEOFF',
     'FRAME_A_BYTES',
     'FRAME_B_BYTES',    # ... and 12, of a six-word one
     'T0', 'T1', 'T2', 'T3',
@@ -429,6 +438,10 @@ SZSEL = enc(
     # what they can do is use the one the caller already worked out. (An)+ and
     # -(An) are why it matters -- they step the register by the operand size.
     'LATCHED',
+    # A bit-field access is as many bytes as the field touches -- one to five --
+    # so it has no size in the ordinary sense. The two say where the field is.
+    'BFMEM',
+    'BFREG',
     'IR109',     # bits 10:9: 00 byte, 01 word, 10 long -- CMP2, CHK2 and CAS
     'CHK',       # bit 7 alone: 1 word, 0 long. CHK is the only instruction that
                  # encodes its size that way -- PRM 8 gives it opmode 110 and
@@ -475,6 +488,8 @@ CCR = enc(
     # by two microwords, so Z is only ever SET here and the microword before
     # cleared it. N and V are undefined and are left where they fell.
     'CMP2',
+    'BF',        # the field's most significant bit and whether it is all zero
+    'BFINS',     # ... taken from the value being inserted instead
 )
 
 # The instruction pipe.
