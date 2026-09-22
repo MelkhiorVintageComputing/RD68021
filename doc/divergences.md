@@ -454,3 +454,78 @@ trap. Nothing may, and the manual says so.
 carried whatever the previous instruction had left -- including an N that the
 manual *defines* for a trapping CHK. That was a bug and not a divergence; 75 of
 the 8126 vectors found it.
+
+---
+
+## The instruction being decoded when a prefetch faults does not run first
+
+UM 6.1.2 lets a prefetch fault be taken late: "if the aborted bus cycle is an
+instruction prefetch, the processor may delay taking the exception until it
+attempts to use the prefetched information."
+
+On this core the *use* is a microword, and for the last microword of an
+instruction the use and the instruction are the same microword: it writes the
+result **and** advances the pipe, and advancing the pipe is what needs the word
+that is not there. `doc/checkpoint.md` rule 2 says a faulted microword commits
+nothing, so the instruction in stage D does not complete before the exception is
+taken.
+
+It is re-executed by RTE, so it runs exactly **once**, and the stacked program
+counter is its own address — which is what UM 6.1.2 asks for in as many words:
+"the saved PC value is the logical address of the instruction that was executing
+at the time the fault was detected".
+
+**What could differ:** a handler that looked at the registers and concluded that
+the instruction at the stacked PC had already run. Nothing may: the manual names
+that instruction as the one that was executing, not the one that had finished.
+
+**What is done about it:** nothing, and there is nothing to do — separating the
+two would mean a microword that advances the pipe without retiring the
+instruction, which is a second commit path and a second thing to get wrong on
+every instruction in the machine, to buy a difference no program can observe.
+
+---
+
+## Stage D never holds a word from a faulted prefetch
+
+UM 6.2.1 defines `FC` as "the processor attempted to use stage C and found it to
+be marked invalid", and the special status word has no bit for stage D. This
+core takes that literally: the check is at stage C, and the pipe will not load a
+faulted word into stage D at all — neither by a microword's ADV nor by the
+automatic load that fills an empty stage D after a flush.
+
+So the frame never has to describe a faulted stage D, and the internal word does
+not carry a bit for one. An earlier version of the frame did; it was removed
+when the bit became provably zero.
+
+**What could differ:** nothing a handler can see. The frame it gets is the one
+the manual describes, and the stage it is told to repair is the one the manual
+names.
+
+---
+
+## Musashi executes from an odd program counter; this core takes an address error
+
+UM 6.1.3:
+
+> An address error exception occurs when the processor attempts to prefetch an
+> instruction from an odd address. This exception is similar to a bus error
+> exception but is internally initiated. A bus cycle is not executed, and the
+> processor begins exception processing immediately.
+
+Musashi models address errors for the MC68000 and MC68010 and not for this part,
+where misaligned *data* accesses are legal — and it does not separate the two
+cases. Given `JMP (A1)` with an odd A1 it carries on executing from the odd
+address; this core raises vector 3 and builds a fault frame.
+
+From that instruction on the two machines are doing different things, so there is
+nothing left to compare.
+
+**What is done about it:** `tools/vectors/gen.c` drops any test whose oracle run
+ended with an odd program counter. It is a narrow rule and it names exactly the
+disagreement: the sweep stops where Musashi stops being authoritative, rather
+than anywhere earlier.
+
+**What could differ:** nothing. The manual is unambiguous and `core_fault_tb`
+covers the behaviour directly, with the frame checked against UM 6.2.1 —
+the rerun bits set, the fault bits clear, vector offset `$00C`.

@@ -184,6 +184,114 @@ module core_fault_tb;
           "repaired: and the instruction after it ran");
     check(dut.u_seq.isp_q === ISP0, "repaired: the frame came off the stack");
 
+
+    // ======================================================================
+    // A prefetch that faults -- UM 6.1.2, "if the aborted bus cycle is an
+    // instruction prefetch, the processor may delay taking the exception until
+    // it attempts to use the prefetched information".
+    //
+    // The program runs into a page that is not there. The words already in the
+    // pipe execute; the exception is taken when the first word that is not
+    // there is wanted, which is an instruction BOUNDARY, so the frame is the
+    // short one -- UM table 6-5.
+    // ======================================================================
+    base_setup();
+    poke_l(32'h0000_0008, HAND);           // vector 2
+    // Straight-line code running up to the page boundary.
+    poke_w(GONE - 6, 16'h7001);            // MOVEQ #1,D0
+    poke_w(GONE - 4, 16'h7202);            // MOVEQ #2,D1
+    poke_w(GONE - 2, 16'h7403);            // MOVEQ #3,D2
+    poke_w(GONE + 0, 16'h7604);            // MOVEQ #4,D3 -- never runs
+    poke_w(CODE + 0, 16'h4EF9);            // JMP (xxx).L
+    poke_l(CODE + 2, GONE - 6);
+    poke_w(HAND + 0, 16'h7833);            // MOVEQ #$33,D4
+    poke_w(HAND + 2, 16'h60FE);
+    reset_dut();
+    run_until(HAND + 2, 3000, reached);
+    check(reached, "prefetch fault: the bus error handler runs");
+    // The instruction in stage D when the fault is taken does NOT run: its own
+    // microword is the one that advances the pipe, and a faulted microword
+    // commits nothing. It is re-executed by RTE, so it runs exactly once, and
+    // UM's "the logical address of the instruction that was executing at the
+    // time the fault was detected" is its address -- doc/divergences.md.
+    check(dut.u_seq.dreg[1] === 32'h0000_0002,
+          "prefetch fault: the instructions whose words were there ran");
+    check(dut.u_seq.dreg[2] === 32'h0000_0000,
+          "prefetch fault: the one being decoded did not");
+    check(dut.u_seq.dreg[3] === 32'h0000_0000,
+          "prefetch fault: nor the one whose word was missing");
+    base = ISP0 - 32'h20;
+    check(dut.u_seq.isp_q === base,
+          "prefetch fault: the frame is the SHORT one, sixteen words");
+    check(peek_l(base + 32'h02) === GONE - 2,
+          "prefetch fault: +$02 the instruction that was being decoded");
+    check(peek_w(base + 32'h06) === 16'hA008,
+          "prefetch fault: +$06 format $A, vector offset $008");
+    // doc/ssw.md: a fault on the prefetch for stage C, so FC is set, and RC is
+    // always set when FC is. DF is clear -- this was not a data cycle -- and
+    // with it the whole low half.
+    // Both stages came from prefetches that faulted -- the refill after the pop
+    // ran into the same missing page -- so FC, FB, RC and RB are all set, and
+    // the whole low half is clear because this was not a data cycle.
+    check(peek_w(base + 32'h0A) === 16'hF000,
+          "prefetch fault: +$0A the fault and rerun bits, and no data fault");
+
+
+    // ======================================================================
+    // ... and out again. The handler maps the page and RTEs; the short frame
+    // is restored, the prefetch that faulted is rerun by the refill the queue
+    // depth asks for, and the instruction that was being decoded runs.
+    // ======================================================================
+    base_setup();
+    poke_l(32'h0000_0008, HAND);
+    poke_w(GONE - 6, 16'h7001);            // MOVEQ #1,D0
+    poke_w(GONE - 4, 16'h7202);            // MOVEQ #2,D1
+    poke_w(GONE - 2, 16'h7403);            // MOVEQ #3,D2 -- decoded, not run
+    poke_w(GONE + 0, 16'h7604);            // MOVEQ #4,D3 -- the missing word
+    poke_w(GONE + 2, 16'h60FE);            // BRA *
+    poke_w(CODE + 0, 16'h4EF9);            // JMP (xxx).L
+    poke_l(CODE + 2, GONE - 6);
+    poke_w(HAND + 0, 16'h4E73);            // RTE, with the rerun bits untouched
+    reset_dut();
+    run_until(HAND + 0, 3000, reached);
+    check(reached, "prefetch rerun: the handler is entered");
+    berr_en = 1'b0;                        // the pager maps it
+    run_until(GONE + 2, 3000, reached);
+    check(reached, "prefetch rerun: the program runs on into the page");
+    check(dut.u_seq.dreg[2] === 32'h0000_0003,
+          "prefetch rerun: the instruction being decoded ran, exactly once");
+    check(dut.u_seq.dreg[3] === 32'h0000_0004,
+          "prefetch rerun: and so did the one whose word had been missing");
+    check(dut.u_seq.isp_q === ISP0,
+          "prefetch rerun: the short frame came off the stack");
+
+    // ======================================================================
+    // An address error -- UM 6.1.3, "an address error exception occurs when
+    // the processor attempts to prefetch an instruction from an odd address
+    // ... a bus cycle is not executed". Vector 3, and UM 6.2.1: the fault bits
+    // are NOT set, "and the rerun bits alone show the cause of the exception".
+    // ======================================================================
+    base_setup();
+    poke_l(32'h0000_000C, HAND);           // vector 3, address error
+    poke_w(CODE + 0, 16'h7001);            // MOVEQ #1,D0
+    poke_w(CODE + 2, 16'h4EF9);            // JMP ($0000_0801).L -- odd
+    poke_l(CODE + 4, 32'h0000_0801);
+    poke_w(HAND + 0, 16'h7A44);            // MOVEQ #$44,D5
+    poke_w(HAND + 2, 16'h60FE);
+    reset_dut();
+    berr_en = 1'b0;                        // nothing is missing; the target is odd
+    run_until(HAND + 2, 3000, reached);
+    check(reached, "address error: the handler runs");
+    check(dut.u_seq.dreg[5] === 32'h0000_0044, "address error: and only it");
+    base = ISP0 - 32'h20;
+    check(peek_w(base + 32'h06) === 16'hA00C,
+          "address error: +$06 format $A, vector offset $00C");
+    check(peek_l(base + 32'h02) === 32'h0000_0801,
+          "address error: +$02 the odd address it could not fetch from");
+    // UM 6.2.1: the fault bits are clear and the rerun bits alone show it.
+    check(peek_w(base + 32'h0A) === 16'h3000,
+          "address error: +$0A the rerun bits alone");
+
     // ======================================================================
     // A double bus fault. UM 6.1.2: a bus error during the exception
     // processing for a bus error "and the processor enters the halted state.

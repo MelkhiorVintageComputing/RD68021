@@ -144,13 +144,12 @@ This is a cycle-count divergence, measured and justified in
 | `+$28` | 31:0 | `t2` | working register |
 | `+$30` | 31:0 | `t3` | working register |
 | `+$34` | 15:0 | `xw` | the extension-word latch |
-| `+$36` | 0 | `stage_d_f` | stage D came from a faulted prefetch |
 | `+$38` | 31:0 | `ea_latch` | the address output buffer |
 | `+$3C` | 31:0 | `ea_save` | the copy of it taken at the fault |
 | `+$40` | 31:0 | `pc_fetch` | the next long word the pipe will fetch |
 | `+$44` | 15:0 | `link` | the return address of the subroutine under way |
 
-**492 bits available, 338 used, 9 words spare** (`+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
+**492 bits available, 337 used, 9 words spare** (`+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
 
 ### The frozen set
 
@@ -161,7 +160,6 @@ This is a cycle-count divergence, measured and justified in
 | `ifu` | `b_q` | 16 | `stage_b` | frame +$0E |
 | `ifu` | `c_f_q` | 1 | `ssw` | SSW FC |
 | `ifu` | `b_f_q` | 1 | `ssw` | SSW FB |
-| `ifu` | `d_f_q` | 1 | `stage_d_f` |  |
 | `ifu` | `pc_d_q` | 32 | `pc` | the frame's own program counter |
 | `ifu` | `fill_q` | 32 | `stage_b_addr` | long frame +$24; short frame derives it. The same register as pc_fetch: stage B is two before the fill point. |
 | `ifu` | `fill_q` | 32 | `pc_fetch` |  |

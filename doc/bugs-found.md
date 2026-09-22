@@ -1330,3 +1330,52 @@ interrupt, so the frame carried vector 24 instead of autovector 31.
 **Fixed by:** an enable bit. A region is switched off by saying so, not by an
 address chosen for being unreachable — there was no unreachable address, and the
 one picked was load-bearing.
+
+## M9 · The frame builder faulted on the word it was saving
+
+**What:** a prefetch fault or an address error halted the processor with a
+double bus fault instead of building a frame, and the frame it left behind was
+half written.
+
+Reading stage C is how the microcode gets an extension word, and it is also how
+the fault frame gets field `+$0C`. Those are opposite things — UM 6.2.1's `FC`
+is "the processor attempted to use stage C and found it to be marked invalid",
+and saving the word into a frame is the one use that must not fault on it — and
+they shared an encoding.
+
+So the builder's `+$0C` microword took the very fault it was recording. That is
+a fault inside the window a fault opened, which is a double bus fault, which is
+correct behaviour applied to a wrong premise: the machine halted, exactly as UM
+6.1.2 says it should.
+
+The address-error case was worse in a quieter way: with the queue empty the same
+microword *waited* for a word, and the word was never coming.
+
+**Fixed by:** `STG_C_RAW`, a second encoding for the same sixteen bits that is
+not a use — it neither waits for the pipe nor takes the fault the word carries.
+The frame builder uses it and nothing else does.
+
+## M9 · The pipe went on prefetching while RTE was putting it back
+
+**What:** RTE out of a short frame resumed the instruction correctly and then
+executed garbage.
+
+The restore is one microword per field and each one takes a bus cycle, so it
+runs for tens of clocks. The instruction pipe has an autonomous refill — a queue
+with room asks the bus unit for the next long word, which is what makes a
+rerun-by-depth work at all — and it does not stop just because the sequencer is
+restoring it. It fetched one or two words of the *handler's* instruction stream,
+pushed them into the stages being restored, and changed the queue depth that the
+fill point is then computed from.
+
+The symptom was almost innocent: the resumed instruction ran, exactly once, with
+the right result, and the next instruction was rubbish.
+
+**Fixed by:** `ckpt_busy_q` in the IFU — set on the first checkpoint write,
+cleared when the load completes, and it suppresses the refill for that window.
+
+**The lesson is about autonomy.** The refill was made autonomous on purpose,
+because it is what lets `RC` and `RB` come back as a depth with no rerun path of
+their own. Anything autonomous has to be told when the thing it acts on is not
+in a state to be acted upon, and that is a second rule to remember rather than a
+property of the first.

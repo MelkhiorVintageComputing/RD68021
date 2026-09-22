@@ -51,11 +51,15 @@ module rd68021_ifu #(
     output logic [15:0] stg_d,
     output logic [15:0] stg_c,
     output logic [15:0] stg_b,
-    output logic        stg_d_fault,
     output logic        stg_c_fault,
     output logic        stg_b_fault,
     output logic        stg_c_rerun,
     output logic        stg_b_rerun,
+    // The pipe cannot produce a stage D word and never will: either the word
+    // at the front of the queue came from a prefetch that faulted, or the
+    // address it would fetch from is odd. UM 6.1.2 and 6.1.3.
+    output logic        pf_stuck,
+    output logic        pf_odd,
     output logic [31:0] pc_d,
     output logic [31:0] stg_b_addr,
 
@@ -90,7 +94,7 @@ module rd68021_ifu #(
   // State
   // ==========================================================================
   logic [15:0] d_q, c_q, b_q;
-  logic        d_f_q, c_f_q, b_f_q;
+  logic        c_f_q, b_f_q;
   logic        d_v_q;
   logic  [1:0] cnt_q;          // words held in the C/B queue: 0, 1 or 2
   logic [31:0] pc_d_q;
@@ -132,8 +136,23 @@ module rd68021_ifu #(
   assign chr_hit  = chr_v_q && (chr_addr_q == fill_q[31:2]);
   assign chr_word = fill_q[1] ? chr_q[15:0] : chr_q[31:16];
 
+  // UM 6.1.3: "an address error exception occurs when the processor attempts to
+  // prefetch an instruction from an odd address ... a bus cycle is not
+  // executed". So no cycle is issued, the queue never fills, and the sequencer
+  // is left waiting for a word that will never come -- which is where the
+  // exception is taken.
+  assign pf_odd = primed_q && fill_q[0];
+
+  // Nothing is fetched while RTE is putting the pipe back. The restore is one
+  // microword per field and takes a bus cycle each, which is tens of clocks --
+  // easily long enough for the queue to fetch a word or two of the HANDLER's
+  // instruction stream, push them into stages this is in the middle of
+  // restoring, and change the depth the fill point is computed from. Which is
+  // what it did: the resumed instruction ran and the one after it was garbage.
+  logic ckpt_busy_q;
+
   logic room;
-  assign room = primed_q && (cnt_q != 2'd2);
+  assign room = primed_q && (cnt_q != 2'd2) && !pf_odd && !ckpt_busy_q;
 
   logic push;
   assign push = room && chr_hit;
@@ -168,7 +187,13 @@ module rd68021_ifu #(
   // and nothing in the microcode loads the first instruction word: the microword
   // that would is the one waiting for it. So an empty stage D takes the front of
   // the queue by itself, which is the same motion as ADV and is written as one.
-  assign auto_load  = !d_v_q && (cnt_q != 2'd0) && !do_flush;
+  // ... and it does not take a word that came from a prefetch that faulted.
+  // UM 6.2.1's FC bit is "the processor attempted to use stage C and found it
+  // to be marked invalid", so the check belongs at stage C and stage D never
+  // holds a faulted word at all -- which is why the manual has no bit for one.
+  assign auto_load  = !d_v_q && (cnt_q != 2'd0) && !do_flush && !c_f_q;
+
+  assign pf_stuck   = pf_odd || (!d_v_q && (cnt_q != 2'd0) && c_f_q);
   assign do_adv     = (pf_op == rd68021_ucode_pkg::U_PF_ADV) || auto_load;
   assign do_pop     = do_adv || do_consume;
 
@@ -177,7 +202,6 @@ module rd68021_ifu #(
       d_q          <= '0;
       c_q          <= '0;
       b_q          <= '0;
-      d_f_q        <= 1'b0;
       c_f_q        <= 1'b0;
       b_f_q        <= 1'b0;
       d_v_q        <= 1'b0;
@@ -192,6 +216,7 @@ module rd68021_ifu #(
       fetch_addr_q <= '0;
       discard_q    <= 1'b0;
       primed_q     <= 1'b0;
+      ckpt_busy_q  <= 1'b0;
     end else begin
       // ------------------------------------------------------------------
       // The fetch in flight
@@ -233,16 +258,28 @@ module rd68021_ifu #(
           rd68021_pkg::CK_PC_D:  pc_d_q <= ckpt_data;
           // Frame +$24 is the address of the STAGE B word; the fill point is
           // two beyond it once the queue is two deep, which is the same
-          // relation stg_b_addr reads the other way.
-          rd68021_pkg::CK_FILL:  fill_q <= ckpt_data;
+          // relation stg_b_addr reads the other way. The depth has already been
+          // restored, because CK_FLAGS comes first.
+          rd68021_pkg::CK_FILL:
+            fill_q <= ckpt_data - 32'd2 + {29'd0, cnt_q, 1'b0};
           default: begin                       // CK_FLAGS
-            d_f_q <= ckpt_data[4];
-            b_f_q <= ckpt_data[3];
-            c_f_q <= ckpt_data[2];
+            // Only the rerun bits. UM 6.2.1 makes FC and FB a RECORD of what
+            // went wrong, for the handler to read, and RC and RB the statement
+            // of what is still to be done -- "if the RC bit is clear, the words
+            // on the stack for stage C of the pipe are accepted as valid",
+            // whatever FC says, and the handler is told not to touch FC. So the
+            // pipe comes back with no faulted word in it either way: a stage
+            // the frame still wants rerun is simply absent, and one it does not
+            // is valid.
             cnt_q <= ckpt_data[0] ? 2'd0 : (ckpt_data[1] ? 2'd1 : 2'd2);
+            c_f_q <= 1'b0;
+            b_f_q <= 1'b0;
           end
         endcase
       end
+
+      if (ckpt_load)    ckpt_busy_q <= 1'b0;
+      else if (ckpt_wr) ckpt_busy_q <= 1'b1;
 
       if (ckpt_load) begin
         // The pipe is whole again. The cache holding register is not restored
@@ -265,7 +302,6 @@ module rd68021_ifu #(
         pc_d_q       <= pf_addr;
         fill_q       <= pf_addr;
         chr_v_q      <= 1'b0;
-        d_f_q        <= 1'b0;
         c_f_q        <= 1'b0;
         b_f_q        <= 1'b0;
         // A prefetch already in flight is NOT withdrawn. The bus unit took the
@@ -283,7 +319,6 @@ module rd68021_ifu #(
       end else begin
         if (do_adv) begin
           d_q    <= c_q;
-          d_f_q  <= c_f_q;
           d_v_q  <= 1'b1;
           // The new stage D is the word stage C held, which sits two bytes
           // before stage B -- UM 6.2, "the address of the stage C word is the
@@ -326,7 +361,6 @@ module rd68021_ifu #(
   assign stg_d       = d_q;
   assign stg_c       = c_q;
   assign stg_b       = b_q;
-  assign stg_d_fault = d_f_q;
   assign stg_c_fault = c_f_q;
   assign stg_b_fault = b_f_q;
   assign pc_d        = pc_d_q;
@@ -350,9 +384,17 @@ module rd68021_ifu #(
   assign stg_b_rerun = (cnt_q != 2'd2) || b_f_q;
 
   // The address of the word in stage B, or of the word destined for it when the
-  // queue is not yet two deep. This is frame field +$24, and it is what RTE needs
-  // to rerun a faulted prefetch.
-  assign stg_b_addr    = (cnt_q == 2'd2) ? (fill_q - 32'd2) : fill_q;
+  // queue is not yet two deep. This is frame field +$24, and it is what RTE
+  // needs to rerun a faulted prefetch.
+  //
+  // The fill point is where the NEXT word goes, and how far that is from stage
+  // B's depends on how many stages are still to be filled: one behind when the
+  // queue is full, level when only stage B is missing, and one AHEAD when both
+  // are -- the next word then belongs to stage C and stage B's is the one after
+  // it. Reading it as `fill_q` in that last case is two bytes short, and the
+  // case only arises in a frame built with both rerun bits set, which is every
+  // address error.
+  assign stg_b_addr    = fill_q + 32'd2 - {29'd0, cnt_q, 1'b0};
   assign ckpt_pc_fetch = {fill_q[31:2], 2'b00};
 
   assign pf_ready  = (cnt_q != 2'd0);

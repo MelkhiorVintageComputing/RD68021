@@ -1232,8 +1232,17 @@ int main(int argc, char **argv)
          * dropped now. Up to M7 a test that touched the vector table was
          * dropped too, because exception processing did not exist; it does
          * now, and the frame such a test builds is in the access list with the
-         * value of every word in it. */
-        r->keep = !overflowed;
+         * value of every word in it.
+         *
+         * ... and one whose oracle ended with an ODD program counter. UM 6.1.3:
+         * "an address error exception occurs when the processor attempts to
+         * prefetch an instruction from an odd address". Musashi does not model
+         * that for this part and carries on executing from the odd address, so
+         * the two machines are doing different things from there on and there
+         * is nothing to compare. JMP and JSR through an address register are
+         * what reach it. doc/divergences.md. */
+        r->keep = !overflowed
+               && ((m68k_get_reg(NULL, M68K_REG_PC) & 1u) == 0u);
         if (!r->keep) { dropped++; continue; }
         kept++;
 

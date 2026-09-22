@@ -65,10 +65,11 @@ module rd68021_seq #(
     input  logic [15:0] stg_d,
     input  logic [15:0] stg_c,
     input  logic [15:0] stg_b,
-    input  logic        stg_d_fault,
     input  logic        stg_c_fault,
     input  logic        stg_c_rerun,
     input  logic        stg_b_rerun,
+    input  logic        pf_stuck,
+    input  logic        pf_odd,
     input  logic        stg_b_fault,
     input  logic [31:0] pc_d,
     input  logic [31:0] stg_b_addr,
@@ -401,6 +402,13 @@ module rd68021_seq #(
       // The same word, with the vector offset out of the microword rather than
       // out of T0: a fault frame has to name its format and its vector while
       // T0 still belongs to the instruction that faulted.
+      // The vector a bus fault takes, as an offset, and the same thing packed
+      // with the frame format. One builder serves the bus error and the address
+      // error, and this is where they part.
+      rd68021_ucode_pkg::U_ASRC_FLTVEC:
+        a_bus = flt_odd_q ? 32'd12 : 32'd8;
+      rd68021_ucode_pkg::U_ASRC_FLTFMT:
+        a_bus = {16'd0, frame_code, flt_odd_q ? 12'h00C : 12'h008};
       rd68021_ucode_pkg::U_ASRC_FMTVECI:
         a_bus = {16'd0, frame_code, 2'b00, `UF(VEC), 2'b00};
       rd68021_ucode_pkg::U_ASRC_VBR:   a_bus = vbr_q;
@@ -409,6 +417,10 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_ASRC_DFA:        a_bus = flt_addr;
       rd68021_ucode_pkg::U_ASRC_DOB:        a_bus = flt_dob;
       rd68021_ucode_pkg::U_ASRC_DIB:        a_bus = flt_dib;
+      // Stage C as a frame field. The same bits as U_ASRC_STG_C and a different
+      // encoding on purpose: this one is not a USE of the word, so it neither
+      // waits for the pipe nor takes the prefetch fault the word carries.
+      rd68021_ucode_pkg::U_ASRC_STG_C_RAW:  a_bus = {16'd0, stg_c};
       rd68021_ucode_pkg::U_ASRC_STG_B:      a_bus = {16'd0, stg_b};
       rd68021_ucode_pkg::U_ASRC_STG_B_ADDR: a_bus = stg_b_addr;
       rd68021_ucode_pkg::U_ASRC_PC_FETCH:   a_bus = ckpt_pc_fetch;
@@ -1094,6 +1106,11 @@ module rd68021_seq #(
   // processor enters the halted state". This is the window.
   logic        g0_q;
 
+  // Which of the two group-0 vectors this fault takes: 2 for a bus error, 3 for
+  // an address error -- UM 6.1.2 and 6.1.3. One frame builder serves both, and
+  // this is the only thing that differs between them.
+  logic        flt_odd_q;
+
 
   // The faulted microword's own address. By the time the builder writes frame
   // field +$14 its own micro-address is deep inside itself, and the fault entry
@@ -1110,10 +1127,9 @@ module rd68021_seq #(
   // core acts on; the reserved ones and SIZE are not among them, because the
   // residual byte count comes out of the internal word, which can say five and
   // UM table 5-2's two-bit field cannot.
-  logic        rs_fc_q, rs_fb_q, rs_rc_q, rs_rb_q;
+  logic        rs_rc_q, rs_rb_q;
   logic        rs_df_q, rs_rm_q, rs_rw_q;
   logic  [2:0] rs_space_q;
-  logic        rdf_q;
   // ... and the micro-address to resume at.
   logic [rd68021_ucode_pkg::UADDR-1:0] rupc_q;
 
@@ -1154,7 +1170,6 @@ module rd68021_seq #(
 
   always_comb begin
     int36 = 16'd0;
-    int36[rd68021_frame_pkg::I_STAGE_D_F_LO  +: 1] = stg_d_fault;
     int36[rd68021_frame_pkg::I_TRMODE_LO     +: 2] = trace_mode_q;
     int36[rd68021_frame_pkg::I_FLOW_LO       +: 1] = flow_q;
     int36[rd68021_frame_pkg::I_PC_KEPT_LO    +: 1] = pc_kept_q;
@@ -1312,6 +1327,54 @@ module rd68021_seq #(
   logic retire;
   assign retire = !stall;
 
+  // ==========================================================================
+  // Instruction-stream faults -- UM 6.1.2, 6.1.3 and doc/ssw.md
+  //
+  // "If the aborted bus cycle is an instruction prefetch, the processor may
+  // delay taking the exception until it attempts to use the prefetched
+  // information." There are two ways to attempt to use it and they are both
+  // here.
+  //
+  // The first is to USE the word: advance it into stage D, read it as an
+  // extension word, or hand it to the extension-word decoder. That microword
+  // retires -- the queue has a word, it is simply a bad one -- so the fault is
+  // taken on the retirement and nothing commits. Reading the ADDRESS of stage C
+  // is not a use: PC_C and EABASE are right whatever the word is.
+  //
+  // The second is to WAIT for a word that will never come: stage D is empty and
+  // the front of the queue is faulted, so nothing may be loaded into it, or the
+  // fetch address is odd and no cycle will be run at all. That one is the
+  // address error as well, and the pipe says which.
+  //
+  // `check_boundary` in the assembler is what makes the frame format follow
+  // from the microword: every ADV also decodes, and no DECODE reads stage C as
+  // data, so a DECODE that faults is always at an instruction boundary and
+  // anything else is always inside one.
+  // ==========================================================================
+  logic uses_c_word;
+  assign uses_c_word = (`UF(PF)   == rd68021_ucode_pkg::U_PF_ADV)
+                    || (`UF(ASRC) == rd68021_ucode_pkg::U_ASRC_STG_C)
+                    || (`UF(ASRC) == rd68021_ucode_pkg::U_ASRC_STG_C_HI)
+                    || (`UF(BSRC) == rd68021_ucode_pkg::U_BSRC_STG_C_U)
+                    || (`UF(BSRC) == rd68021_ucode_pkg::U_BSRC_STG_C_S)
+                    || (`UF(SEQ)  == rd68021_ucode_pkg::U_SEQ_EADEC);
+
+  logic at_decode;
+  assign at_decode = (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE);
+
+  logic pipe_wait;
+  assign pipe_wait = (needs_c && !pf_ready)
+                  || (at_decode && (`UF(PF) != rd68021_ucode_pkg::U_PF_ADV)
+                      && !pf_dvalid);
+
+  logic pipe_fault;
+  assign pipe_fault = (retire && uses_c_word && stg_c_fault)
+                   || (pipe_wait && pf_stuck);
+
+  // Any of the three, and only the data one sets DF.
+  logic fault_now;
+  assign fault_now = req_fault || pipe_fault;
+
   // doc/checkpoint.md rule 2: A FAULTED MICROWORD ENDS BUT COMMITS NOTHING --
   // no register write, no pipe advance, no address-register update, no
   // condition code. The state the frame records is therefore the state at the
@@ -1323,7 +1386,7 @@ module rd68021_seq #(
   // The microword still ENDS: `retire` is what the micro-address arm reads, and
   // it goes to the fault entry. Only the commits are withheld.
   logic commit;
-  assign commit = retire && !req_fault;
+  assign commit = retire && !fault_now;
 
   // ==========================================================================
   // The bus request
@@ -1437,8 +1500,13 @@ module rd68021_seq #(
     // exception processing".
     if (dbf_q) begin
       upc_nxt = upc;
-    end else if (req_fault && !g0_q) begin
-      upc_nxt = rd68021_ucode_pkg::ENTRY_BERR;
+    end else if (fault_now && !g0_q) begin
+      // UM table 6-5 picks the frame by where the exception was taken, and
+      // `check_boundary` makes that the same question as whether this microword
+      // decodes.
+      upc_nxt = (pipe_fault && at_decode)
+                ? rd68021_ucode_pkg::ENTRY_FAULT_SHORT
+                : rd68021_ucode_pkg::ENTRY_FAULT_LONG;
     end else if (stopped_q) begin
       upc_nxt = irq_pending ? rd68021_ucode_pkg::ENTRY_IRQ : upc;
     end else if (!retire) begin
@@ -1501,15 +1569,12 @@ module rd68021_seq #(
       notrace_q    <= 1'b0;
       pc_prev_q    <= '0;
       pc_kept_q    <= 1'b0;
-      rs_fc_q      <= 1'b0;
-      rs_fb_q      <= 1'b0;
       rs_rc_q      <= 1'b0;
       rs_rb_q      <= 1'b0;
       rs_df_q      <= 1'b0;
       rs_rm_q      <= 1'b0;
       rs_rw_q      <= 1'b1;
       rs_space_q   <= 3'd0;
-      rdf_q        <= 1'b0;
       rupc_q       <= '0;
       rst_addr_q   <= '0;
       rst_data_q   <= '0;
@@ -1603,14 +1668,11 @@ module rd68021_seq #(
             rst_bytes_q  <= y[rd68021_frame_pkg::I_BYTES_LO +: 3];
           end
           rd68021_ucode_pkg::U_DST_INT36: begin
-            rdf_q        <= y[rd68021_frame_pkg::I_STAGE_D_F_LO];
             trace_mode_q <= y[rd68021_frame_pkg::I_TRMODE_LO +: 2];
             flow_q       <= y[rd68021_frame_pkg::I_FLOW_LO];
             pc_kept_q    <= y[rd68021_frame_pkg::I_PC_KEPT_LO];
           end
           rd68021_ucode_pkg::U_DST_SSW: begin
-            rs_fc_q    <= y[15];
-            rs_fb_q    <= y[14];
             rs_rc_q    <= y[13];
             rs_rb_q    <= y[12];
             rs_df_q    <= y[8];
@@ -1861,13 +1923,19 @@ module rd68021_seq #(
   // reports it, because the microcode that follows runs bus cycles of its own.
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      df_q    <= 1'b0;
-      g0_q    <= 1'b0;
-      ea_save <= '0;
-      flt_upc <= '0;
+      df_q      <= 1'b0;
+      flt_odd_q <= 1'b0;
+      g0_q      <= 1'b0;
+      ea_save   <= '0;
+      flt_upc   <= '0;
     end else begin
-      if (req_fault) begin
-        df_q    <= 1'b1;
+      if (fault_now) begin
+        // "The least significant half of the SSW applies to data cycles only",
+        // so only a data fault sets DF -- doc/ssw.md.
+        df_q    <= req_fault;
+        // UM 6.2.1: an address error sets the rerun bits and not the fault
+        // bits, and it is the vector that tells the two apart -- 3 against 2.
+        flt_odd_q <= !req_fault && pf_odd;
         g0_q    <= 1'b1;
         flt_upc <= upc;
         // The frame is built with a pointer of its own -- ea_q belongs to the
@@ -1942,11 +2010,14 @@ module rd68021_seq #(
   // The pipe's fault bits and its depth come from two frame fields that arrive
   // in different microwords, so the one that completes them is the one that
   // says the pipe is whole -- doc/ssw.md.
-  assign ckpt_load = commit
-                  && (`UF(DST) == rd68021_ucode_pkg::U_DST_PIPE_F);
-  // {stage_d_fault, FB, FC, RB, RC}, as rd68021_ifu takes them.
+  // The pipe is whole when its last field has been written, which is the fill
+  // point in both frame formats: the words and the depth all come before it.
+  assign ckpt_load = commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_FILL);
+  // {RB, RC}, as rd68021_ifu takes them. FC and FB are not among them: they are
+  // what the frame tells the HANDLER, and this core writes them and never reads
+  // them back -- doc/ssw.md.
   assign ckpt_data = (`UF(DST) == rd68021_ucode_pkg::U_DST_PIPE_F)
-                     ? {27'd0, rdf_q, rs_fb_q, rs_fc_q, rs_rb_q, rs_rc_q}
+                     ? {30'd0, rs_rb_q, rs_rc_q}
                      : y;
 
   // ==========================================================================
@@ -1996,8 +2067,8 @@ module rd68021_seq #(
                         req_rdata[39:32],
                         flt_addr, flt_bytes, flt_fc, flt_rw, flt_rmc, flt_dob,
                         flt_dib,
-                        stg_b, stg_d_fault, stg_c_fault, stg_b_fault,
-                        stg_c_rerun, stg_b_rerun,
+                        stg_b, stg_c_fault, stg_b_fault,
+                        stg_c_rerun, stg_b_rerun, pf_stuck, pf_odd,
                         stg_b_addr, ckpt_pc_fetch,
                         ipl_sync_n, reset_sync_n, halt_sync_n, bus_idle,
                         bus_granted, reset_busy,

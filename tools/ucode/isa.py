@@ -208,10 +208,19 @@ ASRC = enc(
     'DREG_XR',   # ... and its bits 2:0
     # The fault frame's own fields -- doc/ssw.md and doc/checkpoint.md. Each is
     # read exactly once, by the microword that writes it into the frame.
+    'FLTVEC',    # the vector offset this bus fault takes: 8 or 12
+    'FLTFMT',    # ... and the same, packed with the frame format code
     'SSW',       # assembled from the pipe's half and the bus unit's
     'DFA',       # the data fault address: frame +$10
     'DOB',       # the data output buffer: frame +$18
     'DIB',       # the data input buffer: long frame +$2C
+    # Stage C as a frame FIELD and not as an extension word. The distinction is
+    # load-bearing: reading stage C to use it is what takes a prefetch fault --
+    # UM 6.2.1's "the processor attempted to use stage C" -- and reading it to
+    # write it into a frame is the opposite of that. Sharing one encoding made
+    # the frame builder fault on the very word it was saving, which is a double
+    # bus fault and a halted processor.
+    'STG_C_RAW',
     'STG_B',     # the pipe word at +$0E
     'STG_B_ADDR',# its address: long frame +$24
     'PC_FETCH',  # the next long word the pipe would have fetched

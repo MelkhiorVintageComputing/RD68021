@@ -310,9 +310,10 @@ package rd68021_ucode_pkg;
     # The entry points hardware reaches without the microcode asking: reset,
     # the decoder's fall-through, and the trace exception, which the sequencer
     # puts in front of the decode arm at every instruction boundary.
-    for lbl in ('reset', 'illegal', 'exc_trace', 'exc_irq', 'exc_berr'):
+    for lbl in ('reset', 'illegal', 'exc_trace', 'exc_irq',
+                'exc_fault_long', 'exc_fault_short'):
         out.append('  localparam logic [UADDR-1:0] ENTRY_%s = %d\'d%d;'
-                   % (lbl.upper().replace('EXC_', '').replace('IRQ', 'IRQ'),
+                   % (lbl.upper().replace('EXC_', ''),
                       isa.UADDR_BITS,
                       program.entry(lbl)))
     out.append("""
@@ -558,6 +559,43 @@ COND_READS = {
 }
 
 
+def check_boundary():
+    """The short fault frame is reachable from the decode arm and nowhere else.
+
+    UM table 6-5 picks format $A when the exception is taken at an instruction
+    boundary and $B when it is taken during one, and this core decides which by
+    asking whether the microword that could not get its word from the pipe was a
+    DECODE. That is only the same question while two things hold:
+
+      - every microword that ADVANCES the pipe also decodes, so a faulted word
+        can never be pulled into stage D mid-instruction. CONSUME is not an
+        advance: it throws the word away, which is why TRAPcc's unread operand
+        word does not fault on one that came from a faulted prefetch -- UM 6.1.2
+        delays the exception "until it attempts to use the prefetched
+        information", and that one never does;
+      - no microword that decodes also READS stage C as data, so a DECODE that
+        faults is always about the instruction it was going to start and never
+        about an extension word it was going to use.
+
+    Both are true of the microprogram as written. Neither is enforced by
+    anything else, and if either stops being true the frame format goes wrong in
+    a way only a demand-paging handler would ever notice.
+    """
+    bad = []
+    for i, (f, c) in enumerate(program.WORDS):
+        seq = f.get('seq', 'NEXT')
+        if f.get('pf') == 'ADV' and seq != 'DECODE':
+            bad.append('microword %d advances the pipe without decoding, so a '
+                       'faulted word could reach stage D mid-instruction -- %s'
+                       % (i, c))
+        if seq == 'DECODE' and (f.get('asrc') in ('STG_C', 'STG_C_HI')
+                                or f.get('bsrc') in ('STG_C_U', 'STG_C_S')):
+            bad.append('microword %d decodes and reads stage C as data, so a '
+                       'fault on it could be either frame format -- %s'
+                       % (i, c))
+    return bad
+
+
 def check_cond_dst():
     bad = []
     for i, (f, c) in enumerate(program.WORDS):
@@ -577,7 +615,7 @@ def main():
                     help='fail if the checked-in files are stale')
     args = ap.parse_args()
 
-    bad = frames.check() + isa.check() + check_cond_dst()
+    bad = frames.check() + isa.check() + check_cond_dst() + check_boundary()
     if bad:
         print('FAIL: the tables are not self-consistent')
         for b in bad:

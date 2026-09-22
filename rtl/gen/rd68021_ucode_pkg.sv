@@ -177,20 +177,23 @@ package rd68021_ucode_pkg;
   localparam logic [5:0] U_ASRC_DIVR = 6'd39;
   localparam logic [5:0] U_ASRC_DREG_XQ = 6'd40;
   localparam logic [5:0] U_ASRC_DREG_XR = 6'd41;
-  localparam logic [5:0] U_ASRC_SSW = 6'd42;
-  localparam logic [5:0] U_ASRC_DFA = 6'd43;
-  localparam logic [5:0] U_ASRC_DOB = 6'd44;
-  localparam logic [5:0] U_ASRC_DIB = 6'd45;
-  localparam logic [5:0] U_ASRC_STG_B = 6'd46;
-  localparam logic [5:0] U_ASRC_STG_B_ADDR = 6'd47;
-  localparam logic [5:0] U_ASRC_PC_FETCH = 6'd48;
-  localparam logic [5:0] U_ASRC_EA_SAVE = 6'd49;
-  localparam logic [5:0] U_ASRC_LINK = 6'd50;
-  localparam logic [5:0] U_ASRC_UPC = 6'd51;
-  localparam logic [5:0] U_ASRC_INT08 = 6'd52;
-  localparam logic [5:0] U_ASRC_INT36 = 6'd53;
-  localparam logic [5:0] U_ASRC_CREG = 6'd54;
-  localparam logic [5:0] U_ASRC_XREG = 6'd55;
+  localparam logic [5:0] U_ASRC_FLTVEC = 6'd42;
+  localparam logic [5:0] U_ASRC_FLTFMT = 6'd43;
+  localparam logic [5:0] U_ASRC_SSW = 6'd44;
+  localparam logic [5:0] U_ASRC_DFA = 6'd45;
+  localparam logic [5:0] U_ASRC_DOB = 6'd46;
+  localparam logic [5:0] U_ASRC_DIB = 6'd47;
+  localparam logic [5:0] U_ASRC_STG_C_RAW = 6'd48;
+  localparam logic [5:0] U_ASRC_STG_B = 6'd49;
+  localparam logic [5:0] U_ASRC_STG_B_ADDR = 6'd50;
+  localparam logic [5:0] U_ASRC_PC_FETCH = 6'd51;
+  localparam logic [5:0] U_ASRC_EA_SAVE = 6'd52;
+  localparam logic [5:0] U_ASRC_LINK = 6'd53;
+  localparam logic [5:0] U_ASRC_UPC = 6'd54;
+  localparam logic [5:0] U_ASRC_INT08 = 6'd55;
+  localparam logic [5:0] U_ASRC_INT36 = 6'd56;
+  localparam logic [5:0] U_ASRC_CREG = 6'd57;
+  localparam logic [5:0] U_ASRC_XREG = 6'd58;
 
   localparam logic [4:0] U_BSRC_ZERO = 5'd0;
   localparam logic [4:0] U_BSRC_STG_C_U = 5'd1;
@@ -357,9 +360,10 @@ package rd68021_ucode_pkg;
   // Named entry points.
   localparam logic [UADDR-1:0] ENTRY_RESET = 13'd0;
   localparam logic [UADDR-1:0] ENTRY_ILLEGAL = 13'd5;
-  localparam logic [UADDR-1:0] ENTRY_TRACE = 13'd1123;
-  localparam logic [UADDR-1:0] ENTRY_IRQ = 13'd1126;
-  localparam logic [UADDR-1:0] ENTRY_BERR = 13'd1154;
+  localparam logic [UADDR-1:0] ENTRY_TRACE = 13'd1120;
+  localparam logic [UADDR-1:0] ENTRY_IRQ = 13'd1123;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 13'd1151;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_SHORT = 13'd1212;
 
 endpackage
 

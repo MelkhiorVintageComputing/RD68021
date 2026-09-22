@@ -2114,10 +2114,16 @@ def rte_fault(stem, long_frame):
     u('the frame base, which is where the walk starts',
       asrc='SP', alu='A', dst='EA_SAVE', size='LONG')
 
+    # The order is the frame's own, walking up, with one constraint that is not:
+    # the queue DEPTH has to be back before the fill point is written, because
+    # the fill point is two beyond stage B only while the queue is two deep. The
+    # depth comes out of the special status word at +$0A, which the walk reaches
+    # long before +$24, so `PIPE_F` goes in the middle rather than at the end.
     fields = [
         (0x02, 4, 'PC_D'),
         (0x08, 2, 'INT08'),
         (0x0A, 2, 'SSW'),
+        (0x0A, 0, 'PIPE_F'),          # no read: the depth, from what was just read
         (0x0C, 2, 'STG_C'),
         (0x0E, 2, 'STG_B'),
         (0x10, 4, 'DFA'),
@@ -2129,6 +2135,8 @@ def rte_fault(stem, long_frame):
         fields += [
             (0x1C, 4, 'T0'),
             (0x20, 4, 'T1'),
+            # Writing this is what says the pipe is whole, and every other pipe
+            # field is behind it in the walk.
             (0x24, 4, 'FILL'),
             (0x28, 4, 'T2'),
             (0x2C, 4, 'DIB'),
@@ -2139,21 +2147,20 @@ def rte_fault(stem, long_frame):
             (0x44, 2, 'LINK'),
             (0x46, 4, 'PC_PREV'),
         ]
-    else:
-        # UM 6.2: "when the short bus fault stack frame applies, the address of
-        # the pipe stage B word is the value in the PC plus four". The long
-        # frame carries that address; the short one is only ever built at an
-        # instruction boundary, where the pipe is sequential and the arithmetic
-        # is exact, so it is derived rather than read.
-        fields += [(0x1C, 2, 'INT36')]
 
     at = 0
     for off, nbytes, dst in fields:
+        if nbytes == 0:
+            u('the queue depth, which is what the rerun bits say -- UM 6.2.1',
+              dst=dst)
+            continue
         step = off - at
-        u('... to +$%02X' % off,
-          asrc='EA_SAVE', bsrc={2: 'TWO', 4: 'FOUR', 6: 'SIX', 8: 'EIGHT',
-                                12: 'TWELVE'}[step],
-          alu='ADD', dst='EA_SAVE', size='LONG')
+        if step != 0:
+            u('... to +$%02X' % off,
+              asrc='EA_SAVE',
+              bsrc={2: 'TWO', 4: 'FOUR', 6: 'SIX', 8: 'EIGHT',
+                    12: 'TWELVE'}[step],
+              alu='ADD', dst='EA_SAVE', size='LONG')
         u('read +$%02X' % off,
           bus='READ', fc='DATA', asel='EA_SAVE', bytes=nbytes)
         u('... into %s' % dst.lower(),
@@ -2161,11 +2168,15 @@ def rte_fault(stem, long_frame):
         at = off
 
     if not long_frame:
+        # UM 6.2: "when the short bus fault stack frame applies, the address of
+        # the pipe stage B word is the value in the PC plus four". The long
+        # frame carries that address; the short one is only ever built at an
+        # instruction boundary, where the pipe is sequential and the arithmetic
+        # is exact, so it is derived rather than read -- and writing it is what
+        # says the pipe is whole.
         u('stage B is at the program counter plus four -- UM 6.2',
           asrc='PC_D', bsrc='FOUR', alu='ADD', dst='FILL', size='LONG')
 
-    u('the pipe is whole again, and its depth is what the rerun bits say',
-      dst='PIPE_F')
     u('+$00: the status register, read while the stack pointer is still the base',
       bus='READ', fc='DATA', asel='SP', bytes=2)
     u('the stack pointer, past the frame, while it is still this stack',
@@ -2499,8 +2510,14 @@ u('and the interrupt stack pointer is where the throwaway begins',
 # for a bus error, address error, or reset ... the processor enters the halted
 # state" -- and `g0_q`, set by the same edge that came here, is that window.
 # ==========================================================================
-def fault_frame(stem, vec, long_frame):
-    """A format $A or $B frame, built upward from its base."""
+def fault_frame(stem, long_frame):
+    """A format $A or $B frame, built upward from its base.
+
+    One routine for both group-0 vectors. UM 6.1.3 makes the address error
+    "similar to a bus error exception but internally initiated", differing only
+    in the vector number, so the two share everything and the vector comes out of
+    a latch -- FLTVEC and FLTFMT -- rather than out of the microword.
+    """
     label(stem)
     u('the frame base: the active supervisor stack, less the frame',
       asrc='EA_SAVE',
@@ -2518,10 +2535,10 @@ def fault_frame(stem, vec, long_frame):
     # proves the set against frames.py.
     fields = [
         (0x02, 4, 'PC_D'),        # the instruction that was executing
-        (0x06, 2, 'FMTVECI'),
+        (0x06, 2, 'FLTFMT'),
         (0x08, 2, 'INT08'),
         (0x0A, 2, 'SSW'),
-        (0x0C, 2, 'STG_C'),
+        (0x0C, 2, 'STG_C_RAW'),
         (0x0E, 2, 'STG_B'),
         (0x10, 4, 'DFA'),
         (0x14, 2, 'UPC'),
@@ -2552,7 +2569,12 @@ def fault_frame(stem, vec, long_frame):
         fields += [(off, 4, 'ZERO') for off in range(0x4A, 0x5A, 4)]
         fields += [(0x5A, 2, 'ZERO')]
     else:
-        fields += [(0x1C, 2, 'INT36'), (0x1E, 2, 'ZERO')]
+        # UM table 6-5 makes the short frame sixteen words. Its last two are
+        # internal and this design has nothing to put in them: a format $A frame
+        # is taken at an instruction boundary, where every register the long
+        # frame's +$36 carries is either about to be set by the decode that
+        # resumes or is already clear.
+        fields += [(0x1C, 4, 'ZERO')]
 
     at = 0
     for off, nbytes, src in fields:
@@ -2564,16 +2586,21 @@ def fault_frame(stem, vec, long_frame):
         u('+$%02X: %s' % (off, src.lower()),
           bus='WRITE', fc='DATA', asel='EA_SAVE', asrc=src, alu='A',
           bytes=nbytes,
-          **({'frame': 'FB' if long_frame else 'FA', 'vec': vec}
-             if src == 'FMTVECI' else {}))
+          **({'frame': 'FB' if long_frame else 'FA'}
+             if src == 'FLTFMT' else {}))
         at = off
 
     u('the vector offset, now that T0 has been written out',
-      asrc='VECOFF', alu='A', dst='T0', size='LONG', vec=vec,
+      asrc='FLTVEC', alu='A', dst='T0', size='LONG',
       next='exc_f0_vector')
 
 
-fault_frame('exc_berr', 2, True)
+# UM table 6-5: the short frame when the exception was taken at an instruction
+# boundary, the long one when it was taken during an instruction. Which of them
+# a fault reaches is decided by the sequencer, and `check_boundary` in the
+# assembler is what keeps that decision the same question as the manual's.
+fault_frame('exc_fault_long', True)
+fault_frame('exc_fault_short', False)
 # ==========================================================================
 def entry(name):
     if name not in LABELS:

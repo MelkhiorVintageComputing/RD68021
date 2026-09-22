@@ -130,7 +130,6 @@ INTERNAL = [
     (0x28, 31,  0, 't2',        32,  'working register'),
     (0x30, 31,  0, 't3',        32,  'working register'),
     (0x34, 15,  0, 'xw',        16,  'the extension-word latch'),
-    (0x36,  0,  0, 'stage_d_f',  1,  'stage D came from a faulted prefetch'),
     (0x38, 31,  0, 'ea_latch',  32,  'the address output buffer'),
     (0x3C, 31,  0, 'ea_save',   32,  'the copy of it taken at the fault'),
     (0x40, 31,  0, 'pc_fetch',  32,  'the next long word the pipe will fetch'),
@@ -158,7 +157,6 @@ CHECKPOINT = [
     ('ifu', 'b_q',              16, 'stage_b',       'frame +$0E'),
     ('ifu', 'c_f_q',             1, 'ssw',           'SSW FC'),
     ('ifu', 'b_f_q',             1, 'ssw',           'SSW FB'),
-    ('ifu', 'd_f_q',             1, 'stage_d_f',     ''),
     ('ifu', 'pc_d_q',           32, 'pc',            "the frame's own program counter"),
     ('ifu', 'fill_q',           32, 'stage_b_addr',  'long frame +$24; short frame derives it. The same register as pc_fetch: stage B is two before the fill point.'),
     ('ifu', 'fill_q',           32, 'pc_fetch',      ''),
@@ -218,6 +216,10 @@ EXEMPT = [
     ('ifu', 'fetch_pend_q', 'a prefetch is outstanding. Derived: RTE re-issues '
                             'whatever the refill needs.'),
     ('ifu', 'fetch_addr_q', 'the address that prefetch was issued at. Likewise.'),
+    ('ifu', 'ckpt_busy_q',  'RTE is in the middle of putting this pipe back, '
+                            'so it does not fetch. It cannot be live across a '
+                            'fault: a fault while RTE reads its own frame is a '
+                            'double bus fault -- UM 6.1.2.'),
     ('ifu', 'discard_q',    'the word in flight belongs to a stream that is '
                             'gone. Likewise -- and RTE flushes anyway.'),
 
@@ -318,6 +320,9 @@ EXEMPT = [
     # the window this bit marks -- the machine halts instead -- and there is
     # nothing for a frame field to say.
     ('seq', 'g0_q',         'the window in which a second fault is a double bus fault'),
+    ('seq', 'flt_odd_q',    'this fault is an address error and not a bus '
+                            'error, which is the only thing that differs '
+                            'between the two frames they build'),
     ('seq', 'dbf_q',        'a double bus fault has halted the processor. UM '
                             '6.1.2: only an external reset restarts it, so '
                             'there is nothing to restore and nowhere to '
@@ -331,16 +336,13 @@ EXEMPT = [
     # RTE, and these hold them until they can be put together. RTE reading its
     # own frame cannot fault without it being a double bus fault -- UM 6.1.2 --
     # so there is no window in which they must survive one.
-    ('seq', 'rs_fc_q',      'the special status word RTE has read back, taken '
-                            'apart: FC'),
-    ('seq', 'rs_fb_q',      '... FB'),
-    ('seq', 'rs_rc_q',      '... RC'),
+    ('seq', 'rs_rc_q',      'the special status word RTE has read back, taken '
+                            'apart: RC'),
     ('seq', 'rs_rb_q',      '... RB'),
     ('seq', 'rs_df_q',      '... DF'),
     ('seq', 'rs_rm_q',      '... RM'),
     ('seq', 'rs_rw_q',      '... RW'),
     ('seq', 'rs_space_q',   '... and the address space of the data cycle'),
-    ('seq', 'rdf_q',        "... and stage D's fault bit, out of the other word"),
     ('seq', 'rupc_q',       'the micro-address RTE will resume at'),
     ('seq', 'rst_addr_q',   'the faulted operand RTE is handing back to the '
                             'bus unit: its address'),

@@ -64,7 +64,7 @@ package rd68021_frame_pkg;
   // ==========================================================================
   // This design's own state, in the long frame's internal words
   //
-  // 492 bits available, 338 used, 9 words spare. Recompute this whenever
+  // 492 bits available, 337 used, 9 words spare. Recompute this whenever
   // something is added: doc/checkpoint.md carries the same table, printed from
   // the same source.
   // ==========================================================================
@@ -119,9 +119,6 @@ package rd68021_frame_pkg;
   localparam int OFF_I_XW        = 'h34;   // 16 bits, the extension-word latch
   localparam int I_XW_HI         = 15;
   localparam int I_XW_LO         = 0;
-  localparam int OFF_I_STAGE_D_F = 'h36;   //  1 bits, stage D came from a faulted prefetch
-  localparam int I_STAGE_D_F_HI  = 0;
-  localparam int I_STAGE_D_F_LO  = 0;
   localparam int OFF_I_EA_LATCH  = 'h38;   // 32 bits, the address output buffer
   localparam int I_EA_LATCH_HI   = 31;
   localparam int I_EA_LATCH_LO   = 0;
