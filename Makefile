@@ -60,6 +60,7 @@ help:
 	@echo "  make lint      elaborate every rtl module under iverilog, Verilator and yosys"
 	@echo "  make sim       the directed testbenches"
 	@echo "  make sim-bus   ... just the bus-level ones"
+	@echo "  make paging    ... just the bus-fault and demand-paging ones"
 	@echo "  make audit     prove no register initialises outside reset"
 	@echo "  make timing    AC-specification feasibility, all four speed grades"
 	@echo "  make ea        every addressing mode against Musashi"
@@ -177,6 +178,13 @@ sim: dirs
 
 sim-bus: dirs
 	@$(MAKE) --no-print-directory sim TBS="$(filter bus_%,$(TBS))"
+
+# Demand paging: every combination of UM table 5-6 faulted across a page that is
+# not there, handled by a real handler, and continued. It is part of `sim`, and
+# so of `check`, because it is the milestone's own criterion and a regression in
+# it is the kind nothing else finds.
+paging: dirs
+	@$(MAKE) --no-print-directory sim TBS="core_paging_tb core_fault_tb"
 
 # ---------------------------------------------------------------------------
 # Musashi, the instruction-level oracle
