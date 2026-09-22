@@ -90,6 +90,8 @@ COND = enc(
     'CNT16',     # the counter has been round all sixteen
     'MDOVF',     # the multiply or divide overflowed
     'XW10',      # bit 10 of the extension word: the long forms' 64-bit selector
+    'XW11',      # bit 11 of it: CHK2 rather than CMP2 -- PRM 4
+    'XW15',      # bit 15: the register it names is an address register
     # RTE reads a frame's format word into xw and branches on it. UM 6.1.12
     # names three it understands and says the rest are a format error.
     'FMT0',      # the format word in xw says a four-word frame
@@ -107,6 +109,7 @@ COND = enc(
     'DIVZERO',   # the divisor was zero. PRM 4: "division by zero causes a
                  # trap", which is a different thing from an overflow -- the
                  # overflow arm returns and this one does not
+    'CSET',      # the carry flag, which is where CMP2 leaves its verdict
     'VSET',      # the overflow flag. TRAPV tests V and its own condition
                  # field reads as NE, so it cannot use the cc evaluation
     'AVEC',      # the last cycle ended with AVEC: use the autovector
@@ -150,6 +153,11 @@ FC = enc(
     'PROG',      # program space at the current privilege level
     'DATA',      # data space likewise
     'CPU',
+    # PRM 6, MOVES: "the instruction uses the function code in SFC or DFC to
+    # access the operand", which is the only way a program can name an address
+    # space rather than have one chosen for it.
+    'SFC',
+    'DFC',
     # The space the effective address under way belongs to: program if its base
     # is the program counter, data otherwise. PRM 2: "Data items in the
     # instruction stream can be accessed with the program counter relative
@@ -372,7 +380,14 @@ DST = enc(
     'LINK', 'PC_PREV',
     'SSW', 'DFA', 'DOB', 'DIB',
     'RUPC',      # the micro-address to resume at
-    'AREG_EA',   # the address register the EA field names, for (An)+ and -(An)
+    'AREG_EA',
+    # The same two, for an ADDRESS rather than a data operand: written whole,
+    # with no sign extension, whatever the operand size is. Stepping (An)+ and
+    # -(An) is the only thing that needs them, and it needs them because the
+    # step is the OPERAND size while the register is an address -- so the
+    # microword cannot simply say long.
+    'AREG_ADDR',
+    'AREG_EA_ADDR',   # the address register the EA field names, for (An)+ and -(An)
     'DREG_R',    # the data register bits 2:0 name -- the destination when the
                  # effective address IS a register, which is every one-operand
                  # instruction in mode 000
@@ -385,6 +400,10 @@ DST = enc(
     'XREG',      # the general register it names -- data or address per bit 15
     'USP',       # the user stack pointer BY NAME, not whichever A7 means --
                  # which is the whole point of MOVE USP
+    # The register the extension word names, written at the OPERAND size: PRM 6
+    # puts a byte or word into the low part of a data register and sign-extends
+    # it into the whole of an address register. MOVES needs both.
+    'XREG_SZ',
 )
 
 # How wide the destination write is. A write to a data register of size byte or
@@ -410,6 +429,7 @@ SZSEL = enc(
     # what they can do is use the one the caller already worked out. (An)+ and
     # -(An) are why it matters -- they step the register by the operand size.
     'LATCHED',
+    'IR109',     # bits 10:9: 00 byte, 01 word, 10 long -- CMP2, CHK2 and CAS
     'CHK',       # bit 7 alone: 1 word, 0 long. CHK is the only instruction that
                  # encodes its size that way -- PRM 8 gives it opmode 110 and
                  # 100, the second being the MC68020's addition.
@@ -450,6 +470,11 @@ CCR = enc(
     # comparison computed -- and the two differ when the bound is negative and
     # the subtraction overflows.
     'CLRNZVC',
+    # PRM 4, CMP2 and CHK2: "Z -- set if Rn is equal to either bound; cleared
+    # otherwise. C -- set if Rn is out of bounds". The two equalities are tested
+    # by two microwords, so Z is only ever SET here and the microword before
+    # cleared it. N and V are undefined and are left where they fell.
+    'CMP2',
 )
 
 # The instruction pipe.
@@ -498,7 +523,7 @@ FIELDS = OrderedDict([
     ('next',  (UADDR_BITS, None, 0)),
     ('bus',   (2,  BUS,   'NONE')),
     ('asel',  (4,  ASEL,  'ZERO')),
-    ('fc',    (2,  FC,    'DATA')),
+    ('fc',    (3,  FC,    'DATA')),
     ('bytes', (3,  None,  0)),      # operand size in bytes, 0 when bus is NONE
     ('asrc',  (6,  ASRC,  'ZERO')),
     ('bsrc',  (5,  BSRC,  'ZERO')),
@@ -506,7 +531,7 @@ FIELDS = OrderedDict([
     ('dst',   (6,  DST,   'NONE')),
     ('size',  (2,  SIZE,  'LONG')),
     ('ccr',   (5,  CCR,   'NONE')),
-    ('szsel', (3,  SZSEL, 'FIXED')),
+    ('szsel', (4,  SZSEL, 'FIXED')),
     ('pf',    (2,  PF,    'NONE')),
     # Latch the return address. One level is enough: an effective-address
     # routine is called from an instruction and calls nothing itself.

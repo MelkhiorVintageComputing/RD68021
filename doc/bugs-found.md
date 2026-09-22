@@ -1442,3 +1442,24 @@ modes its instruction actually has.
 mechanism ABCD and SBCD already use in the same two lines of the map. The
 inventory that found it is worth keeping as a habit: for each instruction the
 manual lists, ask what the decoder does with every one of its encodings.
+
+## M10 · An address register could not take a byte
+
+**What:** `MOVES.B <ea>,A1` put `$0000009C` in A1 where `$FFFFFF9C` belonged.
+
+`y_areg` — what an address-register destination actually stores — sign-extended
+a word result and passed everything else through. That was right for every
+instruction that existed: MOVEA has no byte form, and neither does ADDQ or SUBQ
+to an address register, so until MOVES arrived nothing could put a byte in one.
+
+PRM 6 is explicit for MOVES: "if the destination is an address register, the
+source operand is sign-extended to 32 bits", byte sources included.
+
+**Fixed by:** extending the rule to the operand size rather than to the word
+case. Nothing else reaches the byte arm, so nothing else changes.
+
+**The shape of it is worth noting.** The gap was not in code written for MOVES;
+it was in a helper written years of commits earlier, whose rule happened to be
+complete for every instruction that then existed. Adding an instruction is
+mostly adding microcode, and occasionally it is discovering that a datapath
+rule was narrower than it read.

@@ -804,6 +804,33 @@ static void g_packunpk(void)
     }
 }
 
+/* CMP2 and CHK2 are not swept. Musashi decides in or out of bounds with a
+ * comparison of one fixed signedness, and PRM 4 requires an instruction that
+ * works for either -- doc/divergences.md. sim/tb/core_insn_tb.sv covers them
+ * against the manual; `make ea` covers the addressing modes they share with
+ * everything else. */
+
+/* MOVES -- PRM 6. The point of the instruction is the function code it uses, so
+ * what this really tests is the SPACE each access goes to: the sweep compares
+ * the access list, and the space is part of it. SFC and DFC are part of the
+ * initial state the generator randomises, so every test names a different one.
+ *
+ * Memory alterable modes only. */
+static void g_moves(void)
+{
+    static const unsigned int SZ[] = { 0x0E00u, 0x0E40u, 0x0E80u };
+    static const unsigned int XW[] = {
+        0x1000u,        /* <ea> -> D1 */
+        0x9000u,        /* <ea> -> A1 */
+        0x1800u,        /* D1 -> <ea> */
+        0x9800u,        /* A1 -> <ea> */
+    };
+    int i, j;
+    for (i = 0; i < 3; i++)
+        for (j = 0; j < (int)(sizeof XW / sizeof XW[0]); j++)
+            sweep(SZ[i], EA_MEM, N_EA_MEM, 1, &XW[j], NPER, 0);
+}
+
 static void g_bcd(void)
 {
     plain(0xC100 | (2 << 9) | 5, NPER * 2, 0);
@@ -1086,6 +1113,7 @@ static const struct group GROUPS[] = {
     { "muldiv",  g_muldiv  },
     { "bcd",     g_bcd     },
     { "packunpk",g_packunpk},
+    { "moves",   g_moves   },
     { "tas",     g_tas     },
     { "movem",   g_movem   },
     { "movep",   g_movep   },
@@ -1238,6 +1266,8 @@ int main(int argc, char **argv)
             if (is_abcd)                     t->srmask &= ~0x000Au;  /* N and V */
             if ((is_divw || is_divl) && (sr_after & 2)) t->srmask &= ~0x000Cu; /* N and Z */
             if (is_chk)                      t->srmask &= ~0x000Fu;  /* N Z V C */
+            /* PRM 4, CMP2 and CHK2: "N -- undefined. V -- undefined." */
+            if ((op & 0xF9C0u) == 0x00C0u)   t->srmask &= ~0x000Au;  /* N and V */
             div_ovf_c = (is_divw || is_divl) && (sr_after & 2);
         }
 

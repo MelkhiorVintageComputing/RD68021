@@ -560,3 +560,47 @@ which is the one a reader can check without any of this reasoning.
 
 **What could differ:** a program that packs or unpacks through `-(An)` gets the
 opposite digit order under Musashi. Nothing else uses the instruction.
+
+---
+
+## Musashi's CMP2 and CHK2 use one fixed signedness
+
+PRM 4 says the same thing on both instructions' pages:
+
+> For signed comparisons, the arithmetically smaller value should be used as the
+> lower bound. For unsigned comparisons, the logically smaller value should be
+> the lower bound.
+
+Those two sentences cannot both be true of an instruction that compares with a
+fixed signedness, and it is worth being precise about why:
+
+- If the test were **unsigned**, a signed range like `[-16, +16]` is written
+  `LB = $F0`, `UB = $10`, and `Rn = 0` would come out *below* the lower bound.
+  Signed comparisons would not work at all.
+- If the test were **signed**, an unsigned range like `[16, 240]` is written
+  `LB = $10`, `UB = $F0`, and `Rn = $80` is negative, so it would come out below
+  the lower bound too. Unsigned comparisons would not work.
+
+One test satisfies both, and it is what this core does:
+
+> out of bounds ⟺ `(Rn − LB)` >unsigned `(UB − LB)`
+
+Both differences are modular, so it asks whether `Rn` lies in the cyclic
+interval that begins at `LB` and is as long as the range — which is what being
+between the bounds means under either reading, with no branch on which was
+meant. The two equalities `Z` wants fall out of the same two differences:
+`Rn = LB` is the first being zero and `Rn = UB` is the two being equal.
+
+Musashi answers "out of bounds" in exactly the cases where the range only makes
+sense under the interpretation it did not pick.
+
+**What is done about it:** the sweep does not run these two. `make ea` already
+covers the addressing modes they share with every other instruction, and
+`sim/tb/core_insn_tb.sv` covers the comparison itself — a signed range, an
+unsigned range, a range of one value, both register files, all three sizes, and
+CHK2's trap.
+
+**What could differ:** a program whose bounds only make sense one way round gets
+the opposite verdict under Musashi. A program whose bounds are sensible under
+both — which is any range that does not straddle the signed/unsigned boundary —
+gets the same answer from either.

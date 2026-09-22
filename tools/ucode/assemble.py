@@ -553,7 +553,8 @@ OUTPUTS = {
 # microword computes, so they are not in this table.
 # --------------------------------------------------------------------------
 COND_READS = {
-    'FMT0': 'XW', 'FMT1': 'XW', 'FMT2': 'XW', 'XW10': 'XW',
+    'FMT0': 'XW', 'FMT1': 'XW', 'FMT2': 'XW', 'FMTA': 'XW', 'FMTB': 'XW',
+    'XW10': 'XW', 'XW11': 'XW', 'XW15': 'XW',
     'MASK0': 'T0',
     'USER': 'SR', 'MASTER': 'SR',
 }
@@ -596,6 +597,33 @@ def check_boundary():
     return bad
 
 
+def check_areg_size():
+    """An address register written at less than a long word is a data move.
+
+    PRM 2 sign-extends a word into an address register because the word is a
+    VALUE -- MOVEA.W is the instruction that rule exists for. The address a
+    postincrement or predecrement leaves behind is not a value: it is already
+    thirty-two bits, and extending it at the operand size truncates it.
+
+    The two look identical in a microword -- both write an address register --
+    so the ones that carry an address say so, and this insists that any write
+    at a size the microword does not fix at long is one of them. It was a latent
+    bug for two milestones: every `(An)+` and `-(An)` step went through the
+    sign-extending destination, and the only reason nothing failed is that the
+    sweep's addresses all have the relevant bit clear.
+    """
+    bad = []
+    for i, (f, c) in enumerate(program.WORDS):
+        if f.get('dst') not in ('AREG', 'AREG_EA'):
+            continue
+        if f.get('szsel', 'FIXED') == 'FIXED' and f.get('size', 'LONG') == 'LONG':
+            continue
+        bad.append('microword %d writes an address register at a size that is '
+                   'not fixed at long, so it must use the ADDR destination -- %s'
+                   % (i, c))
+    return bad
+
+
 def check_cond_dst():
     bad = []
     for i, (f, c) in enumerate(program.WORDS):
@@ -615,7 +643,8 @@ def main():
                     help='fail if the checked-in files are stale')
     args = ap.parse_args()
 
-    bad = frames.check() + isa.check() + check_cond_dst() + check_boundary()
+    bad = (frames.check() + isa.check() + check_cond_dst() + check_boundary()
+           + check_areg_size())
     if bad:
         print('FAIL: the tables are not self-consistent')
         for b in bad:

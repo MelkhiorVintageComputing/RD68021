@@ -317,6 +317,14 @@ module rd68021_seq #(
                             : rd68021_ucode_pkg::U_SIZE_WORD;
       rd68021_ucode_pkg::U_SZSEL_LATCHED:
         eff_size = size_q;
+      // PRM 8 gives CMP2, CHK2 and CAS their size in bits 10:9, which no other
+      // instruction uses for it.
+      rd68021_ucode_pkg::U_SZSEL_IR109:
+        unique case (stg_d[10:9])
+          2'b00:   eff_size = rd68021_ucode_pkg::U_SIZE_BYTE;
+          2'b01:   eff_size = rd68021_ucode_pkg::U_SIZE_WORD;
+          default: eff_size = rd68021_ucode_pkg::U_SIZE_LONG;
+        endcase
       rd68021_ucode_pkg::U_SZSEL_CHK:
         eff_size = stg_d[7] ? rd68021_ucode_pkg::U_SIZE_WORD
                             : rd68021_ucode_pkg::U_SIZE_LONG;
@@ -356,11 +364,22 @@ module rd68021_seq #(
   logic [31:0] a_bus, b_bus, y;
 
   // What an address-register destination actually stores. PRM 2: the whole
-  // register is written whatever the operation size, and a word result is sign
-  // extended to get there.
+  // register is written whatever the operation size, and a narrower result is
+  // sign extended to get there.
+  //
+  // The byte case exists for one instruction. MOVEA has no byte form and
+  // neither does ADDQ or SUBQ to an address register, so until MOVES arrived
+  // nothing could put a byte in one -- PRM 6, "if the destination is an address
+  // register, the source operand is sign-extended to 32 bits". Leaving the byte
+  // case out put $0000009C where $FFFFFF9C belonged.
   logic [31:0] y_areg;
-  assign y_areg = (eff_size == rd68021_ucode_pkg::U_SIZE_WORD)
-                  ? {{16{y[15]}}, y[15:0]} : y;
+  always_comb begin
+    unique case (eff_size)
+      rd68021_ucode_pkg::U_SIZE_BYTE: y_areg = {{24{y[7]}},  y[7:0]};
+      rd68021_ucode_pkg::U_SIZE_WORD: y_areg = {{16{y[15]}}, y[15:0]};
+      default:                        y_areg = y;
+    endcase
+  end
 
   always_comb begin
     unique case (`UF(ASRC))
@@ -1267,7 +1286,12 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_COND_MASTER: cond_true = master_mode;
       rd68021_ucode_pkg::U_COND_USER:  cond_true = ~super_mode;
       rd68021_ucode_pkg::U_COND_DIVZERO: cond_true = div_zero;
+      rd68021_ucode_pkg::U_COND_CSET:    cond_true = flag_c;
       rd68021_ucode_pkg::U_COND_VSET:    cond_true = flag_v;
+      // PRM 4: the extension word of CMP2 and CHK2 says which of the two this
+      // is, and which register it checks.
+      rd68021_ucode_pkg::U_COND_XW11:    cond_true = xw_q[11];
+      rd68021_ucode_pkg::U_COND_XW15:    cond_true = xw_q[15];
       rd68021_ucode_pkg::U_COND_AVEC:
         cond_true = (req_end == rd68021_pkg::CE_AVEC);
       rd68021_ucode_pkg::U_COND_BERR:
@@ -1430,6 +1454,10 @@ module rd68021_seq #(
       // The space of the effective address under way. PRM 2 classifies every
       // program-counter-relative access as a program reference, and the same
       // latched bit that chose the base chooses the space.
+      // PRM 6: MOVES names its own space, and the two control registers are what
+      // it names it with.
+      rd68021_ucode_pkg::U_FC_SFC:  req_fc = sfc_q[2:0];
+      rd68021_ucode_pkg::U_FC_DFC:  req_fc = dfc_q[2:0];
       rd68021_ucode_pkg::U_FC_EASP: req_fc = super_mode
                                              ? (eapc_q ? rd68021_pkg::FC_SUPER_PROG
                                                        : rd68021_pkg::FC_SUPER_DATA)
@@ -1769,6 +1797,24 @@ module rd68021_seq #(
               areg[xw_q[14:12]] <= y;
             end
           end
+          // PRM 6, MOVES: a byte or a word replaces "the corresponding
+          // low-order bits" of a data register, and is sign-extended into the
+          // whole of an address register -- which y_areg already is.
+          rd68021_ucode_pkg::U_DST_XREG_SZ: begin
+            if (!xw_q[15]) begin
+              unique case (eff_size)
+                rd68021_ucode_pkg::U_SIZE_BYTE: dreg[xw_q[14:12]][7:0]  <= y[7:0];
+                rd68021_ucode_pkg::U_SIZE_WORD: dreg[xw_q[14:12]][15:0] <= y[15:0];
+                default:                        dreg[xw_q[14:12]]       <= y;
+              endcase
+            end else if (xw_q[14:12] == 3'd7) begin
+              if (!super_mode)      usp_q <= y_areg;
+              else if (master_mode) msp_q <= y_areg;
+              else                  isp_q <= y_areg;
+            end else begin
+              areg[xw_q[14:12]] <= y_areg;
+            end
+          end
           rd68021_ucode_pkg::U_DST_DREG_XQ: dreg[xw_q[14:12]] <= y;
           rd68021_ucode_pkg::U_DST_DREG_XR: dreg[xw_q[2:0]]   <= y;
           rd68021_ucode_pkg::U_DST_CCR:
@@ -1790,6 +1836,28 @@ module rd68021_seq #(
             if (!super_mode)      usp_q <= y;
             else if (master_mode) msp_q <= y;
             else                  isp_q <= y;
+          end
+          // An ADDRESS, not a data operand: the whole register, never extended.
+          // PRM 2 sign-extends a word into an address register because the word
+          // is a VALUE; the address a postincrement leaves behind is already
+          // thirty-two bits and extending it at the operand size truncates it.
+          rd68021_ucode_pkg::U_DST_AREG_ADDR: begin
+            if (wsel == 3'd7) begin
+              if (!super_mode)      usp_q <= y;
+              else if (master_mode) msp_q <= y;
+              else                  isp_q <= y;
+            end else begin
+              areg[wsel] <= y;
+            end
+          end
+          rd68021_ucode_pkg::U_DST_AREG_EA_ADDR: begin
+            if (rsel == 3'd7) begin
+              if (!super_mode)      usp_q <= y;
+              else if (master_mode) msp_q <= y;
+              else                  isp_q <= y;
+            end else begin
+              areg[rsel] <= y;
+            end
           end
           rd68021_ucode_pkg::U_DST_AREG_EA: begin
             // The register the effective address field names, for (An)+ and
@@ -1819,6 +1887,14 @@ module rd68021_seq #(
           // upper bound". That is the reason for the trap, not the sign of the
           // difference -- a negative bound makes the subtraction overflow and
           // the two disagree.
+          // PRM 4, CMP2 and CHK2. Z is only ever SET: the microword before this
+          // one cleared it and set it if the register equalled the LOWER bound,
+          // and this one adds the upper. C is the borrow, which is out of
+          // bounds. N and V are undefined and are left alone.
+          rd68021_ucode_pkg::U_CCR_CMP2: begin
+            if (res_z) sr_q[rd68021_pkg::SR_Z] <= 1'b1;
+            sr_q[rd68021_pkg::SR_C] <= alu_c;
+          end
           rd68021_ucode_pkg::U_CCR_CLRNZVC: begin
             sr_q[rd68021_pkg::SR_N] <= 1'b0;
             sr_q[rd68021_pkg::SR_Z] <= 1'b0;

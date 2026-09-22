@@ -17,6 +17,51 @@ module core_insn_tb;
 
   bit          reached;
   logic [15:0] got;
+  int unsigned k;
+
+  // One CMP2 or CHK2: the bounds pair at DATA, the register loaded, and the
+  // codes read back out of the status register.
+  //
+  // `xw` is the instruction's extension word -- bit 15 the register file, bits
+  // 14-12 the register, bit 11 CHK2 rather than CMP2.
+  task automatic cmp2_case(input logic [15:0] opw, input logic [15:0] xw,
+                           input logic [31:0] lb, input logic [31:0] ub,
+                           input logic [31:0] rn, input int unsigned nbytes,
+                           input bit want_c, input bit want_z,
+                           input string what);
+    setup();
+    // The bounds, lower first -- PRM 4, "the upper bound following the lower".
+    case (nbytes)
+      1: begin
+        poke_w(DATA,     {lb[7:0], ub[7:0]});
+      end
+      2: begin
+        poke_w(DATA,     lb[15:0]);
+        poke_w(DATA + 2, ub[15:0]);
+      end
+      default: begin
+        poke_l(DATA,     lb);
+        poke_l(DATA + 4, ub);
+      end
+    endcase
+    // MOVEA.L #DATA,A6 ; MOVE.L #rn,D1 or MOVEA.L #rn,A1 ; the instruction.
+    poke_w(CODE + 0, 16'h2C7C);            // MOVEA.L #DATA,A6
+    poke_l(CODE + 2, DATA);
+    if (xw[15]) begin
+      poke_w(CODE + 6, 16'h227C | ({13'd0, xw[14:12]} << 9)); // MOVEA.L #rn,An
+    end else begin
+      poke_w(CODE + 6, 16'h203C | ({13'd0, xw[14:12]} << 9)); // MOVE.L #rn,Dn
+    end
+    poke_l(CODE + 8, rn);
+    poke_w(CODE + 12, opw | 16'h0016);     // ... <ea> = (A6)
+    poke_w(CODE + 14, xw);
+    poke_w(CODE + 16, 16'h60FE);           // BRA *
+    reset_dut();
+    run_until(CODE + 16, 2000, reached);
+    check(reached, {what, ": the program finishes"});
+    check(dut.u_seq.sr_q[0] === want_c, {what, ": C says in or out of bounds"});
+    check(dut.u_seq.sr_q[2] === want_z, {what, ": Z says equal to a bound"});
+  endtask
 
   task automatic setup();
     int unsigned v;
@@ -82,6 +127,135 @@ module core_insn_tb;
           "UNPK: the source register stepped back one byte");
     check(dut.u_seq.areg[2] === DATA,
           "UNPK: and the destination two");
+
+
+    // ======================================================================
+    // CMP2 -- PRM 4. The manual asks for one instruction that serves both a
+    // signed and an unsigned range, and doc/divergences.md works through why
+    // no fixed-signedness comparison can. These are the cases that tell the
+    // three candidate rules apart.
+    //
+    //                    op     xw     LB    UB    Rn   sz   C  Z
+    // ======================================================================
+    // A signed range, -16 to +16 at byte size.
+    cmp2_case(16'h00C0, 16'h1000, 32'hF0, 32'h10, 32'h00, 1, 0, 0,
+              "CMP2.B signed range, inside");
+    cmp2_case(16'h00C0, 16'h1000, 32'hF0, 32'h10, 32'hEF, 1, 1, 0,
+              "CMP2.B signed range, below");
+    cmp2_case(16'h00C0, 16'h1000, 32'hF0, 32'h10, 32'h11, 1, 1, 0,
+              "CMP2.B signed range, above");
+    cmp2_case(16'h00C0, 16'h1000, 32'hF0, 32'h10, 32'hF0, 1, 0, 1,
+              "CMP2.B signed range, on the lower bound");
+    cmp2_case(16'h00C0, 16'h1000, 32'hF0, 32'h10, 32'h10, 1, 0, 1,
+              "CMP2.B signed range, on the upper bound");
+
+    // An unsigned range, 16 to 240. $80 is inside it and is negative, which is
+    // the case a signed comparison gets wrong.
+    cmp2_case(16'h00C0, 16'h1000, 32'h10, 32'hF0, 32'h80, 1, 0, 0,
+              "CMP2.B unsigned range, inside and negative");
+    cmp2_case(16'h00C0, 16'h1000, 32'h10, 32'hF0, 32'h00, 1, 1, 0,
+              "CMP2.B unsigned range, below");
+    cmp2_case(16'h00C0, 16'h1000, 32'h10, 32'hF0, 32'hFF, 1, 1, 0,
+              "CMP2.B unsigned range, above");
+
+    // "If the upper bound equals the lower bound, the valid range is a single
+    // value."
+    cmp2_case(16'h00C0, 16'h1000, 32'h42, 32'h42, 32'h42, 1, 0, 1,
+              "CMP2.B one-value range, on it");
+    cmp2_case(16'h00C0, 16'h1000, 32'h42, 32'h42, 32'h43, 1, 1, 0,
+              "CMP2.B one-value range, off it");
+
+    // Word and long, so that the size field and the two reads are exercised.
+    cmp2_case(16'h02C0, 16'h1000, 32'hFFF0, 32'h0010, 32'h0000, 2, 0, 0,
+              "CMP2.W signed range, inside");
+    cmp2_case(16'h02C0, 16'h1000, 32'h0010, 32'hFFF0, 32'h8000, 2, 0, 0,
+              "CMP2.W unsigned range, inside and negative");
+    cmp2_case(16'h04C0, 16'h1000, 32'hFFFFFFF0, 32'h00000010, 32'h00000000,
+              4, 0, 0, "CMP2.L signed range, inside");
+    cmp2_case(16'h04C0, 16'h1000, 32'h00000010, 32'hFFFFFFF0, 32'h80000000,
+              4, 0, 0, "CMP2.L unsigned range, inside and negative");
+
+    // An address register with byte bounds: PRM 4 sign-extends the bounds to
+    // thirty-two bits and compares them against the whole of An, so -8 is
+    // inside [-16, +16] and $000000F8 is not.
+    cmp2_case(16'h00C0, 16'h9000, 32'hF0, 32'h10, 32'hFFFFFFF8, 1, 0, 0,
+              "CMP2.B into An, sign extended, inside");
+    cmp2_case(16'h00C0, 16'h9000, 32'hF0, 32'h10, 32'h000000F8, 1, 1, 0,
+              "CMP2.B into An, the same bits unextended, outside");
+
+    // ... and only the low part of a data register is looked at.
+    cmp2_case(16'h00C0, 16'h1000, 32'hF0, 32'h10, 32'hAABBCC00, 1, 0, 0,
+              "CMP2.B into Dn looks only at the low byte");
+
+    // ======================================================================
+    // CHK2 is the same comparison with a trap on it -- PRM 4, vector 6.
+    // ======================================================================
+    setup();
+    poke_l(32'h0000_0018, 32'h0000_0500);  // vector 6
+    poke_w(32'h0000_0500, 16'h7A44);       // MOVEQ #$44,D5
+    poke_w(32'h0000_0502, 16'h60FE);
+    poke_w(DATA, 16'hF010);                // bounds -16 .. +16
+    poke_w(CODE + 0, 16'h2C7C);            // MOVEA.L #DATA,A6
+    poke_l(CODE + 2, DATA);
+    poke_w(CODE + 6, 16'h223C);            // MOVE.L #$EF,D1 -- one below
+    poke_l(CODE + 8, 32'h0000_00EF);
+    poke_w(CODE + 12, 16'h00D6);           // CHK2.B (A6),D1
+    poke_w(CODE + 14, 16'h1800);
+    poke_w(CODE + 16, 16'h60FE);
+    reset_dut();
+    run_until(32'h0000_0502, 2000, reached);
+    check(reached, "CHK2: out of bounds traps to vector 6");
+    check(dut.u_seq.dreg[5] === 32'h0000_0044, "CHK2: and the handler ran");
+
+    setup();
+    poke_l(32'h0000_0018, 32'h0000_0500);
+    poke_w(32'h0000_0500, 16'h7A44);
+    poke_w(32'h0000_0502, 16'h60FE);
+    poke_w(DATA, 16'hF010);
+    poke_w(CODE + 0, 16'h2C7C);
+    poke_l(CODE + 2, DATA);
+    poke_w(CODE + 6, 16'h223C);            // MOVE.L #0,D1 -- inside
+    poke_l(CODE + 8, 32'h0000_0000);
+    poke_w(CODE + 12, 16'h00D6);
+    poke_w(CODE + 14, 16'h1800);
+    poke_w(CODE + 16, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 16, 2000, reached);
+    check(reached, "CHK2: in bounds does not trap");
+    check(dut.u_seq.dreg[5] === 32'h0000_0000, "CHK2: and the handler did not run");
+
+
+    // ======================================================================
+    // An address register stepped by (An)+ or -(An) holds an ADDRESS, and the
+    // whole of it survives whatever the operand size is.
+    //
+    // PRM 2 sign-extends a word into an address register because the word is a
+    // value; the address a postincrement leaves behind is not one. The two go
+    // to the same register through the same microword field, and for two
+    // milestones they went through the same sign-extending path -- which no
+    // test noticed, because every address the sweep uses has the relevant bit
+    // clear. These are chosen so that it is set.
+    // ======================================================================
+    setup();
+    poke_w(32'h0000_8000, 16'h1234);
+    poke_w(32'h0000_0080, 16'h5678);
+    poke_w(CODE +  0, 16'h207C);           // MOVEA.L #$8000,A0
+    poke_l(CODE +  2, 32'h0000_8000);
+    poke_w(CODE +  6, 16'h227C);           // MOVEA.L #$0080,A1
+    poke_l(CODE +  8, 32'h0000_0080);
+    poke_w(CODE + 12, 16'h3018);           // MOVE.W (A0)+,D0
+    poke_w(CODE + 14, 16'h1219);           // MOVE.B (A1)+,D1
+    poke_w(CODE + 16, 16'h3420);           // MOVE.W -(A0),D2
+    poke_w(CODE + 18, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 18, 2000, reached);
+    check(reached, "stepping: the program finishes");
+    check(dut.u_seq.areg[0] === 32'h0000_8000,
+          "stepping: (A0)+ then -(A0) at a word comes back to $00008000");
+    check(dut.u_seq.areg[1] === 32'h0000_0081,
+          "stepping: (A1)+ at a byte gives $00000081, not a sign extension");
+    check(dut.u_seq.dreg[0][15:0] === 16'h1234, "stepping: and the word read");
+    check(dut.u_seq.dreg[2][15:0] === 16'h1234, "stepping: ... and read back");
 
     if (pipe_fails != 0)
       $display("  FAIL: the pipe invariant broke %0d times", pipe_fails);

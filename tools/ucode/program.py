@@ -164,13 +164,15 @@ u('the address register itself',
 label('ea_an_post')                      # (An)+
 u('the address register, then stepped on by the operand size',
   asrc='AREG', alu='A', dst='EA', szsel='LATCHED')
-u('... which for A7 and a byte is two, so the stack stays even',
-  asrc='AREG', bsrc='OPSIZE', alu='ADD', dst='AREG_EA', szsel='LATCHED',
+u('... which for A7 and a byte is two, so the stack stays even. The register '
+  'takes an ADDRESS, so it is written whole and not sign extended at the '
+  'operand size',
+  asrc='AREG', bsrc='OPSIZE', alu='ADD', dst='AREG_EA_ADDR', szsel='LATCHED',
   seq='RET')
 
 label('ea_an_pre')                       # -(An)
-u('the address register stepped back first',
-  asrc='AREG', bsrc='OPSIZE', alu='SUB', dst='AREG_EA', szsel='LATCHED')
+u('the address register stepped back first, likewise whole',
+  asrc='AREG', bsrc='OPSIZE', alu='SUB', dst='AREG_EA_ADDR', szsel='LATCHED')
 u('... and that is the address',
   asrc='AREG', alu='A', dst='EA', szsel='LATCHED', seq='RET')
 
@@ -854,8 +856,9 @@ extend_pair('subx', 'SUBX', 'SUBX')
 label('cmpm')
 u('the source address, and the register stepped on',
   asrc='AREG', alu='A', dst='T0', szsel='IR76')
-u('... by the operand size',
-  asrc='AREG', bsrc='OPSIZE', alu='ADD', dst='AREG_EA', szsel='IR76')
+u('... by the operand size. The register takes an ADDRESS, so it is written '
+  'whole and not sign extended at that size',
+  asrc='AREG', bsrc='OPSIZE', alu='ADD', dst='AREG_EA_ADDR', szsel='IR76')
 u('read the source',
   bus='READ', fc='DATA', asel='T0', szsel='IR76')
 u('and hold it',
@@ -863,7 +866,7 @@ u('and hold it',
 u('the destination address, and its register stepped on',
   asrc='AREGW', alu='A', dst='T1', szsel='IR76')
 u('... likewise',
-  asrc='AREGW', bsrc='OPSIZE', alu='ADD', dst='AREG', szsel='IR76')
+  asrc='AREGW', bsrc='OPSIZE', alu='ADD', dst='AREG_ADDR', szsel='IR76')
 u('read the destination',
   bus='READ', fc='DATA', asel='T1', szsel='IR76')
 u('destination minus source, for the codes alone',
@@ -1901,6 +1904,125 @@ u('... which is the register\'s new value',
 u('and the other byte goes there',
   bus='WRITE', fc='DATA', asel='T3', asrc='T2', alu='SHR8', bytes=1,
   pf='ADV', seq='DECODE')
+
+
+# ==========================================================================
+# CMP2 and CHK2 -- PRM 4, new on the MC68020
+#
+# "Compares the value in Rn to each bound. The effective address contains the
+# bounds pair: the upper bound following the lower bound."
+#
+# One routine for both, because the extension word and not the opcode says which
+# it is -- bit 11 -- and everything up to the verdict is the same.
+#
+# THE COMPARISON IS THE INTERESTING PART. The manual does not say signed or
+# unsigned; it says "for signed comparisons, the arithmetically smaller value
+# should be used as the lower bound. For unsigned comparisons, the logically
+# smaller value should be the lower bound." One test satisfies both:
+#
+#     out of bounds  <=>  (Rn - LB)  >unsigned  (UB - LB)
+#
+# Both differences are modular, so the test asks whether Rn lies in the cyclic
+# interval that starts at LB and is as long as the range -- which is what being
+# between the bounds means under either reading, and it needs no branch on which
+# one was meant. The two equalities the Z bit wants fall out of the same two
+# differences: Rn = LB is the first being zero, and Rn = UB is the two being
+# equal.
+#
+# PRM 4 on the register: "if Rn is a data register and the operation size is
+# byte or word, only the appropriate low-order part of Rn is checked. If Rn is
+# an address register ... the bounds operands are sign-extended to 32 bits, and
+# the resultant operands are compared to the full 32 bits of An." So the bounds
+# are always widened and only the data-register case narrows what it checks.
+# ==========================================================================
+label('cmp2')
+# The extension word has to be read before the effective address, because it is
+# the word right after the opcode -- and it has to be put somewhere the address
+# routines will not tread on, because they use `xw` for their own. MOVEM has the
+# same problem with its register mask and solves it the same way.
+u('the extension word: the register, and which of the two instructions this is',
+  asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
+u('the address of the bounds pair',
+  call=1, seq='EAMODE', szsel='IR109')
+u('... and now the extension word can come back',
+  asrc='T0', alu='A', dst='XW', size='WORD')
+u('the lower bound',
+  bus='READ', fc='DATA', asel='EA', szsel='IR109')
+u('... widened to thirty-two bits -- PRM 4',
+  asrc='RDATA', alu='SX', dst='T1', szsel='IR109')
+u('step past it',
+  asrc='EA', bsrc='OPSIZE', alu='ADD', dst='EA', size='LONG', szsel='IR109')
+u('the upper bound',
+  bus='READ', fc='DATA', asel='EA', szsel='IR109')
+u('... likewise',
+  asrc='RDATA', alu='SX', dst='T2', szsel='IR109')
+u('an address register is compared whole',
+  seq='COND', cond='XW15', next='cmp2_areg')
+u('a data register, only as far as the operand size goes',
+  asrc='XREG', alu='SX', dst='T3', szsel='IR109', next='cmp2_go')
+
+label('cmp2_areg')
+u('all thirty-two bits of it',
+  asrc='XREG', alu='A', dst='T3', size='LONG')
+
+label('cmp2_go')
+u('the register less the lower bound, and Z if they were equal',
+  asrc='T3', bsrc='T1', alu='SUB', dst='T3', size='LONG', ccr='ZN')
+u('the span of the range',
+  asrc='T2', bsrc='T1', alu='SUB', dst='T1', size='LONG')
+u('out of bounds when the register is further along it than that',
+  asrc='T1', bsrc='T3', alu='SUB', size='LONG', ccr='CMP2',
+  seq='COND', cond='XW11', next='chk2_test')
+u('CMP2 does nothing but set the codes',
+  pf='ADV', seq='DECODE')
+
+label('chk2_test')
+u('CHK2 traps when it is out of bounds -- PRM 4, vector 6',
+  seq='COND', cond='CSET', next='exc_chk')
+u('... and does not when it is not',
+  pf='ADV', seq='DECODE')
+
+opcode('0000000011------', 'cmp2', 'CMP2/CHK2.B <ea>,Rn')
+opcode('0000001011------', 'cmp2', 'CMP2/CHK2.W <ea>,Rn')
+opcode('0000010011------', 'cmp2', 'CMP2/CHK2.L <ea>,Rn')
+
+
+# ==========================================================================
+# MOVES -- PRM 6, the MC68010's and this part's only way to name an address
+# space rather than have one chosen for it.
+#
+# "Moves the byte, word, or long-word operand from the specified general
+# register to a location within the address space specified by the destination
+# function code register, or from a location within the address space specified
+# by the source function code register to the specified general register."
+#
+# Privileged, for the obvious reason: a user program that could name its own
+# function code could read supervisor memory.
+# ==========================================================================
+label('moves')
+u('privileged -- PRM 6',
+  seq='COND', cond='USER', next='exc_priv')
+u('the extension word: the register, and which way the move goes',
+  asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
+u('the address the mode names',
+  call=1, seq='EAMODE', szsel='IR76')
+u('... and now the extension word can come back',
+  asrc='T0', alu='A', dst='XW', size='WORD')
+u('which way?',
+  seq='COND', cond='XW11', next='moves_out')
+u('in, through the SOURCE function code',
+  bus='READ', fc='SFC', asel='EA', szsel='IR76')
+u('... into the register the extension word names',
+  asrc='RDATA', alu='A', dst='XREG_SZ', szsel='IR76', pf='ADV', seq='DECODE')
+
+label('moves_out')
+u('out, through the DESTINATION function code',
+  bus='WRITE', fc='DFC', asel='EA', asrc='XREG', alu='A', szsel='IR76',
+  pf='ADV', seq='DECODE')
+
+opcode('0000111000------', 'moves', 'MOVES.B')
+opcode('0000111001------', 'moves', 'MOVES.W')
+opcode('0000111010------', 'moves', 'MOVES.L')
 
 # ==========================================================================
 # MOVEC -- PRM 6
