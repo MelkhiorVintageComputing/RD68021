@@ -2033,7 +2033,11 @@ module rd68021_seq #(
 
   assign rst_op_valid = commit && `UF(RSTOP);
   assign rst_addr     = rst_addr_q;
-  assign rst_bytes    = rst_bytes_q;
+  // UM 6.2.3 reruns the faulted access when DF is still set, and UM 6.2.2 says
+  // the handler did it when DF is clear. Both hand the operand back; the only
+  // difference is how much of it is left, so the microcode has one path and
+  // this is where the two part.
+  assign rst_bytes    = rs_df_q ? rst_bytes_q : 3'd0;
   assign rst_fc       = rs_space_q;
   assign rst_rw       = rs_rw_q;
   assign rst_rmc      = rs_rm_q;

@@ -272,7 +272,7 @@ module rd68021_biu #(
   // which on the MC68010 project cost a long-word read one of its two words every
   // few thousand DMA transfers.
   logic want_cycle;
-  assign want_cycle = op_continuing || req_valid || fetch_valid;
+  assign want_cycle = op_continuing || rst_pend_q || req_valid || fetch_valid;
 
   logic bus_is_idle;
   assign bus_is_idle = (st_p == rd68021_pkg::ST_IDLE)
@@ -586,6 +586,7 @@ module rd68021_biu #(
   // ==========================================================================
   // Starting a cycle, and starting an operand
   // ==========================================================================
+  logic        rst_pend_q;
   logic        take_rst;
   logic        take_req;
   logic        take_fetch;
@@ -601,10 +602,28 @@ module rd68021_biu #(
   // a new one -- doc/checkpoint.md rule 3, the unit of restart is the operand --
   // so it comes in with the residual the frame carried and the bytes already
   // gathered, and outranks anything the sequencer or the pipe is asking for.
-  assign take_rst   = !op_continuing && rst_op_valid;
-  assign take_req   = !op_continuing && !rst_op_valid && req_valid;
-  assign take_fetch = !op_continuing && !rst_op_valid && !req_valid
+  // A restored operand outlives the microword that handed it over. The
+  // sequencer gives it to the bus unit and jumps to the microword that faulted
+  // in the same clock, and the bus is not necessarily idle on that clock -- so
+  // this is a latched request and not a level. Without the latch the handover
+  // was simply missed, the resumed microword issued its own full-length request
+  // instead, and RTE rewrote the bytes that had already gone.
+  assign take_rst   = !op_continuing && rst_pend_q && (rst_bytes != 3'd0);
+  assign take_req   = !op_continuing && !rst_pend_q && req_valid;
+  assign take_fetch = !op_continuing && !rst_pend_q && !req_valid
                    && fetch_valid;
+
+  // UM 6.2.2: with DF cleared "it assumes that the data input buffer value on
+  // the stack is valid for a read or that the data has been correctly written
+  // to memory for a write". The sequencer says so by handing back an operand
+  // with nothing left of it, and the answer is the buffer out of the frame.
+  //
+  // It still has to be handed back rather than skipped: the microword that
+  // faulted is re-executed -- doc/checkpoint.md rule 2 -- and everything else
+  // it does has to happen exactly once. Satisfying its request from the frame
+  // is what lets it run again without running the access again.
+  logic rst_done;
+  assign rst_done = rst_pend_q && !op_continuing && (rst_bytes == 3'd0);
 
   // CPU space synthesises its address from the type field -- UM figure 5-31.
   logic [31:0] cpu_space_addr;
@@ -716,6 +735,7 @@ module rd68021_biu #(
       cyc_rmc    <= 1'b0;
       req_ack    <= 1'b0;
       req_end_q  <= rd68021_pkg::CE_NONE;
+      rst_pend_q <= 1'b0;
       fetch_ack  <= 1'b0;
       rdata_q    <= '0;
       frdata_q   <= '0;
@@ -729,6 +749,16 @@ module rd68021_biu #(
     end else begin
       st_p      <= st_p_nxt;
       req_ack   <= 1'b0;
+
+      if (rst_op_valid)          rst_pend_q <= 1'b1;
+      else if (take_rst)         rst_pend_q <= 1'b0;
+      else if (rst_done) begin
+        rst_pend_q <= 1'b0;
+        req_ack    <= 1'b1;
+        req_end_q  <= rd68021_pkg::CE_DSACK;
+        rdata_q    <= {8'd0, rst_dob};
+      end
+
       fetch_ack <= 1'b0;
       req_fault    <= 1'b0;
       req_fault_wr <= 1'b0;

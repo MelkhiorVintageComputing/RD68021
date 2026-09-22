@@ -238,6 +238,13 @@ EXEMPT = [
                             'checkpointed; the others are consumed by the '
                             'microword after the one that waited.'),
 
+    ('biu', 'rst_pend_q',   'RTE has handed an operand back and the bus unit '
+                            'has not picked it up yet. It lives for the clocks '
+                            'between the handover and the next S0, inside one '
+                            'instruction, and a fault in that window is a fault '
+                            'on the rerun -- which UM 6.2.3 makes an ordinary '
+                            'bus error with a frame of its own.'),
+
     ('biu', 'rsto_q',       'the RESET instruction is driving the pin'),
     ('biu', 'rsto_cnt',     '... for this many more clocks'),
     ('biu', 'rsto_arm_q',   '... and the request has been let go since, so the '

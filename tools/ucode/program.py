@@ -2183,17 +2183,19 @@ def rte_fault(stem, long_frame):
       asrc='SP', bsrc='FRAME_B_BYTES' if long_frame else 'FRAME_A_BYTES',
       alu='ADD', dst='SP', size='LONG')
     u('and now the status register, which may change which stack that was',
-      asrc='RDATA', alu='A', dst='SR', size='WORD',
-      seq='COND', cond='SSW_DF', next=stem + '_rerun')
-    u('nothing left to rerun: the handler did the access itself -- UM 6.2.2',
-      seq='RESUME')
-
-    label(stem + '_rerun')
+      asrc='RDATA', alu='A', dst='SR', size='WORD')
     # UM 6.2.3: "if the DF bit is still set at the time of the RTE execution, the
-    # faulted data cycle is rerun by the RTE instruction". The bus unit is handed
-    # the residual, not a fresh request: doc/checkpoint.md rule 3, the unit of
-    # restart is the operand.
-    u('rerun the faulted data access',
+    # faulted data cycle is rerun by the RTE instruction"; UM 6.2.2: with it
+    # cleared, "the data has been correctly written to memory for a write". Both
+    # hand the operand back to the bus unit -- doc/checkpoint.md rule 3, the unit
+    # of restart is the operand -- and DF decides how much of it is left, which
+    # is a wire and not a branch.
+    #
+    # It is handed back either way rather than skipped, because the microword
+    # that faulted is re-executed and everything else it does has to happen
+    # exactly once. Satisfying its request out of the frame is what lets it run
+    # again without running the access again.
+    u('hand the faulted access back -- the residual, or nothing at all',
       rstop=1, seq='RESUME')
 
 

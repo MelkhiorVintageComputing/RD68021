@@ -320,7 +320,36 @@ is what decides which of the three stack pointers A7 means.
 
 ---
 
-## How this will be verified
+## How this is verified
+
+`sim/tb/core_fault_tb.sv`, 78 checks, and `sim/tb/core_paging_tb.sv`, 288 over
+72 cases. Every frame is compared as **memory**, field by field at the offsets
+UM table 6-5 gives: a frame this core writes and reads back consistently, but
+writes in the wrong place, would pass any check made through its own registers.
+
+The list below was written before the machinery to run it existed, which was
+the point. What each case is really asking is in the second column, because a
+check that cannot fail on the bug it is aimed at is not a check -- and two here
+could not, until they were rewritten.
+
+| | what would have to be wrong for it to fail |
+|---|---|
+| `MOVEM.L (A0)+,D0-D7` faulting on its fifth transfer | the register counter or the mask is not restored, and the address register ends somewhere other than eight steps on |
+| a misaligned `MOVE.L` to an 8-bit port faulting on its third cycle | the frame records the operand rather than the **residual**. A sentinel is left over the bytes that already went, because both a correct rerun and a wrong one leave the right four bytes in memory |
+| a data fault repaired by the handler, `DF` cleared | RTE redoes the access. The handler writes a value the instruction would not have, for the same reason |
+| a data read emulated by the handler into `+$2C`, with the page still missing | RTE runs a bus cycle of its own instead of taking the operand out of the frame |
+| a prefetch fault discovered two instructions later | the exception is taken when the cycle faults rather than when the word is wanted |
+| the same, repaired in the frame and `RC` cleared | RTE refetches instead of accepting the image. The handler writes an instruction that is **not** the one in memory |
+| an address error | a bus cycle runs, or the fault bits are set where UM 6.2.1 says only the rerun bits are |
+| a double bus fault | `HALT` is not driven, or the processor carries on |
+| every combination of operand size, alignment and port width faulted across a page boundary | anything above, in a shape the directed cases did not think of. Half the cases straddle and half do not, and the sweep counts its own faults so that it cannot pass by not faulting |
+
+`CAS` and `CAS2` are the one row of the original list still missing, and they
+are M10's: the instructions do not exist yet.
+
+---
+
+## How this was to be verified
 
 The test was fixed by this document before the machinery to run it exists, which
 is the point: if the checkpoint set is wrong, these cannot be made to pass by

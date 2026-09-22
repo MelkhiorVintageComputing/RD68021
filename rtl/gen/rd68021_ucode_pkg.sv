@@ -360,10 +360,10 @@ package rd68021_ucode_pkg;
   // Named entry points.
   localparam logic [UADDR-1:0] ENTRY_RESET = 13'd0;
   localparam logic [UADDR-1:0] ENTRY_ILLEGAL = 13'd5;
-  localparam logic [UADDR-1:0] ENTRY_TRACE = 13'd1120;
-  localparam logic [UADDR-1:0] ENTRY_IRQ = 13'd1123;
-  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 13'd1151;
-  localparam logic [UADDR-1:0] ENTRY_FAULT_SHORT = 13'd1212;
+  localparam logic [UADDR-1:0] ENTRY_TRACE = 13'd1118;
+  localparam logic [UADDR-1:0] ENTRY_IRQ = 13'd1121;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 13'd1149;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_SHORT = 13'd1210;
 
 endpackage
 

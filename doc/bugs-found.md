@@ -1379,3 +1379,41 @@ because it is what lets `RC` and `RB` come back as a depth with no rerun path of
 their own. Anything autonomous has to be told when the thing it acts on is not
 in a state to be acted upon, and that is a second rule to remember rather than a
 property of the first.
+
+## M9 · RTE reran the whole operand instead of the residual
+
+**What:** a misaligned long word split across a page boundary by an 8-bit port
+faults on its third byte cycle. The frame recorded the residual perfectly — the
+address of the next byte still to go and a count of two — and RTE then wrote all
+four bytes again from the original address.
+
+`rst_op_valid` is asserted by the RTE's last microword, which also jumps to the
+microword that faulted. The bus unit was reading it as a *level*: `want_cycle`
+did not include it at all, and `take_rst` could only fire on a clock the bus
+happened to enter S0. It never did. The handover was simply missed, the resumed
+microword issued its own full-length request, and that is what ran.
+
+**Fixed by:** latching it. A restored operand is a request that outlives the
+microword that made it, so `rst_pend_q` holds it until the bus unit picks it up,
+and `take_req` and `take_fetch` stand aside while it does.
+
+The same investigation found the other half. With `DF` cleared — UM 6.2.2, the
+handler did the access itself — nothing was handed over at all, so the resumed
+microword ran the access a second time. It cannot simply be skipped, because
+rule 2 re-executes it and everything *else* it does has to happen exactly once.
+So RTE hands the operand back either way and `DF` decides how much of it is
+left: the residual, or nothing, in which case the bus unit completes it with no
+cycle and answers a read out of the frame's data input buffer. The microcode
+lost a branch in the process.
+
+**Why it took two commits to see.** Both tests that covered this compared the
+finished operand in memory, and a rerun of the residual and a rerun of the whole
+thing leave *the same four bytes* there. The test that found it writes a
+sentinel over the bytes that had already gone and checks they are not written
+again. The paired test for the repaired case had the same blind spot for the
+same reason — the handler was made to write the value the instruction would have
+written — and it now writes a different one.
+
+**The lesson is about what a passing test proves.** "The right bytes are in
+memory" was true of both the correct machine and the broken one. A check that
+cannot fail on the bug it is aimed at is not a check.

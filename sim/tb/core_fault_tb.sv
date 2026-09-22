@@ -25,6 +25,7 @@ module core_fault_tb;
 
   bit          reached;
   logic [31:0] base;
+  int unsigned i;
 
   task automatic base_setup();
     int unsigned v;
@@ -173,13 +174,17 @@ module core_fault_tb;
     run_until(HAND + 6, 3000, reached);
     check(reached, "repaired: the handler reaches its RTE");
     // The handler "moves the properly sized data from the data output buffer".
-    // Here the testbench is the handler's memory system and does it directly.
-    poke_l(GONE, peek_l(ISP0 - 32'h5C + 32'h18));
+    // Here the testbench is its memory system -- and it writes something the
+    // INSTRUCTION would not have written, so that the check can tell a handler
+    // that did the access from an RTE that redid it. With the same value in
+    // both places it cannot, which is how the equivalent bug on the rerun path
+    // went unnoticed for two commits.
+    poke_l(GONE, 32'h5A5A_5A5A);
     berr_en = 1'b0;
     run_until(CODE + 10, 3000, reached);
     check(reached, "repaired: the program gets past the faulted instruction");
-    check(peek_l(GONE) === 32'hCAFE_F00D,
-          "repaired: the handler's own write is what landed");
+    check(peek_l(GONE) === 32'h5A5A_5A5A,
+          "repaired: the handler's own write stands, and RTE did not redo it");
     check(dut.u_seq.dreg[1] === 32'h0000_0055,
           "repaired: and the instruction after it ran");
     check(dut.u_seq.isp_q === ISP0, "repaired: the frame came off the stack");
@@ -291,6 +296,167 @@ module core_fault_tb;
     // UM 6.2.1: the fault bits are clear and the rerun bits alone show it.
     check(peek_w(base + 32'h0A) === 16'h3000,
           "address error: +$0A the rerun bits alone");
+
+
+
+    // ======================================================================
+    // The read half of UM 6.2.2: "data read faults only generate the long bus
+    // fault frame, and the handler must transfer properly sized data from the
+    // location indicated by the fault address ... to the image of the data
+    // input buffer at location SP + $2C".
+    //
+    // The page is left missing on purpose. If RTE ran a bus cycle of its own
+    // it would fault again; the instruction gets its operand from the frame or
+    // it does not get one at all.
+    // ======================================================================
+    base_setup();
+    poke_w(CODE + 0, 16'h207C);            // MOVEA.L #GONE,A0
+    poke_l(CODE + 2, GONE);
+    poke_w(CODE + 6, 16'h2410);            // MOVE.L (A0),D2 -- faults
+    poke_w(CODE + 8, 16'h7255);            // MOVEQ #$55,D1
+    poke_w(CODE + 10, 16'h60FE);
+    poke_w(HAND +  0, 16'h2F7C);           // MOVE.L #$12345678,($2C,A7)
+    poke_l(HAND +  2, 32'h1234_5678);      //   ... into the data input buffer
+    poke_w(HAND +  6, 16'h002C);
+    poke_w(HAND +  8, 16'h026F);           // ANDI.W #$FEFF,($0A,A7)
+    poke_w(HAND + 10, 16'hFEFF);           //   ... clear DF, and only DF
+    poke_w(HAND + 12, 16'h000A);
+    poke_w(HAND + 14, 16'h4E73);           // RTE
+    reset_dut();
+    run_until(HAND + 14, 4000, reached);
+    check(reached, "emulated read: the handler reaches its RTE");
+    run_until(CODE + 10, 4000, reached);
+    check(reached, "emulated read: it gets past the faulted instruction with the page still missing");
+    check(dut.u_seq.dreg[2] === 32'h1234_5678,
+          "emulated read: the operand came out of the frame");
+    check(dut.u_seq.dreg[1] === 32'h0000_0055,
+          "emulated read: and the instruction after it ran");
+    check(dut.u_seq.isp_q === ISP0, "emulated read: the frame came off");
+
+    // ======================================================================
+    // MOVEM faulting part way down its list. The register counter and the mask
+    // are checkpoint registers -- doc/checkpoint.md -- and this is what they
+    // are for: the instruction resumes where it stopped, with no register
+    // moved twice and none missed.
+    //
+    // Eight long words are read through (A0)+, and the fifth is in the page
+    // that is not there.
+    // ======================================================================
+    base_setup();
+    for (i = 0; i < 8; i = i + 1)
+      poke_l(GONE - 16 + i * 4, 32'h1100_0000 + i);
+    poke_w(CODE + 0, 16'h207C);            // MOVEA.L #GONE-16,A0
+    poke_l(CODE + 2, GONE - 16);
+    poke_w(CODE + 6, 16'h4CD8);            // MOVEM.L (A0)+,D0-D7
+    poke_w(CODE + 8, 16'h00FF);
+    poke_w(CODE + 10, 16'h60FE);           // BRA *
+    poke_w(HAND + 0, 16'h4E73);            // RTE, with DF still set
+    reset_dut();
+    run_until(HAND + 0, 4000, reached);
+    check(reached, "movem: the fifth transfer faults and the handler is entered");
+    berr_en = 1'b0;
+    run_until(CODE + 10, 4000, reached);
+    check(reached, "movem: and the instruction finishes");
+    for (i = 0; i < 8; i = i + 1)
+      check(dut.u_seq.dreg[i] === 32'h1100_0000 + i,
+            $sformatf("movem: D%0d came from the right long word", i));
+    check(dut.u_seq.areg[0] === GONE + 16,
+          "movem: the address register stepped exactly eight times");
+    check(dut.u_seq.isp_q === ISP0, "movem: the frame came off the stack");
+
+    // ======================================================================
+    // A misaligned long word split across a page boundary by an 8-bit port.
+    // UM table 5-6 makes that four bus cycles; two of them succeed and the
+    // third does not, so what the frame has to carry is the RESIDUAL -- the
+    // address of the next byte still to go and how many are left. This is the
+    // case doc/ssw.md says the bus unit has architectural state for.
+    // ======================================================================
+    base_setup();
+    berr_base = 32'h2000_8000;             // a page of the 8-bit port
+    poke_w(CODE + 0, 16'h207C);            // MOVEA.L #$20007FFE,A0
+    poke_l(CODE + 2, 32'h2000_7FFE);
+    poke_w(CODE + 6, 16'h2080);            // MOVE.L D0,(A0) -- four cycles
+    poke_w(CODE + 8, 16'h60FE);
+    poke_w(HAND + 0, 16'h7833);            // MOVEQ #$33,D4
+    poke_w(HAND + 2, 16'h60FE);
+    reset_dut();
+    dut.u_seq.dreg[0] = 32'hAABB_CCDD;
+    run_until(HAND + 2, 4000, reached);
+    check(reached, "residual: the third cycle faults");
+    base = ISP0 - 32'h5C;
+    check(peek_l(base + 32'h10) === 32'h2000_8000,
+          "residual: +$10 is the next BYTE still to transfer, not the operand");
+    // DF = 1, RM = 0, RW = 0 (write), SIZE = 10 (two bytes left), FC = 101.
+    check((peek_w(base + 32'h0A) & 16'h0FFF) === 12'h125,
+          "residual: +$0A says two bytes of a write are left");
+    // The two bytes that did go are in memory; the operand is still whole in
+    // the data output buffer, right justified -- UM 6.2.2.
+    check(peek_l(base + 32'h18) === 32'hAABB_CCDD,
+          "residual: +$18 the data output buffer holds the whole operand");
+    check(peek_w(32'h2000_7FFE) === 16'hAABB,
+          "residual: the two bytes that did go are where they belong");
+
+    // ... and RTE finishes only what is left.
+    berr_en = 1'b0;
+    poke_w(HAND + 0, 16'h4E73);            // the handler is now just an RTE
+    reset_dut();
+    berr_en   = 1'b1;
+    berr_base = 32'h2000_8000;
+    dut.u_seq.dreg[0] = 32'hAABB_CCDD;
+    poke_w(32'h2000_7FFE, 16'h0000);
+    poke_w(32'h2000_8000, 16'h0000);
+    run_until(HAND + 0, 4000, reached);
+    check(reached, "residual rerun: the handler is entered");
+    // A sentinel over the two bytes that already went. Comparing the finished
+    // operand cannot tell a rerun of the RESIDUAL from a rerun of the whole
+    // thing -- both end with the right four bytes in memory -- so the question
+    // is asked the only way it can be: put something else there and see
+    // whether RTE writes over it. The residual says two bytes, not four.
+    poke_w(32'h2000_7FFE, 16'h5555);
+    berr_en = 1'b0;
+    run_until(CODE + 8, 4000, reached);
+    check(reached, "residual rerun: the program gets past the instruction");
+    check(peek_w(32'h2000_7FFE) === 16'h5555,
+          "residual rerun: the bytes that had gone were not written again");
+    check(peek_w(32'h2000_8000) === 16'hCCDD,
+          "residual rerun: and the two that were left went, once");
+
+    // ======================================================================
+    // A prefetch fault repaired IN THE FRAME. UM 6.2.2: "for each faulted
+    // stage, the software handler should copy the instruction word ... to the
+    // image of the appropriate stage in the stack frame. In addition, the
+    // handler must clear the RB or RC bit associated with the stage that it
+    // has corrected."
+    //
+    // The handler writes an instruction that is NOT the one in memory, so that
+    // what runs says which of the two RTE believed. UM 6.2.1: "if the RC bit
+    // is clear, the words on the stack for stage C of the pipe are accepted as
+    // valid".
+    // ======================================================================
+    base_setup();
+    poke_w(GONE - 2, 16'h7403);            // MOVEQ #3,D2 -- decoded, not run
+    poke_w(GONE + 0, 16'h7604);            // MOVEQ #4,D3 -- what MEMORY says
+    poke_w(GONE + 2, 16'h60FE);            // BRA *
+    poke_w(CODE + 0, 16'h4EF9);            // JMP (xxx).L
+    poke_l(CODE + 2, GONE - 2);
+    poke_w(HAND +  0, 16'h3F7C);           // MOVE.W #$767F,($0C,A7)
+    poke_w(HAND +  2, 16'h767F);           //   ... MOVEQ #$7F,D3 into stage C
+    poke_w(HAND +  4, 16'h000C);
+    poke_w(HAND +  6, 16'h026F);           // ANDI.W #$DFFF,($0A,A7)
+    poke_w(HAND +  8, 16'hDFFF);           //   ... clear RC, and only RC
+    poke_w(HAND + 10, 16'h000A);
+    poke_w(HAND + 12, 16'h4E73);           // RTE
+    reset_dut();
+    run_until(HAND + 12, 4000, reached);
+    check(reached, "repaired pipe: the handler reaches its RTE");
+    berr_en = 1'b0;                        // stage B is still refetched
+    run_until(GONE + 2, 4000, reached);
+    check(reached, "repaired pipe: the program runs on");
+    check(dut.u_seq.dreg[2] === 32'h0000_0003,
+          "repaired pipe: the instruction being decoded ran");
+    check(dut.u_seq.dreg[3] === 32'h0000_007F,
+          "repaired pipe: and the REPAIRED word ran, not the one in memory");
+    check(dut.u_seq.isp_q === ISP0, "repaired pipe: the frame came off");
 
     // ======================================================================
     // A double bus fault. UM 6.1.2: a bus error during the exception
