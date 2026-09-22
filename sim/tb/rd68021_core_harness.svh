@@ -40,12 +40,40 @@ logic        halt_n_o, halt_n_oe;
 // the idle level and never touches them.
 logic  [2:0] ipl_n_i;
 logic        avec_n_i;
-logic        berr_n_i;
 initial begin
   ipl_n_i  = 3'b111;
   avec_n_i = 1'b1;
-  berr_n_i = 1'b1;
 end
+
+// BERR has two sources and one pin, so the pin is driven here and the two ways
+// of asking for it are variables a testbench sets.
+//
+//   `berr_force`  assert it for whatever cycle is running -- an acknowledge
+//                 cycle nobody answers, say
+//   `berr_base` / `berr_mask`   a region of the address map that answers with a
+//                 bus error instead of with data, which is what a page that is
+//                 not resident looks like. `berr_en` turns it on.
+//
+// The region is switched off by a bit of its own rather than by an address no
+// cycle can use, because there is no such address: the first attempt parked it
+// at $FFFF_FFFF, which is exactly where a level 7 interrupt acknowledge goes --
+// UM figure 5-31 puts the level on A3-A1 with every bit above them set.
+logic        berr_n_i;
+logic        berr_force;
+logic        berr_en;
+logic [31:0] berr_base;
+logic [31:0] berr_mask;
+initial begin
+  berr_force = 1'b0;
+  berr_en    = 1'b0;
+  berr_base  = 32'd0;
+  berr_mask  = 32'hFFFF_FFFF;
+end
+
+wire berr_hit = berr_en && rst_n && !as_n_o && as_oe
+             && ((a_o & berr_mask) == (berr_base & berr_mask));
+
+assign berr_n_i = ~(berr_force | berr_hit);
 
 wire [31:0] dbus;
 assign dbus = d_oe ? d_o : 32'bz;

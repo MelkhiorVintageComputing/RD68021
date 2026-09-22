@@ -1312,3 +1312,21 @@ lose them.
 **How it was found:** the trace-on-change-of-flow case of `core_exc_tb`. The
 trace-everything case cannot find it, because `T1` traces instructions that do
 not branch, and those are exactly the ones for which the old rule was right.
+
+## M9 · The address that could not occur was the one level 7 uses
+
+**What:** not a bug in the core — a bug in the testbench harness, found because
+it made a passing test fail.
+
+The bus-error region added for M9 is `berr_base` / `berr_mask`, and it was
+switched off by parking it at an address no cycle would ever use:
+`$FFFF_FFFF`. That is exactly where a level 7 interrupt acknowledge goes. UM
+figure 5-31 synthesises the acknowledge address as every bit set above the
+level, the level on A3–A1 and A0 set, so level 7 is `$FFFF_FFFF` precisely.
+
+Every level-7 acknowledge terminated with a bus error, which is the spurious
+interrupt, so the frame carried vector 24 instead of autovector 31.
+
+**Fixed by:** an enable bit. A region is switched off by saying so, not by an
+address chosen for being unreachable — there was no unreachable address, and the
+one picked was load-bearing.

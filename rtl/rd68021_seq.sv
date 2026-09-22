@@ -67,6 +67,8 @@ module rd68021_seq #(
     input  logic [15:0] stg_b,
     input  logic        stg_d_fault,
     input  logic        stg_c_fault,
+    input  logic        stg_c_rerun,
+    input  logic        stg_b_rerun,
     input  logic        stg_b_fault,
     input  logic [31:0] pc_d,
     input  logic [31:0] stg_b_addr,
@@ -393,7 +395,27 @@ module rd68021_seq #(
       // the vector offset, which T0 is holding, in bits 11:0.
       rd68021_ucode_pkg::U_ASRC_FMTVEC:
         a_bus = {16'd0, frame_code, t_q[0][11:0]};
+      // The same word, with the vector offset out of the microword rather than
+      // out of T0: a fault frame has to name its format and its vector while
+      // T0 still belongs to the instruction that faulted.
+      rd68021_ucode_pkg::U_ASRC_FMTVECI:
+        a_bus = {16'd0, frame_code, 2'b00, `UF(VEC), 2'b00};
       rd68021_ucode_pkg::U_ASRC_VBR:   a_bus = vbr_q;
+      // The fault frame's fields -- doc/ssw.md and doc/checkpoint.md.
+      rd68021_ucode_pkg::U_ASRC_SSW:        a_bus = {16'd0, ssw};
+      rd68021_ucode_pkg::U_ASRC_DFA:        a_bus = flt_addr;
+      rd68021_ucode_pkg::U_ASRC_DOB:        a_bus = flt_dob;
+      rd68021_ucode_pkg::U_ASRC_DIB:        a_bus = flt_dib;
+      rd68021_ucode_pkg::U_ASRC_STG_B:      a_bus = {16'd0, stg_b};
+      rd68021_ucode_pkg::U_ASRC_STG_B_ADDR: a_bus = stg_b_addr;
+      rd68021_ucode_pkg::U_ASRC_PC_FETCH:   a_bus = ckpt_pc_fetch;
+      rd68021_ucode_pkg::U_ASRC_EA_SAVE:    a_bus = ea_save;
+      rd68021_ucode_pkg::U_ASRC_LINK:
+        a_bus = {{(32 - rd68021_ucode_pkg::UADDR){1'b0}}, link_q};
+      rd68021_ucode_pkg::U_ASRC_UPC:
+        a_bus = {{(32 - rd68021_ucode_pkg::UADDR){1'b0}}, flt_upc};
+      rd68021_ucode_pkg::U_ASRC_INT08:      a_bus = {16'd0, int08};
+      rd68021_ucode_pkg::U_ASRC_INT36:      a_bus = {16'd0, int36};
       rd68021_ucode_pkg::U_ASRC_PC_PREV: a_bus = pc_prev_q;
       rd68021_ucode_pkg::U_ASRC_IRQLEVEL: a_bus = {29'd0, irq_taking_q};
       // UM table 6-1: the autovectors are 25 to 31 for levels 1 to 7, which is
@@ -434,6 +456,13 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_BSRC_SIX:    b_bus = 32'd6;
       rd68021_ucode_pkg::U_BSRC_EIGHT:  b_bus = 32'd8;
       rd68021_ucode_pkg::U_BSRC_TWELVE: b_bus = 32'd12;
+      // From rd68021_frame_pkg, which is generated from the same table the
+      // frame is laid out by, so the step down to the frame base cannot drift
+      // from the frame's size.
+      rd68021_ucode_pkg::U_BSRC_FRAME_A_BYTES:
+        b_bus = rd68021_frame_pkg::FRAME_A_BYTES;
+      rd68021_ucode_pkg::U_BSRC_FRAME_B_BYTES:
+        b_bus = rd68021_frame_pkg::FRAME_B_BYTES;
       rd68021_ucode_pkg::U_BSRC_BITMASK: b_bus = bit_mask;
       rd68021_ucode_pkg::U_BSRC_DIVQ:    b_bus = div_q;
       rd68021_ucode_pkg::U_BSRC_IRQLEVEL: b_bus = {29'd0, irq_taking_q};
@@ -1040,6 +1069,85 @@ module rd68021_seq #(
   logic       notrace_q;
   logic [31:0] pc_prev_q;   // the address of the instruction just finished
   logic        pc_kept_q;   // ... and it was taken early, before a flush
+
+  // ==========================================================================
+  // The fault frame -- doc/ssw.md
+  // ==========================================================================
+  // The exception's own frame pointer. A bus fault is taken mid-instruction, so
+  // the frame cannot be built with the address buffer the instruction is using:
+  // ea_q is frame field +$38 and has to still be in it when RTE reads it back.
+  logic [31:0] ea_save;
+
+  // "A data fault has occurred and caused the exception." Set when the bus unit
+  // reports a faulted operand, and cleared at every instruction boundary, so a
+  // fault taken at a boundary -- which is a prefetch fault and never a data one
+  // -- reports it clear. It needs no home in the frame beyond the SSW bit: a
+  // second fault between this one and the finished frame is a double bus fault
+  // and the processor halts, so there is no window in which it must survive.
+  logic        df_q;
+
+  // UM 6.1.2: "if a bus error occurs during the exception processing for a bus
+  // error, address error, or reset ... a double bus fault occurs and the
+  // processor enters the halted state". This is the window.
+  logic        g0_q;
+
+  // UM 6.2.3: RTE may still owe the reruns the frame asked for once it has put
+  // the context back.
+  logic        rr_pending_q;
+
+  // The faulted microword's own address. By the time the builder writes frame
+  // field +$14 its own micro-address is deep inside itself, and the fault entry
+  // replaced `upc` on the very edge the fault was reported, so this is the only
+  // moment the value exists.
+  logic [rd68021_ucode_pkg::UADDR-1:0] flt_upc;
+
+  // UM figure 6-8. Two halves about two different things, assembled here and
+  // never stored: the pipe owns FC, FB, RC and RB, and the bus unit owns the
+  // rest. "The least significant half of the SSW applies to data cycles only",
+  // so with no data fault it reads as zero rather than as the leavings of the
+  // last one.
+  logic [15:0] ssw;
+  assign ssw = {stg_c_fault, stg_b_fault, stg_c_rerun, stg_b_rerun,
+                3'b000, df_q,
+                df_q & flt_rmc, df_q & flt_rw,
+                df_q ? flt_siz : 2'b00,
+                1'b0,
+                df_q ? flt_fc : 3'b000};
+
+  // UM table 5-2 encodes the size of a transfer in two bits, and cannot say
+  // five. Five is what a bit-field operand spanning five bytes leaves, so the
+  // residual goes into the frame's internal word as well and SIZE carries what
+  // it can -- doc/ssw.md.
+  logic [1:0] flt_siz;
+  assign flt_siz = (flt_bytes >= 3'd4) ? 2'b00 : flt_bytes[1:0];
+
+  // The two packed internal words of the fault frames. Every bit of them is a
+  // row of doc/checkpoint.md, and rd68021_frame_pkg names the positions, so
+  // they are written here in exactly the order that table is printed in.
+  logic [15:0] int08;
+  logic [15:0] int36;
+  always_comb begin
+    int08 = 16'd0;
+    int08[rd68021_frame_pkg::I_BYTES_LO      +: 3] = flt_bytes;
+    int08[rd68021_frame_pkg::I_NOTRACE_LO    +: 1] = notrace_q;
+    int08[rd68021_frame_pkg::I_RR_PENDING_LO +: 1] = rr_pending_q;
+    int08[rd68021_frame_pkg::I_EAPC_LO       +: 1] = eapc_q;
+    int08[rd68021_frame_pkg::I_OPSIZE_LO     +: 2] = size_q;
+    int08[rd68021_frame_pkg::I_EADST_LO      +: 1] = eadst_q;
+    int08[rd68021_frame_pkg::I_REGCNT_LO     +: 5] = cnt_q;
+  end
+
+  always_comb begin
+    int36 = 16'd0;
+    int36[rd68021_frame_pkg::I_STAGE_D_F_LO  +: 1] = stg_d_fault;
+    int36[rd68021_frame_pkg::I_TRMODE_LO     +: 2] = trace_mode_q;
+    int36[rd68021_frame_pkg::I_FLOW_LO       +: 1] = flow_q;
+    int36[rd68021_frame_pkg::I_PC_KEPT_LO    +: 1] = pc_kept_q;
+    // UM 6.1.12 by way of doc/checkpoint.md: the version nibble is what makes
+    // a private encoding of the internal words legitimate, because RTE refuses
+    // any frame that does not carry this one.
+    int36[rd68021_frame_pkg::VERSION_LO      +: 4] = rd68021_frame_pkg::FRAME_VERSION;
+  end
   logic       trace_take;
   logic       flow_eff;
 
@@ -1165,6 +1273,7 @@ module rd68021_seq #(
   // the next instruction.
   logic other_stall;
   assign other_stall = div_stall
+                    || dbf_q
                     || stopped_q
                     || (`UF(RSTO) && reset_busy)
                     || (needs_c && !pf_ready)
@@ -1176,6 +1285,19 @@ module rd68021_seq #(
 
   logic retire;
   assign retire = !stall;
+
+  // doc/checkpoint.md rule 2: A FAULTED MICROWORD ENDS BUT COMMITS NOTHING --
+  // no register write, no pipe advance, no address-register update, no
+  // condition code. The state the frame records is therefore the state at the
+  // START of the faulted access, and resuming at the saved micro-address
+  // re-executes the microword and reissues exactly the same request. There is
+  // no separate restart path to get wrong, which is the whole reason the rule
+  // is written this way round.
+  //
+  // The microword still ENDS: `retire` is what the micro-address arm reads, and
+  // it goes to the fault entry. Only the commits are withheld.
+  logic commit;
+  assign commit = retire && !req_fault;
 
   // ==========================================================================
   // The bus request
@@ -1190,6 +1312,10 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_ASEL_T2:   req_addr_sel = t_q[2];
       rd68021_ucode_pkg::U_ASEL_T3:   req_addr_sel = t_q[3];
       rd68021_ucode_pkg::U_ASEL_EA:   req_addr_sel = ea_q;
+      // A bus fault is taken mid-instruction, so the frame is built with a
+      // pointer of its own and the instruction's address buffer is left alone:
+      // it is frame field +$38 and RTE puts it back.
+      rd68021_ucode_pkg::U_ASEL_EA_SAVE: req_addr_sel = ea_save;
       rd68021_ucode_pkg::U_ASEL_PC_D: req_addr_sel = pc_d;
       default:                        req_addr_sel = 32'd0;
     endcase
@@ -1266,7 +1392,7 @@ module rd68021_seq #(
   // ==========================================================================
   // The instruction pipe
   // ==========================================================================
-  assign pf_op    = retire ? `UF(PF) : rd68021_ucode_pkg::U_PF_NONE;
+  assign pf_op    = commit ? `UF(PF) : rd68021_ucode_pkg::U_PF_NONE;
   assign pf_addr  = y;
   assign pf_super = super_mode;
 
@@ -1279,7 +1405,14 @@ module rd68021_seq #(
     // has already put the next instruction's entry in `upc`, so leaving by way
     // of an interrupt means overriding it here: the interrupt is taken instead
     // of that instruction, not after it.
-    if (stopped_q) begin
+    // A data fault outranks every other reason to go somewhere: UM 6.1.2, "if
+    // the aborted bus cycle is a data access, the processor immediately begins
+    // exception processing".
+    if (dbf_q) begin
+      upc_nxt = upc;
+    end else if (req_fault && !g0_q) begin
+      upc_nxt = rd68021_ucode_pkg::ENTRY_BERR;
+    end else if (stopped_q) begin
       upc_nxt = irq_pending ? rd68021_ucode_pkg::ENTRY_IRQ : upc;
     end else if (!retire) begin
       upc_nxt = upc;
@@ -1337,6 +1470,7 @@ module rd68021_seq #(
       notrace_q    <= 1'b0;
       pc_prev_q    <= '0;
       pc_kept_q    <= 1'b0;
+      rr_pending_q <= 1'b0;
       size_q  <= rd68021_ucode_pkg::U_SIZE_LONG;
       for (i_r = 0; i_r < 8; i_r = i_r + 1) dreg[i_r] <= '0;
       for (i_r = 0; i_r < 7; i_r = i_r + 1) areg[i_r] <= '0;
@@ -1344,7 +1478,7 @@ module rd68021_seq #(
     end else begin
       upc <= upc_nxt;
 
-      if (retire) begin
+      if (commit) begin
         // `call` latches the microword after this one, which is where seq = RET
         // comes back to.
         if (`UF(CALL)) link_q <= upc + 1'b1;
@@ -1371,6 +1505,7 @@ module rd68021_seq #(
         if (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE) begin
           eapc_q  <= 1'b0;
           eadst_q <= 1'b0;
+          rr_pending_q <= 1'b0;
           // The instruction that is about to start. Its trace mode is the one
           // the status register holds NOW -- UM 6.1.7 -- and it has not
           // changed the flow yet.
@@ -1402,6 +1537,7 @@ module rd68021_seq #(
           if (`UF(PF) == rd68021_ucode_pkg::U_PF_FLUSH
               || `UF(DST) == rd68021_ucode_pkg::U_DST_SR) flow_q <= 1'b1;
           if (`UF(NOTRACE)) notrace_q <= 1'b1;
+          if (`UF(RRSET))   rr_pending_q <= 1'b1;
         end
 
         unique case (`UF(DST))
@@ -1639,6 +1775,36 @@ module rd68021_seq #(
   // microword stalls until it lets go.
   assign reset_req = `UF(RSTO);
 
+  // The fault itself. Everything here is latched on the one clock the bus unit
+  // reports it, because the microcode that follows runs bus cycles of its own.
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      df_q    <= 1'b0;
+      g0_q    <= 1'b0;
+      ea_save <= '0;
+      flt_upc <= '0;
+    end else begin
+      if (req_fault) begin
+        df_q    <= 1'b1;
+        g0_q    <= 1'b1;
+        flt_upc <= upc;
+        // The frame is built with a pointer of its own -- ea_q belongs to the
+        // instruction and is frame +$38 -- and it starts at the ACTIVE
+        // SUPERVISOR stack, which is where UM 6.1 step three puts every frame.
+        // Not `sp_read`: the fault may have happened in user mode, where that
+        // is the user stack, and the exception has not set S yet.
+        ea_save <= master_mode ? msp_q : isp_q;
+      end else if (commit && (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE)) begin
+        // A fault taken at an instruction boundary is a prefetch fault, never
+        // a data one, and must say so -- doc/ssw.md.
+        df_q    <= 1'b0;
+        g0_q    <= 1'b0;
+      end else if (commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_EA_SAVE)) begin
+        ea_save <= y;
+      end
+    end
+  end
+
   // The level as it was at the last boundary, for the level-7 edge.
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n)                                        irq_prev_q <= 3'd0;
@@ -1674,7 +1840,20 @@ module rd68021_seq #(
   assign rst_rmc      = 1'b0;
   assign rst_dob      = '0;
 
-  assign dbf          = 1'b0;
+  // UM 6.1.2: "if a bus error occurs during the exception processing for a bus
+  // error, address error, or reset ... a double bus fault occurs and the
+  // processor enters the halted state. In this case, the processor does not
+  // attempt to alter the current state of memory. Only an external RESET can
+  // restart a processor halted by a double bus fault."
+  //
+  // Once set it stays set: the bus unit drives HALT out from it, nothing here
+  // retires again, and only the asynchronous reset clears it.
+  logic dbf_q;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)                 dbf_q <= 1'b0;
+    else if (req_fault && g0_q) dbf_q <= 1'b1;
+  end
+  assign dbf = dbf_q;
 
   // ==========================================================================
   // Not consumed yet.
@@ -1690,6 +1869,7 @@ module rd68021_seq #(
                         flt_addr, flt_bytes, flt_fc, flt_rw, flt_rmc, flt_dob,
                         flt_dib,
                         stg_b, stg_d_fault, stg_c_fault, stg_b_fault,
+                        stg_c_rerun, stg_b_rerun,
                         stg_b_addr, ckpt_pc_fetch,
                         ipl_sync_n, reset_sync_n, halt_sync_n, bus_idle,
                         bus_granted, reset_busy,

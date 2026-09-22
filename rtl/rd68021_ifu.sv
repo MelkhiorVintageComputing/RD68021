@@ -54,6 +54,8 @@ module rd68021_ifu #(
     output logic        stg_d_fault,
     output logic        stg_c_fault,
     output logic        stg_b_fault,
+    output logic        stg_c_rerun,
+    output logic        stg_b_rerun,
     output logic [31:0] pc_d,
     output logic [31:0] stg_b_addr,
 
@@ -282,6 +284,24 @@ module rd68021_ifu #(
   assign stg_c_fault = c_f_q;
   assign stg_b_fault = b_f_q;
   assign pc_d        = pc_d_q;
+
+  // SSW RC and RB -- doc/ssw.md. "The RC bit indicates that the word in stage C
+  // of the instruction pipe is invalid", which is either a word that came from a
+  // faulted prefetch or no word at all, and the two cases are what the manual
+  // means by "rerun faulted bus cycle OR run pending prefetch".
+  //
+  // They are DERIVED and not kept. Two registers that are a function of the
+  // queue depth and the fault bits would be two more things to keep in step
+  // with it, and RTE puts the depth back from them rather than the other way
+  // round: a frame with RC clear and RB set describes a queue one word deep.
+  //
+  // This queue fills stage C before stage B, so RC set implies RB set and the
+  // pairing UM 6.2.1 mentions -- "either RB and RC are set, or only RC is set"
+  // -- comes out the other way round here. doc/divergences.md records it. A
+  // handler does what the same paragraph tells it to and recognises any
+  // combination.
+  assign stg_c_rerun = (cnt_q == 2'd0) || c_f_q;
+  assign stg_b_rerun = (cnt_q != 2'd2) || b_f_q;
 
   // The address of the word in stage B, or of the word destined for it when the
   // queue is not yet two deep. This is frame field +$24, and it is what RTE needs

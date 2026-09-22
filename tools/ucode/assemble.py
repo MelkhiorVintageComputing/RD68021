@@ -310,7 +310,7 @@ package rd68021_ucode_pkg;
     # The entry points hardware reaches without the microcode asking: reset,
     # the decoder's fall-through, and the trace exception, which the sequencer
     # puts in front of the decode arm at every instruction boundary.
-    for lbl in ('reset', 'illegal', 'exc_trace', 'exc_irq'):
+    for lbl in ('reset', 'illegal', 'exc_trace', 'exc_irq', 'exc_berr'):
         out.append('  localparam logic [UADDR-1:0] ENTRY_%s = %d\'d%d;'
                    % (lbl.upper().replace('EXC_', '').replace('IRQ', 'IRQ'),
                       isa.UADDR_BITS,

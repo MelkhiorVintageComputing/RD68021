@@ -2353,6 +2353,115 @@ frame_body('F1', False)
 u('and the interrupt stack pointer is where the throwaway begins',
   asrc='EA', alu='A', dst='SP', size='LONG', next='exc_f0_vector')
 
+
+# ==========================================================================
+# BUS FAULT -- UM 6.1.2, 6.2 and doc/ssw.md
+#
+# The sequencer comes here on the clock the bus unit reports a faulted operand,
+# and it comes here INSTEAD of retiring the microword that asked for it:
+# doc/checkpoint.md rule 2, a faulted microword ends but commits nothing. So the
+# machine state this routine writes out is the state at the start of the faulted
+# access, and resuming at the micro-address in the frame re-executes that same
+# microword and reissues that same request.
+#
+# The frame is the long one, format $B, because a data fault is by definition
+# taken during the execution of an instruction -- UM 6.1.2, "when the exception
+# is taken during the execution of an instruction, the processor must save its
+# entire state for recovery and uses the long bus fault stack frame".
+#
+# Three things about the ORDER, none of them free choices:
+#
+#   - it is built from the BOTTOM UP, not top down like the other frames. The
+#     status register at +$00 has to be written before the S bit is set, and its
+#     address is not known until the frame base has been computed, so the base
+#     comes first and the walk goes up from it. UM 6.4 allows either: "the
+#     processor does not necessarily read or write the stack frame data in
+#     sequential order".
+#   - the pointer is `ea_save` and not `ea`, because `ea` is the address buffer
+#     of the instruction that faulted and is frame field +$38.
+#   - the vector offset comes out of the microword (FMTVECI) and not out of T0,
+#     because T0 is the instruction's and is not written out until +$1C.
+#
+# What is NOT here: any microword that could itself fault without being a double
+# bus fault. UM 6.1.2 -- "if a bus error occurs during the exception processing
+# for a bus error, address error, or reset ... the processor enters the halted
+# state" -- and `g0_q`, set by the same edge that came here, is that window.
+# ==========================================================================
+def fault_frame(stem, vec, long_frame):
+    """A format $A or $B frame, built upward from its base."""
+    label(stem)
+    u('the frame base: the active supervisor stack, less the frame',
+      asrc='EA_SAVE',
+      bsrc='FRAME_B_BYTES' if long_frame else 'FRAME_A_BYTES',
+      alu='SUB', dst='EA_SAVE', size='LONG')
+    u('+$00: the status register, written BEFORE anything sets S',
+      bus='WRITE', fc='DATA', asel='EA_SAVE', asrc='SR', alu='A', bytes=2)
+    u('supervisor, and no tracing of the handler -- UM 6.1 step one',
+      asrc='SR', alu='EXCSR', dst='SR', size='WORD')
+    u('and the stack pointer is the frame base, which is now a supervisor one',
+      asrc='EA_SAVE', alu='A', dst='SP', size='LONG')
+
+    # (offset, bytes, source) in ascending order. The offsets are UM table 6-5
+    # for the named fields and doc/checkpoint.md for the rest; `check_frames`
+    # proves the set against frames.py.
+    fields = [
+        (0x02, 4, 'PC_D'),        # the instruction that was executing
+        (0x06, 2, 'FMTVECI'),
+        (0x08, 2, 'INT08'),
+        (0x0A, 2, 'SSW'),
+        (0x0C, 2, 'STG_C'),
+        (0x0E, 2, 'STG_B'),
+        (0x10, 4, 'DFA'),
+        (0x14, 2, 'UPC'),
+        (0x16, 2, 'STG_D'),
+        (0x18, 4, 'DOB'),
+    ]
+    if long_frame:
+        fields += [
+            (0x1C, 4, 'T0'),
+            (0x20, 4, 'T1'),
+            (0x24, 4, 'STG_B_ADDR'),
+            (0x28, 4, 'T2'),
+            (0x2C, 4, 'DIB'),
+            (0x30, 4, 'T3'),
+            (0x34, 2, 'XW'),
+            (0x36, 2, 'INT36'),
+            (0x38, 4, 'EA'),
+            (0x3C, 4, 'EA_SAVE'),
+            (0x40, 4, 'PC_FETCH'),
+            (0x44, 2, 'LINK'),
+            (0x46, 4, 'PC_PREV'),
+        ]
+        # UM table 6-5 makes the frame forty-six words whatever is in them. The
+        # words this design has no use for are written as zero rather than left
+        # as whatever the handler's stack held: a frame is copied and restored
+        # by a task switch, and one that carries the previous owner's stack is
+        # a leak with no upside.
+        fields += [(off, 4, 'ZERO') for off in range(0x4A, 0x5A, 4)]
+        fields += [(0x5A, 2, 'ZERO')]
+    else:
+        fields += [(0x1C, 2, 'INT36'), (0x1E, 2, 'ZERO')]
+
+    at = 0
+    for off, nbytes, src in fields:
+        step = off - at
+        assert step in (1, 2, 4, 6), 'frame step of %d at +$%02X' % (step, off)
+        u('... to +$%02X' % off,
+          asrc='EA_SAVE', bsrc={2: 'TWO', 4: 'FOUR', 6: 'SIX'}[step],
+          alu='ADD', dst='EA_SAVE', size='LONG')
+        u('+$%02X: %s' % (off, src.lower()),
+          bus='WRITE', fc='DATA', asel='EA_SAVE', asrc=src, alu='A',
+          bytes=nbytes,
+          **({'frame': 'FB' if long_frame else 'FA', 'vec': vec}
+             if src == 'FMTVECI' else {}))
+        at = off
+
+    u('the vector offset, now that T0 has been written out',
+      asrc='VECOFF', alu='A', dst='T0', size='LONG', vec=vec,
+      next='exc_f0_vector')
+
+
+fault_frame('exc_berr', 2, True)
 # ==========================================================================
 def entry(name):
     if name not in LABELS:

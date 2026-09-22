@@ -115,6 +115,10 @@ ASEL = enc(
     'T2',
     'T3',
     'EA',        # the address output buffer
+    'EA_SAVE',   # ... and the exception's own, which is a second one so that a
+                 # fault frame can be built without disturbing the first: a bus
+                 # fault is taken MID-INSTRUCTION, and the address buffer the
+                 # instruction was using is frame field +$38.
     'PC_D',
 )
 
@@ -165,7 +169,11 @@ ASRC = enc(
     'CCRW',      # the condition codes alone, zero extended to a word: PRM 4
                  # leaves the upper byte of a MOVE from CCR reading as zero
     'VECOFF',    # the microword's vector number, times four
-    'FMTVEC',    # the format word of a stack frame: the microword's frame code
+    'FMTVEC',
+    # The same, but with the vector offset from the microword's own `vec` field
+    # instead of from T0. A fault frame has to name its format and its vector
+    # before it has written T0 out, and T0 is the instruction's.
+    'FMTVECI',    # the format word of a stack frame: the microword's frame code
                  # in bits 15:12 and the vector offset from T0 in bits 11:0
     'VBR',       # the vector base register
     'TRAPVEC',   # TRAP #n: 32 + n, times four, from bits 3:0 of the opcode
@@ -186,6 +194,20 @@ ASRC = enc(
     'DIVR',      # ... and the remainder
     'DREG_XQ',   # the data register the extension word's bits 14:12 name
     'DREG_XR',   # ... and its bits 2:0
+    # The fault frame's own fields -- doc/ssw.md and doc/checkpoint.md. Each is
+    # read exactly once, by the microword that writes it into the frame.
+    'SSW',       # assembled from the pipe's half and the bus unit's
+    'DFA',       # the data fault address: frame +$10
+    'DOB',       # the data output buffer: frame +$18
+    'DIB',       # the data input buffer: long frame +$2C
+    'STG_B',     # the pipe word at +$0E
+    'STG_B_ADDR',# its address: long frame +$24
+    'PC_FETCH',  # the next long word the pipe would have fetched
+    'EA_SAVE',   # the exception's own frame pointer
+    'LINK',      # the return address of the effective-address routine under way
+    'UPC',       # the micro-address to resume at
+    'INT08',     # the packed internal word at +$08
+    'INT36',     # ... and the one at +$36, which carries the version nibble
     'CREG',      # the control register MOVEC's extension word names
     'XREG',      # the general register it names -- data or address per bit 15
 )
@@ -209,7 +231,13 @@ BSRC = enc(
     'FOUR',      # ... and 4, for stepping the stack pointer
     'SIX',       # ... 6, the offset of a frame's format word
     'EIGHT',     # ... 8, the length of a four-word frame
-    'TWELVE',    # ... and 12, of a six-word one
+    'TWELVE',
+    # The two fault frames' sizes in bytes, so that the builder can step the
+    # stack down to the frame base in one microword. They come from
+    # rd68021_frame_pkg, which comes from frames.py, so they cannot drift from
+    # the table the frame is laid out by.
+    'FRAME_A_BYTES',
+    'FRAME_B_BYTES',    # ... and 12, of a six-word one
     'T0', 'T1', 'T2', 'T3',
     'XW',        # a fetched displacement, sign extended from 16 bits
     'DISP8',     # bits 7:0 of the instruction word, sign extended: a short branch
@@ -293,6 +321,7 @@ DST = enc(
     'SP',
     'SR',
     'EA',
+    'EA_SAVE',   # the exception's own frame pointer -- see ASEL
     'AREG_EA',   # the address register the EA field names, for (An)+ and -(An)
     'DREG_R',    # the data register bits 2:0 name -- the destination when the
                  # effective address IS a register, which is every one-operand
@@ -418,7 +447,7 @@ FIELDS = OrderedDict([
     ('cond',  (5,  COND,  'NEVER')),
     ('next',  (UADDR_BITS, None, 0)),
     ('bus',   (2,  BUS,   'NONE')),
-    ('asel',  (3,  ASEL,  'ZERO')),
+    ('asel',  (4,  ASEL,  'ZERO')),
     ('fc',    (2,  FC,    'DATA')),
     ('bytes', (3,  None,  0)),      # operand size in bytes, 0 when bus is NONE
     ('asrc',  (6,  ASRC,  'ZERO')),
@@ -477,6 +506,10 @@ FIELDS = OrderedDict([
     # PRM 6 RESET: "asserts the RSTO signal for 512 clock periods". The bus unit
     # owns the pin and the counter; this bit asks for it and stalls until done.
     ('rsto',  (1,  None,  0)),
+    # UM 6.2.3. RTE reads DF, RB and RC out of the frame and may owe reruns
+    # after it has finished restoring the context; this bit says so, and it is
+    # cleared at the instruction boundary the reruns are finished at.
+    ('rrset', (1,  None,  0)),
     ('eadst', (1,  None,  0)),
     # Whether the base of an indexed effective address is the program counter or
     # an address register. It is in the OPCODE, not the extension word, so the

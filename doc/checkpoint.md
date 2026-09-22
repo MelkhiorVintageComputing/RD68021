@@ -128,7 +128,6 @@ This is a cycle-count divergence, measured and justified in
 | Offset | Bits | Register | What |
 |---|---|---|---|
 | `+$08` | 2:0 | `bytes` | residual byte count of the faulted operand |
-| `+$08` | 3 | `g0` | inside group-0 exception processing |
 | `+$08` | 4 | `notrace` | the trace pending for this instruction was cancelled |
 | `+$08` | 5 | `rr_pending` | a rerun flag out of the frame is still to be applied |
 | `+$08` | 6 | `eapc` | the base of the effective address under way is the PC |
@@ -152,7 +151,7 @@ This is a cycle-count divergence, measured and justified in
 | `+$40` | 31:0 | `pc_fetch` | the next long word the pipe will fetch |
 | `+$44` | 15:0 | `link` | the return address of the subroutine under way |
 
-**492 bits available, 340 used, 9 words spare** (`+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
+**492 bits available, 339 used, 9 words spare** (`+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
 
 ### The frozen set
 
@@ -163,8 +162,6 @@ This is a cycle-count divergence, measured and justified in
 | `ifu` | `b_q` | 16 | `stage_b` | frame +$0E |
 | `ifu` | `c_f_q` | 1 | `ssw` | SSW FC |
 | `ifu` | `b_f_q` | 1 | `ssw` | SSW FB |
-| `ifu` | `stg_c_rerun` | 1 | `ssw` | SSW RC |
-| `ifu` | `stg_b_rerun` | 1 | `ssw` | SSW RB |
 | `ifu` | `d_f_q` | 1 | `stage_d_f` |  |
 | `ifu` | `pc_d_q` | 32 | `pc` | the frame's own program counter |
 | `ifu` | `fill_q` | 32 | `stage_b_addr` | long frame +$24; short frame derives it. The same register as pc_fetch: stage B is two before the fill point. |
@@ -173,26 +170,25 @@ This is a cycle-count divergence, measured and justified in
 | `ifu` | `chr_addr_q` | 30 | `derived` | likewise |
 | `ifu` | `chr_v_q` | 1 | `derived` | likewise -- always restored as invalid |
 | `ifu` | `chr_f_q` | 1 | `derived` | likewise |
-| `biu` | `op_addr` | 32 | `dfa` | frame +$10 |
-| `biu` | `op_data` | 32 | `dob` | frame +$18 |
+| `biu` | `flt_addr` | 32 | `dfa` | frame +$10 |
 | `biu` | `flt_dib` | 32 | `dib` | long frame +$2C |
-| `biu` | `ssw` | 16 | `ssw` | frame +$0A |
-| `biu` | `op_rem` | 3 | `bytes` | SIZ cannot encode a five-byte residual |
-| `biu` | `op_rmc` | 1 | `ssw` | SSW RM |
-| `biu` | `op_rw` | 1 | `ssw` | SSW RW |
-| `biu` | `op_fc` | 3 | `ssw` | SSW FC2-FC0 |
-| `seq` | `upc` | 16 | `upc` |  |
+| `biu` | `flt_dob` | 32 | `dob` | frame +$18 |
+| `biu` | `flt_bytes` | 3 | `bytes` | SIZ cannot encode a five-byte residual |
+| `biu` | `flt_rmc` | 1 | `ssw` | SSW RM |
+| `biu` | `flt_rw` | 1 | `ssw` | SSW RW |
+| `biu` | `flt_fc` | 3 | `ssw` | SSW FC2-FC0 |
+| `seq` | `df_q` | 1 | `ssw` | SSW DF -- see biu.flt_df |
+| `seq` | `flt_upc` | 16 | `upc` | the faulted microword's own address, latched at the fault: by the time the frame builder writes +$14 its own upc is deep inside itself |
 | `seq` | `link_q` | 16 | `link` | seq = RET returns here |
 | `seq` | `t_q` | 32 | `t0` | one array of four in the RTL |
 | `seq` | `t_q` | 32 | `t1` |  |
 | `seq` | `t_q` | 32 | `t2` |  |
 | `seq` | `t_q` | 32 | `t3` |  |
 | `seq` | `ea_q` | 32 | `ea_latch` |  |
-| `seq` | `ea_save` | 32 | `ea_save` |  |
+| `seq` | `ea_save` | 32 | `ea_save` | the frame builder's own pointer, so that ea_q -- which is the instruction's and is +$38 -- is not disturbed. RTE ignores what lands in this slot |
 | `seq` | `xw_q` | 16 | `xw` |  |
-| `seq` | `g0` | 1 | `g0` |  |
 | `seq` | `notrace_q` | 1 | `notrace` | the instruction was never executed, so UM 6.1.7 does not trace it |
-| `seq` | `rr_pending` | 1 | `rr_pending` |  |
+| `seq` | `rr_pending_q` | 1 | `rr_pending` |  |
 | `seq` | `eapc_q` | 1 | `eapc` | seq = EADEC latches it; EABASE reads it |
 | `seq` | `size_q` | 2 | `opsize` | seq = EAMODE latches it; the shared EA routines read it |
 | `seq` | `eadst_q` | 1 | `eadst` | likewise, and rsel reads it |

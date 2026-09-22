@@ -143,6 +143,8 @@ module rd68021_top #(
   logic        stg_d_fault;
   logic        stg_c_fault;
   logic        stg_b_fault;
+  logic        stg_c_rerun;
+  logic        stg_b_rerun;
   logic [31:0] pc_d;
   logic [31:0] stg_b_addr;
 
@@ -232,6 +234,8 @@ module rd68021_top #(
       .stg_d_fault    (stg_d_fault),
       .stg_c_fault    (stg_c_fault),
       .stg_b_fault    (stg_b_fault),
+      .stg_c_rerun    (stg_c_rerun),
+      .stg_b_rerun    (stg_b_rerun),
       .pc_d           (pc_d),
       .stg_b_addr     (stg_b_addr),
       .ckpt_save      (ckpt_save),
@@ -268,6 +272,8 @@ module rd68021_top #(
       .stg_d_fault    (stg_d_fault),
       .stg_c_fault    (stg_c_fault),
       .stg_b_fault    (stg_b_fault),
+      .stg_c_rerun    (stg_c_rerun),
+      .stg_b_rerun    (stg_b_rerun),
       .pc_d           (pc_d),
       .stg_b_addr     (stg_b_addr),
       .ckpt_save      (ckpt_save),

@@ -57,10 +57,10 @@ module core_exc_tb;
   wire iack_now = !as_n_o && (fc_o === 3'b111) && (a_o[19:16] === 4'hF);
 
   always @(*) begin
-    dsack_ext = 2'b11;
-    avec_n_i  = 1'b1;
-    berr_n_i  = 1'b1;
-    oe_ext    = 1'b0;
+    dsack_ext  = 2'b11;
+    avec_n_i   = 1'b1;
+    berr_force = 1'b0;
+    oe_ext     = 1'b0;
     d_ext     = 32'd0;
     if (iack_now) begin
       case (iack_mode)
@@ -71,8 +71,8 @@ module core_exc_tb;
           oe_ext    = 1'b1;
           d_ext     = {iack_vec, 24'd0};
         end
-        IACK_AUTO:   avec_n_i = 1'b0;
-        default:     berr_n_i = 1'b0;
+        IACK_AUTO:   avec_n_i   = 1'b0;
+        default:     berr_force = 1'b1;
       endcase
     end
   end

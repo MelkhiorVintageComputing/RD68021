@@ -64,16 +64,13 @@ package rd68021_frame_pkg;
   // ==========================================================================
   // This design's own state, in the long frame's internal words
   //
-  // 492 bits available, 340 used, 9 words spare. Recompute this whenever
+  // 492 bits available, 339 used, 9 words spare. Recompute this whenever
   // something is added: doc/checkpoint.md carries the same table, printed from
   // the same source.
   // ==========================================================================
   localparam int OFF_I_BYTES     = 'h08;   //  3 bits, residual byte count of the faulted operand
   localparam int I_BYTES_HI      = 2;
   localparam int I_BYTES_LO      = 0;
-  localparam int OFF_I_G0        = 'h08;   //  1 bits, inside group-0 exception processing
-  localparam int I_G0_HI         = 3;
-  localparam int I_G0_LO         = 3;
   localparam int OFF_I_NOTRACE   = 'h08;   //  1 bits, the trace pending for this instruction was cancelled
   localparam int I_NOTRACE_HI    = 4;
   localparam int I_NOTRACE_LO    = 4;

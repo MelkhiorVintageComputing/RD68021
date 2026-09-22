@@ -114,7 +114,6 @@ VERSION = 0x1
 INTERNAL = [
     # offset, hi, lo, name, bits, what
     (0x08,  2,  0, 'bytes',      3,  'residual byte count of the faulted operand'),
-    (0x08,  3,  3, 'g0',         1,  'inside group-0 exception processing'),
     (0x08,  4,  4, 'notrace',    1,  'the trace pending for this instruction was cancelled'),
     (0x08,  5,  5, 'rr_pending', 1,  'a rerun flag out of the frame is still to be applied'),
     (0x08,  6,  6, 'eapc',       1,  'the base of the effective address under way is the PC'),
@@ -160,8 +159,6 @@ CHECKPOINT = [
     ('ifu', 'b_q',              16, 'stage_b',       'frame +$0E'),
     ('ifu', 'c_f_q',             1, 'ssw',           'SSW FC'),
     ('ifu', 'b_f_q',             1, 'ssw',           'SSW FB'),
-    ('ifu', 'stg_c_rerun',       1, 'ssw',           'SSW RC'),
-    ('ifu', 'stg_b_rerun',       1, 'ssw',           'SSW RB'),
     ('ifu', 'd_f_q',             1, 'stage_d_f',     ''),
     ('ifu', 'pc_d_q',           32, 'pc',            "the frame's own program counter"),
     ('ifu', 'fill_q',           32, 'stage_b_addr',  'long frame +$24; short frame derives it. The same register as pc_fetch: stage B is two before the fill point.'),
@@ -170,26 +167,25 @@ CHECKPOINT = [
     ('ifu', 'chr_addr_q',       30, 'derived',       'likewise'),
     ('ifu', 'chr_v_q',           1, 'derived',       'likewise -- always restored as invalid'),
     ('ifu', 'chr_f_q',           1, 'derived',       'likewise'),
-    ('biu', 'op_addr',          32, 'dfa',           'frame +$10'),
-    ('biu', 'op_data',          32, 'dob',           'frame +$18'),
+    ('biu', 'flt_addr',         32, 'dfa',           'frame +$10'),
     ('biu', 'flt_dib',          32, 'dib',           'long frame +$2C'),
-    ('biu', 'ssw',              16, 'ssw',           'frame +$0A'),
-    ('biu', 'op_rem',            3, 'bytes',         'SIZ cannot encode a five-byte residual'),
-    ('biu', 'op_rmc',            1, 'ssw',           'SSW RM'),
-    ('biu', 'op_rw',             1, 'ssw',           'SSW RW'),
-    ('biu', 'op_fc',             3, 'ssw',           'SSW FC2-FC0'),
-    ('seq', 'upc',              16, 'upc',           ''),
+    ('biu', 'flt_dob',          32, 'dob',           'frame +$18'),
+    ('biu', 'flt_bytes',         3, 'bytes',         'SIZ cannot encode a five-byte residual'),
+    ('biu', 'flt_rmc',           1, 'ssw',           'SSW RM'),
+    ('biu', 'flt_rw',            1, 'ssw',           'SSW RW'),
+    ('biu', 'flt_fc',            3, 'ssw',           'SSW FC2-FC0'),
+    ('seq', 'df_q',              1, 'ssw',           'SSW DF -- see biu.flt_df'),
+    ('seq', 'flt_upc',          16, 'upc',           'the faulted microword\'s own address, latched at the fault: by the time the frame builder writes +$14 its own upc is deep inside itself'),
     ('seq', 'link_q',           16, 'link',          'seq = RET returns here'),
     ('seq', 't_q',              32, 't0',            'one array of four in the RTL'),
     ('seq', 't_q',              32, 't1',            ''),
     ('seq', 't_q',              32, 't2',            ''),
     ('seq', 't_q',              32, 't3',            ''),
     ('seq', 'ea_q',             32, 'ea_latch',      ''),
-    ('seq', 'ea_save',          32, 'ea_save',       ''),
+    ('seq', 'ea_save',          32, 'ea_save',       "the frame builder's own pointer, so that ea_q -- which is the instruction's and is +$38 -- is not disturbed. RTE ignores what lands in this slot"),
     ('seq', 'xw_q',             16, 'xw',            ''),
-    ('seq', 'g0',                1, 'g0',            ''),
     ('seq', 'notrace_q',         1, 'notrace',       'the instruction was never executed, so UM 6.1.7 does not trace it'),
-    ('seq', 'rr_pending',        1, 'rr_pending',    ''),
+    ('seq', 'rr_pending_q',      1, 'rr_pending',    ''),
     ('seq', 'eapc_q',            1, 'eapc',          'seq = EADEC latches it; EABASE reads it'),
     ('seq', 'size_q',            2, 'opsize',        'seq = EAMODE latches it; the shared EA routines read it'),
     ('seq', 'eadst_q',           1, 'eadst',         'likewise, and rsel reads it'),
@@ -206,14 +202,6 @@ CHECKPOINT = [
 # stays a description of the finished design and the check still says which
 # parts of it are not there.
 PENDING = {
-    ('biu', 'ssw'):            'M9 -- the special status word',
-    ('biu', 'flt_dib'):        'M9 -- the data input buffer',
-    ('ifu', 'stg_c_rerun'):    'M9 -- SSW RC',
-    ('ifu', 'stg_b_rerun'):    'M9 -- SSW RB',
-    ('seq', 'ea_save'):        'M9 -- the copy of the address buffer taken at the fault',
-    ('seq', 'g0'):             'M8 -- inside group-0 exception processing',
-
-    ('seq', 'rr_pending'):     'M9 -- a rerun flag out of the frame is still to be applied',
 }
 
 # Every register in rtl/ that is NOT checkpointed, and the reason. check_rtl()
@@ -222,8 +210,10 @@ PENDING = {
 # it is a build failure, not something M9 discovers.
 EXEMPT = [
     # unit, register, why
-    ('ifu', 'cnt_q',        'how many words the queue holds. Derived: RTE puts '
-                            'stage C and stage B back, so it is two.'),
+    ('ifu', 'cnt_q',        'how many words the queue holds. Derived from the '
+                            'rerun bits, which say which stages RTE still owes '
+                            'a word: none if RC, one if RB alone, two if '
+                            'neither.'),
     ('ifu', 'd_v_q',        'stage D is valid. Derived: RTE puts stage D back.'),
     ('ifu', 'primed_q',     'whether the pipe has ever been flushed. Always set '
                             'once the first instruction has been fetched.'),
@@ -252,6 +242,16 @@ EXEMPT = [
     ('biu', 'rsto_cnt',     '... for this many more clocks'),
     ('biu', 'rsto_arm_q',   '... and the request has been let go since, so the '
                             'count cannot restart itself'),
+
+    # The live operand. What a fault frame carries is the SNAPSHOT above, taken
+    # on the clock the fault is reported, because the frame is built by bus
+    # cycles that run through these very registers -- doc/ssw.md.
+    ('biu', 'op_addr',      'the address the operand now running is up to'),
+    ('biu', 'op_data',      'its data, assembled or waiting to go out'),
+    ('biu', 'op_rem',       'how many bytes of it are left'),
+    ('biu', 'op_fc',        'its function code'),
+    ('biu', 'op_rw',        'its direction'),
+    ('biu', 'op_rmc',       'whether RMC is held across it'),
 
     ('biu', 'st_p',         'the bus state machine, rising-edge half'),
     ('biu', 'st_n',         '... and falling-edge half'),
@@ -313,6 +313,21 @@ EXEMPT = [
     # the bit on the same clock it enters exception processing. A stopped
     # processor is not a context worth saving: it has none.
     ('seq', 'stopped_q',    'the processor is stopped'),
+
+    # UM 6.1.2: "if a bus error occurs during the exception processing for a bus
+    # error, address error, or reset ... a double bus fault occurs and the
+    # processor enters the halted state". So a frame is never built from inside
+    # the window this bit marks -- the machine halts instead -- and there is
+    # nothing for a frame field to say.
+    ('seq', 'g0_q',         'the window in which a second fault is a double bus fault'),
+    ('seq', 'dbf_q',        'a double bus fault has halted the processor. UM '
+                            '6.1.2: only an external reset restarts it, so '
+                            'there is nothing to restore and nowhere to '
+                            'restore it from'),
+    ('seq', 'upc',          'the micro-address now running. The one a fault '
+                            'frame carries is flt_upc, latched on the clock '
+                            'the fault was reported -- by then this one is the '
+                            "frame builder's own."),
 
     ('seq', 'div_go_q',     'the divider is running. A divide makes no bus cycle, '
                             'so nothing can fault inside one: the microword that '

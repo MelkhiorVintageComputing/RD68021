@@ -753,8 +753,15 @@ module rd68021_biu #(
           end else begin
             req_ack      <= 1'b1;
             req_end_q    <= end_now;
-            req_fault    <= term_err;
-            req_fault_wr <= term_err && !op_rw;
+            // A bus error on a CPU-SPACE cycle is not a bus error. UM 6.1.9
+            // makes one on an interrupt acknowledge the spurious interrupt, and
+            // UM 5.4.2 makes one on a breakpoint acknowledge an illegal
+            // instruction; the microcode reads it off the end code and decides.
+            // Raising a fault here as well would take the bus error exception
+            // instead, and the spurious interrupt would be unreachable.
+            req_fault    <= term_err && (op_fc != rd68021_pkg::FC_CPU);
+            req_fault_wr <= term_err && (op_fc != rd68021_pkg::FC_CPU)
+                                     && !op_rw;
             if (op_rw) rdata_q <= rd_merged;
           end
         end
@@ -1019,13 +1026,46 @@ module rd68021_biu #(
   assign req_end = req_end_q;
   assign req_dsack    = dsack_q;
 
-  assign flt_addr  = op_addr;
-  assign flt_bytes = op_rem;
-  assign flt_fc    = op_fc;
-  assign flt_rw    = op_rw;
-  assign flt_rmc   = op_rmc;
-  assign flt_dob   = op_data[31:0];
-  assign flt_dib   = op_data[31:0];
+  // ==========================================================================
+  // The fault snapshot -- doc/ssw.md
+  //
+  // Everything the fault frame says about the faulted access, latched on the
+  // clock the fault is recognised. It has to be a latch and not a view of the
+  // live operand registers, because the frame is BUILT BY BUS CYCLES: by the
+  // time the special status word reaches +$0A of the frame, four writes have
+  // gone through the same operand engine and op_addr, op_rem and op_data are
+  // about the last of them.
+  //
+  // The address is the operand's residual address -- the next byte still to
+  // transfer -- and not the address the microword asked for. UM 6.2.2 has the
+  // handler "transfer the properly sized data from the data output buffer on
+  // the stack frame to the location indicated by the data fault address", and
+  // what is left to transfer is what it has to move.
+  // ==========================================================================
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      flt_addr  <= '0;
+      flt_bytes <= 3'd0;
+      flt_fc    <= 3'd0;
+      flt_rw    <= 1'b1;
+      flt_rmc   <= 1'b0;
+      flt_dob   <= '0;
+      flt_dib   <= '0;
+    end else if (st_n == rd68021_pkg::ST_S5 && op_finishing && !op_isfetch
+                 && term_err && (op_fc != rd68021_pkg::FC_CPU)) begin
+      flt_addr  <= op_addr;
+      flt_bytes <= op_rem;
+      flt_fc    <= op_fc;
+      flt_rw    <= op_rw;
+      flt_rmc   <= op_rmc;
+      // The two buffers are the same register, because an operand is either
+      // being read or being written and op_data is whichever applies. They are
+      // separate frame fields, and separate here, so that a handler reads the
+      // one the direction makes meaningful and RTE writes back only that one.
+      flt_dob   <= op_rw ? flt_dob : op_data[31:0];
+      flt_dib   <= op_rw ? op_data[31:0] : flt_dib;
+    end
+  end
 
   // PRM 6 RESET: "asserts the RSTO signal for 512 clock periods, resetting all
   // external devices". 512 is this part's number -- the MC68000 and the MC68010
