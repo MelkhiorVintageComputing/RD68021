@@ -946,6 +946,16 @@ module rd68021_seq #(
       // already stacked "except that the S-bit is set".
       rd68021_ucode_pkg::U_ALU_SETS:
         y = a_bus | (32'd1 << rd68021_pkg::SR_S);
+      // PRM 4. Two bit shuffles and no arithmetic: the adjustment is added by
+      // an ordinary ADD in the microword before, because the manual adds it to
+      // the value BEFORE the nibbles are taken out for PACK and AFTER they are
+      // spread out for UNPK, and those are different microwords either way.
+      rd68021_ucode_pkg::U_ALU_PACK:
+        y = {24'd0, a_bus[11:8], a_bus[3:0]};
+      rd68021_ucode_pkg::U_ALU_UNPK:
+        y = {16'd0, 4'd0, a_bus[7:4], 4'd0, a_bus[3:0]};
+      rd68021_ucode_pkg::U_ALU_BYTEPAIR:
+        y = {16'd0, a_bus[7:0], b_bus[7:0]};
       rd68021_ucode_pkg::U_ALU_SX:
         unique case (eff_size)
           rd68021_ucode_pkg::U_SIZE_BYTE: y = {{24{a_bus[7]}},  a_bus[7:0]};

@@ -39,7 +39,18 @@ from collections import OrderedDict
 
 
 def enc(*names):
-    """An encoding: name -> value, in the order written."""
+    """An encoding: name -> value, in the order written.
+
+    A repeated name is a build failure and not a silent renumbering. Adding
+    SHR8 to the ALU a second time -- it was already there for MOVEP -- left the
+    list one shorter than it looked, and what showed it was Verilator noticing
+    that two arms of a case statement had become the same one. The encoding is
+    where that should be caught.
+    """
+    dup = [n for i, n in enumerate(names) if n in names[:i]]
+    if dup:
+        raise SystemExit('isa: %s appears more than once in an encoding'
+                         % ', '.join(sorted(set(dup))))
     return OrderedDict((n, i) for i, n in enumerate(names))
 
 
@@ -316,6 +327,16 @@ ALU = enc(
     # used regardless of the operation size" -- and a fixed EXTL would destroy
     # the long-word forms of the same instructions.
     'SX',
+    # PRM 4, PACK: "bits 11-8 and 3-0 of the intermediate result are
+    # concatenated and placed in bits 7-0 of the destination".
+    'PACK',
+    # ... and UNPK, the other way: the two nibbles of a byte into the low four
+    # bits of two bytes, with zeros above each.
+    'UNPK',
+    # The two bytes PACK reads, made into the word the manual concatenates them
+    # into. The shift that gets UNPK's second byte back out is SHR8, which MOVEP
+    # already had.
+    'BYTEPAIR',
     'SHIFT',     # whatever rd68021_shifter made of the A source
     'ANDNOT',    # A with the bits of B cleared, which is what BCLR does
     'LSR1',      # A shifted right one place, for walking MOVEM's mask
@@ -481,7 +502,7 @@ FIELDS = OrderedDict([
     ('bytes', (3,  None,  0)),      # operand size in bytes, 0 when bus is NONE
     ('asrc',  (6,  ASRC,  'ZERO')),
     ('bsrc',  (5,  BSRC,  'ZERO')),
-    ('alu',   (5,  ALU,   'A')),
+    ('alu',   (6,  ALU,   'A')),
     ('dst',   (6,  DST,   'NONE')),
     ('size',  (2,  SIZE,  'LONG')),
     ('ccr',   (5,  CCR,   'NONE')),

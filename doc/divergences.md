@@ -529,3 +529,34 @@ than anywhere earlier.
 **What could differ:** nothing. The manual is unambiguous and `core_fault_tb`
 covers the behaviour directly, with the frame checked against UM 6.2.1 —
 the rerun bits set, the fault bits clear, vector offset `$00C`.
+
+---
+
+## Musashi concatenates PACK's two source bytes the wrong way round
+
+PRM 4, PACK, on the predecrement form:
+
+> When the predecrement addressing mode is specified, two bytes from the source
+> are fetched and concatenated.
+
+and the diagram is explicit about which is which: the byte drawn first supplies
+bits 11–8 of the concatenated word, and the byte drawn second supplies bits 3–0.
+The first is the one at the **lower** address, because this is a big-endian
+family and the concatenated word is just the word at the decremented address.
+
+Musashi makes the byte at the *higher* address the significant one, in both PACK
+and UNPK. The two implementations read and write the same addresses in the same
+order and disagree only about which byte is which half.
+
+**The instruction's own purpose settles it.** PACK exists to turn two unpacked
+digits into one packed byte. The string `"42"` has `'4'` at the lower address;
+packing it must give `$42`. With Musashi's order it gives `$24`, and every
+multi-digit conversion comes out with its digits reversed.
+
+**What is done about it:** the sweep runs the register forms, where the two
+agree, and `sim/tb/core_insn_tb.sv` covers the predecrement forms directly with
+the expectations written from the manual's diagram — including the `"42"` case,
+which is the one a reader can check without any of this reasoning.
+
+**What could differ:** a program that packs or unpacks through `-(An)` gets the
+opposite digit order under Musashi. Nothing else uses the instruction.

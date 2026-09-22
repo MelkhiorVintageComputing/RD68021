@@ -912,9 +912,18 @@ opcode('1011---1--001---', 'cmpm',       'CMPM (Ay)+,(Ax)+')
 opcode('1011---1--000---', 'eor_to_dn',  'EOR Dn,Dn')
 opcode('1011---1--------', 'eor_to_mem', 'EOR Dn,<ea>')
 
-# ABCD and SBCD sit in the register-direct slots of the <ea> direction of lines
-# 1100 and 1000, so they are claimed before those lines are -- PRM 8. EXG has
-# already taken its three slots in the same space.
+# ABCD, SBCD, PACK and UNPK sit in the register-direct slots of the <ea>
+# direction of lines 1100 and 1000, so they are claimed before those lines are
+# -- PRM 8. EXG has already taken its three slots in the same space.
+#
+# PACK and UNPK are the two the MC68020 added there, and they are the reason
+# this ordering is load-bearing rather than tidy: `OR Dn,<ea>` wildcards the
+# mode field, and until they were claimed it decoded all 256 of their encodings
+# as an OR into a register, which is not an encoding OR has.
+opcode('1000---101000---', 'pack_dd', 'PACK Dy,Dx,#adj')
+opcode('1000---101001---', 'pack_mm', 'PACK -(Ay),-(Ax),#adj')
+opcode('1000---110000---', 'unpk_dd', 'UNPK Dy,Dx,#adj')
+opcode('1000---110001---', 'unpk_mm', 'UNPK -(Ay),-(Ax),#adj')
 opcode('1100---100000---', 'abcd_dd', 'ABCD Dy,Dx')
 opcode('1100---100001---', 'abcd_mm', 'ABCD -(Ay),-(Ax)')
 opcode('1000---100000---', 'sbcd_dd', 'SBCD Dy,Dx')
@@ -1800,6 +1809,98 @@ for _opm, _n in (('110', 'W'), ('100', 'L')):
            'CHK.%s #imm,Dn' % _n)
     opcode('0100---' + _opm + '------', 'chk_mem',  'CHK.%s <ea>,Dn' % _n)
 
+
+
+# ==========================================================================
+# PACK and UNPK -- PRM 4, new on the MC68020
+#
+# "Adjusts and packs the lower four bits of each of two bytes into a single
+# byte", and the reverse. Both take a sixteen-bit adjustment in the word after
+# the opcode, and neither touches the condition codes.
+#
+# The adjustment goes in at different points in the two instructions, and the
+# manual is explicit about it: PACK adds it to the source BEFORE the nibbles are
+# taken out, and UNPK adds it AFTER they have been spread apart. Doing either
+# the other way round changes the answer whenever the addition carries between
+# the nibbles, which is the whole reason the adjustment exists.
+#
+# The register in bits 11-9 is the DESTINATION and the one in bits 2-0 is the
+# source, which is the layout ABCD and SBCD use and the opposite of the way the
+# assembler syntax reads.
+# ==========================================================================
+label('pack_dd')
+u('the adjustment word that follows the opcode',
+  asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
+u('the source plus it -- PRM 4, the addition comes first',
+  asrc='DREG', bsrc='T0', alu='ADD', dst='T1', size='WORD')
+u('and the two low nibbles of that, packed into the destination byte',
+  asrc='T1', alu='PACK', dst='DREG', size='BYTE', pf='ADV', seq='DECODE')
+
+# The memory forms move BYTES, one access each, and not the word the two of them
+# make up: PRM 4 says "two bytes from the source are fetched and concatenated",
+# and a part that fetched a word could not do that from an odd address. The
+# access list is what settles it -- the oracle makes three transfers where a
+# word access would make two.
+label('pack_mm')
+u('the adjustment word',
+  asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
+u('the source register, back one byte',
+  asrc='AREG', bsrc='ONE', alu='SUB', dst='T1', size='LONG')
+u('read the byte at the higher address, which is the low one of the pair',
+  bus='READ', fc='DATA', asel='T1', bytes=1)
+u('... held',
+  asrc='RDATA', alu='A', dst='T2', size='BYTE')
+u('back one more',
+  asrc='T1', bsrc='ONE', alu='SUB', dst='T1', size='LONG')
+u('... which is the register\'s new value',
+  asrc='T1', alu='A', dst='AREG_EA', size='LONG')
+u('read the other one',
+  bus='READ', fc='DATA', asel='T1', bytes=1)
+u('the two of them concatenated',
+  asrc='RDATA', bsrc='T2', alu='BYTEPAIR', dst='T2', size='WORD')
+u('... plus the adjustment',
+  asrc='T2', bsrc='T0', alu='ADD', dst='T2', size='WORD')
+u('the destination register, back the one byte it writes',
+  asrc='AREGW', bsrc='ONE', alu='SUB', dst='T3', size='LONG')
+u('... which is its new value',
+  asrc='T3', alu='A', dst='AREG', size='LONG')
+u('and the packed byte goes there',
+  bus='WRITE', fc='DATA', asel='T3', asrc='T2', alu='PACK', bytes=1,
+  pf='ADV', seq='DECODE')
+
+label('unpk_dd')
+u('the adjustment word that follows the opcode',
+  asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
+u('the source byte, spread into two',
+  asrc='DREG', alu='UNPK', dst='T1', size='WORD')
+u('... and the adjustment goes on AFTER that -- PRM 4',
+  asrc='T1', bsrc='T0', alu='ADD', dst='DREG', size='WORD',
+  pf='ADV', seq='DECODE')
+
+label('unpk_mm')
+u('the adjustment word',
+  asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
+u('the source register, back the one byte it reads',
+  asrc='AREG', bsrc='ONE', alu='SUB', dst='T1', size='LONG')
+u('... which is its new value',
+  asrc='T1', alu='A', dst='AREG_EA', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T1', bytes=1)
+u('spread into two bytes',
+  asrc='RDATA', alu='UNPK', dst='T2', size='WORD')
+u('... plus the adjustment',
+  asrc='T2', bsrc='T0', alu='ADD', dst='T2', size='WORD')
+u('the destination register, back one byte',
+  asrc='AREGW', bsrc='ONE', alu='SUB', dst='T3', size='LONG')
+u('the low byte of the pair goes at the higher address',
+  bus='WRITE', fc='DATA', asel='T3', asrc='T2', alu='A', bytes=1)
+u('back one more',
+  asrc='T3', bsrc='ONE', alu='SUB', dst='T3', size='LONG')
+u('... which is the register\'s new value',
+  asrc='T3', alu='A', dst='AREG', size='LONG')
+u('and the other byte goes there',
+  bus='WRITE', fc='DATA', asel='T3', asrc='T2', alu='SHR8', bytes=1,
+  pf='ADV', seq='DECODE')
 
 # ==========================================================================
 # MOVEC -- PRM 6

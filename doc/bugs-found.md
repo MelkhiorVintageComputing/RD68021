@@ -1417,3 +1417,28 @@ written — and it now writes a different one.
 **The lesson is about what a passing test proves.** "The right bytes are in
 memory" was true of both the correct machine and the broken one. A check that
 cannot fail on the bug it is aimed at is not a check.
+
+## M10 · Two MC68020 instructions were decoding as something else
+
+**What:** found by taking the manual's list of 116 instructions and asking the
+decoder what it made of each encoding, rather than by anything failing.
+
+| encoding | is | decoded as |
+|---|---|---|
+| `$8140`–`$81CF` | `PACK` and `UNPK` | `OR Dn,<ea>` |
+| `$4848`–`$484F` | `BKPT #n` | `PEA <ea>` |
+
+Both are the same shape. `OR Dn,<ea>` and `PEA <ea>` wildcard the mode field,
+and the modes they wildcard over include ones the instruction does not have --
+`OR` into a register in the `<ea>` direction, `PEA` of an address register. On
+the MC68010 those encodings were illegal and a pattern that covered them was
+harmless. On this part they are other instructions.
+
+`check_disjoint` cannot see it: it proves the patterns do not overlap *each
+other*, and these did not. Nothing proves a pattern stays inside the addressing
+modes its instruction actually has.
+
+**Fixed by:** claiming the new encodings before the broad ones, which is the
+mechanism ABCD and SBCD already use in the same two lines of the map. The
+inventory that found it is worth keeping as a habit: for each instruction the
+manual lists, ask what the decoder does with every one of its encodings.

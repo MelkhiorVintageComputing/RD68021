@@ -778,6 +778,32 @@ static void bcd_operands(int n)
     }
 }
 
+/* PACK and UNPK -- PRM 4, new on the MC68020.
+ *
+ * The adjustment word is the point of the instruction, so it is swept rather
+ * than left at zero: $0000 is the identity, and the interesting values are the
+ * ones that carry out of a nibble. bcd_operands fills the registers and memory
+ * with digits, which is what the instruction is for, but the encoding takes
+ * anything and the pack is a bit shuffle, so plain binary is worth running too
+ * and is what the registers already hold. */
+static void g_packunpk(void)
+{
+    static const unsigned int ADJ[] = { 0x0000u, 0x0001u, 0x9999u, 0x6666u,
+                                        0x0F0Fu, 0xF0F0u, 0x00FFu, 0x8000u };
+    int i;
+    /* The register forms only. Musashi concatenates the predecrement forms'
+     * two bytes the other way round -- it makes the byte at the HIGHER address
+     * the significant one -- and doc/divergences.md works through why the
+     * manual and plain BCD arithmetic both say otherwise. The memory forms are
+     * covered by sim/tb/core_insn_tb.sv, against the manual. */
+    for (i = 0; i < (int)(sizeof ADJ / sizeof ADJ[0]); i++) {
+        plain2(0x8140u | (2 << 9) | 5, ADJ[i], NPER, 0);   /* PACK D5,D2  */
+        bcd_operands(NPER);
+        plain2(0x8180u | (2 << 9) | 5, ADJ[i], NPER, 0);   /* UNPK D5,D2  */
+        bcd_operands(NPER);
+    }
+}
+
 static void g_bcd(void)
 {
     plain(0xC100 | (2 << 9) | 5, NPER * 2, 0);
@@ -1059,6 +1085,7 @@ static const struct group GROUPS[] = {
     { "jump",    g_jump    },
     { "muldiv",  g_muldiv  },
     { "bcd",     g_bcd     },
+    { "packunpk",g_packunpk},
     { "tas",     g_tas     },
     { "movem",   g_movem   },
     { "movep",   g_movep   },
