@@ -109,6 +109,8 @@ COND = enc(
     'DIVZERO',   # the divisor was zero. PRM 4: "division by zero causes a
                  # trap", which is a different thing from an overflow -- the
                  # overflow arm returns and this one does not
+    'ZSET',      # the zero flag, which is how CAS and CAS2 say the compare
+                 # matched -- PRM 4, "if Z, update operand -> destination"
     'CSET',      # the carry flag, which is where CMP2 leaves its verdict
     'VSET',      # the overflow flag. TRAPV tests V and its own condition
                  # field reads as NE, so it cannot use the cc evaluation
@@ -225,6 +227,8 @@ ASRC = enc(
     'DIVR',      # ... and the remainder
     'DREG_XQ',   # the data register the extension word's bits 14:12 name
     'DREG_XR',   # ... and its bits 2:0
+    'DREG_XU',   # ... and its bits 8:6, which is where CAS and CAS2 put the
+                 # update register -- PRM 4
     # The fault frame's own fields -- doc/ssw.md and doc/checkpoint.md. Each is
     # read exactly once, by the microword that writes it into the frame.
     # PRM 4, the bit field. Offset and width are wires off the extension word,
@@ -295,6 +299,9 @@ BSRC = enc(
     'DREGW',
     'AREGW',
     'RDATA',
+    # The registers CAS and CAS2's extension word names, as the B source: the
+    # compare operand is subtracted from what memory held.
+    'DREG_XR',
     'ONE',       # the constant 1, for the counted instructions
     'IMMQ',      # bits 11:9 of the opcode, with zero meaning eight: ADDQ, SUBQ
                  # and the immediate shift counts
@@ -442,7 +449,10 @@ SZSEL = enc(
     # so it has no size in the ordinary sense. The two say where the field is.
     'BFMEM',
     'BFREG',
-    'IR109',     # bits 10:9: 00 byte, 01 word, 10 long -- CMP2, CHK2 and CAS
+    # PRM 8 gives CAS and CAS2 the same bits and a DIFFERENT encoding in them:
+    # 01 byte, 10 word, 11 long, with 00 unused. CMP2 and CHK2 number from zero.
+    'CAS',
+    'IR109',     # bits 10:9: 00 byte, 01 word, 10 long -- CMP2 and CHK2
     'CHK',       # bit 7 alone: 1 word, 0 long. CHK is the only instruction that
                  # encodes its size that way -- PRM 8 gives it opmode 110 and
                  # 100, the second being the MC68020's addition.

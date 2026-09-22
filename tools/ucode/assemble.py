@@ -559,6 +559,16 @@ COND_READS = {
     'USER': 'SR', 'MASTER': 'SR',
 }
 
+# ... and the ones that read the CONDITION CODES, which a microword writes
+# through the `ccr` field rather than through `dst`. Same mistake, same clock,
+# different field: CAS compared and branched on the Z it was itself setting, so
+# it swapped on the PREVIOUS instruction's verdict.
+#
+# The conditions that read the ALU RESULT -- RESNEG, GTZ, RESM1, MDOVF -- are
+# not here, for the reason they are not in the table above: testing what the
+# current microword computes is what they exist for.
+COND_READS_CCR = ('CC', 'NCC', 'ZSET', 'CSET', 'VSET')
+
 
 def check_boundary():
     """The short fault frame is reachable from the decode arm and nowhere else.
@@ -634,6 +644,11 @@ def check_cond_dst():
             bad.append('microword %d writes %s and branches on %s, which reads '
                        'the value it is replacing -- %s'
                        % (i, reads, f.get('cond'), c))
+        if (f.get('cond') in COND_READS_CCR
+                and f.get('ccr', 'NONE') != 'NONE'):
+            bad.append('microword %d writes the condition codes and branches on '
+                       '%s, which reads them as they stand -- %s'
+                       % (i, f.get('cond'), c))
     return bad
 
 

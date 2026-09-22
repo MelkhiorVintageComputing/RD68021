@@ -1463,3 +1463,51 @@ it was in a helper written years of commits earlier, whose rule happened to be
 complete for every instruction that then existed. Adding an instruction is
 mostly adding microcode, and occasionally it is discovering that a datapath
 rule was narrower than it read.
+
+## M10 · A compare-and-swap that swapped on the previous instruction's verdict
+
+**What:** `CAS` with a matching compare operand did not write the update
+operand, and `CAS2` did not write either of its two.
+
+The compare microword set the condition codes and branched on Z in the same
+breath. A condition reads the codes as they STAND; the `ccr` write is a
+non-blocking assignment landing on the edge the branch steers. So the swap was
+decided by whatever had last set Z — usually an instruction earlier in the
+program.
+
+This is the third time this exact mistake has been made, in three different
+fields: `sr_eff` and `flow_eff` were the first (M8), a condition reading the
+register its own microword wrote was the second (M8), and this is the `ccr`
+field. Each time the fix is a clock and the lesson is the same.
+
+**Fixed by:** a microword of its own for the branch, and by extending
+`check_cond_dst` to the condition codes: a `COND` microword whose condition
+reads a flag — `CC`, `NCC`, `ZSET`, `CSET`, `VSET` — may not also write the
+codes. The conditions that read the ALU *result* are excluded for the reason
+they always are: testing what the current microword computes is what they exist
+for.
+
+## M10 · RMC was released between the two halves of a read-modify-write
+
+**What:** found by the same testbench, which counts the times RMC goes from
+asserted to not within one instruction. `CAS` let it go between its read and its
+write and took it again.
+
+UM 5.5.2 makes RMC a qualifier over a RUN of cycles rather than a property of
+one — "each read and each write of the sequence is retried separately with RMC
+held throughout" — and the whole point of it is the gap: nothing else may reach
+the location in between. The pin was driven from `cyc_rmc`, which is latched per
+cycle, and its output enable followed the address, which goes to high impedance
+between cycles when `ADDR_HIZ_BETWEEN_CYCLES` is set.
+
+So on a real board the one signal whose job is to stay asserted in the gap was
+the one left floating there.
+
+**Fixed by:** driving both the value and the enable from `rmc_hold`, which is
+the run — and is already what inhibits arbitration, so the two now agree by
+construction instead of by coincidence.
+
+**TAS did not show it** and has been passing since M7, because a byte
+read-modify-write on a 32-bit port leaves a gap of a few clocks that nothing in
+the testbench was watching. What made it visible was writing down what the
+manual promises and counting.

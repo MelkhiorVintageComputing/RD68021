@@ -2117,6 +2117,128 @@ bitfield('bfset',  '1110', ins=('ZERO', 'NOT'))
 # data register", which is the one in bits 14-12 of the extension word.
 bitfield('bfins',  '1111', ins=('DREG_XQ', 'A'), ccr='BFINS')
 
+
+# ==========================================================================
+# CAS and CAS2 -- PRM 4, the MC68020's synchronisation primitives
+#
+# "Both operations access memory using locked or read-modify-write transfer
+# sequences, providing a means of synchronizing several processors." RMC is
+# held across every cycle of the sequence and across the microwords between
+# them -- UM 5.5.2 makes it a qualifier over a run of ordinary cycles, and the
+# bus unit drops it the moment a microword stops asking for it.
+#
+# CAS2 is the reason the sequencer has four temporaries and the reason the
+# extension words are kept in two of them. It has SIX things live at once --
+# two addresses, two values read, and two extension words -- and only four
+# registers to put them in. The way out is that the addresses are recomputable:
+# each is a register the extension word names, so loading `xw` from whichever
+# word is current gets the address back for nothing.
+# ==========================================================================
+label('cas')
+u('the extension word: the compare register and the update register',
+  asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
+u('the address',
+  call=1, seq='EAMODE', szsel='CAS')
+u('... and now the extension word can come back',
+  asrc='T0', alu='A', dst='XW', size='WORD')
+u('read the destination, and hold the bus from here -- UM 5.5.2',
+  bus='READ', fc='DATA', asel='EA', szsel='CAS', rmc=1)
+u('... held',
+  asrc='RDATA', alu='A', dst='T1', szsel='CAS', rmc=1)
+u('the destination less the compare operand',
+  asrc='T1', bsrc='DREG_XR', alu='SUB', ccr='CMP', szsel='CAS', rmc=1)
+u('... and the branch is a microword later, because a condition reads the '
+  'codes as they stand and the one above has not written them yet',
+  seq='COND', cond='ZSET', next='cas_swap', rmc=1)
+u('they differ, so the destination goes into the compare register instead '
+  'and the bus is let go',
+  asrc='T1', alu='A', dst='DREG_XR', szsel='CAS', pf='ADV', seq='DECODE')
+
+label('cas_swap')
+u('they match, so the update register goes to memory, still holding the bus',
+  bus='WRITE', fc='DATA', asel='EA', asrc='DREG_XU', alu='A', szsel='CAS',
+  rmc=1, pf='ADV', seq='DECODE')
+
+
+label('cas2')
+u('the first extension word',
+  asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
+u('the second',
+  asrc='STG_C', alu='A', dst='T1', size='WORD', pf='CONSUME')
+u('the first one names the first address',
+  asrc='T0', alu='A', dst='XW', size='WORD')
+u('... which is the register it names',
+  asrc='XREG', alu='A', dst='EA', size='LONG')
+u('read it, and hold the bus from here to the end',
+  bus='READ', fc='DATA', asel='EA', szsel='CAS', rmc=1)
+u('... held',
+  asrc='RDATA', alu='A', dst='T2', szsel='CAS', rmc=1)
+u('the second extension word names the second address',
+  asrc='T1', alu='A', dst='XW', size='WORD', rmc=1)
+u('... likewise',
+  asrc='XREG', alu='A', dst='EA', size='LONG', rmc=1)
+u('read that too. BOTH are read before either is compared, because a compare '
+  'that fails still has to put both of them in the compare registers',
+  bus='READ', fc='DATA', asel='EA', szsel='CAS', rmc=1)
+u('... held',
+  asrc='RDATA', alu='A', dst='T3', szsel='CAS', rmc=1)
+u('back to the first extension word for the first compare',
+  asrc='T0', alu='A', dst='XW', size='WORD', rmc=1)
+u('the first destination less the first compare operand',
+  asrc='T2', bsrc='DREG_XR', alu='SUB', ccr='CMP', szsel='CAS', rmc=1)
+u('... and the branch a microword later',
+  seq='COND', cond='ZSET', next='cas2_second', rmc=1)
+u('the first differs, and that is the end of it',
+  next='cas2_fail')
+
+label('cas2_second')
+u('the second extension word',
+  asrc='T1', alu='A', dst='XW', size='WORD', rmc=1)
+u('the second destination less the second compare operand',
+  asrc='T3', bsrc='DREG_XR', alu='SUB', ccr='CMP', szsel='CAS', rmc=1)
+u('... likewise',
+  seq='COND', cond='ZSET', next='cas2_swap', rmc=1)
+u('the second differs',
+  next='cas2_fail')
+
+label('cas2_swap')
+# PRM 4: "Update 1 -> Destination 1; Update 2 -> Destination 2", in that order.
+u('both matched: back to the first address',
+  asrc='T0', alu='A', dst='XW', size='WORD', rmc=1)
+u('... which is the register it names',
+  asrc='XREG', alu='A', dst='EA', size='LONG', rmc=1)
+u('the first update goes there',
+  bus='WRITE', fc='DATA', asel='EA', asrc='DREG_XU', alu='A', szsel='CAS',
+  rmc=1)
+u('and the second address',
+  asrc='T1', alu='A', dst='XW', size='WORD', rmc=1)
+u('... likewise',
+  asrc='XREG', alu='A', dst='EA', size='LONG', rmc=1)
+u('the second update goes there, and the bus is let go',
+  bus='WRITE', fc='DATA', asel='EA', asrc='DREG_XU', alu='A', szsel='CAS',
+  rmc=1, pf='ADV', seq='DECODE')
+
+label('cas2_fail')
+# "If either comparison fails, the instruction writes the memory operands to
+# the compare operands." Both of them, whichever comparison it was that failed,
+# which is why both were read before either was compared.
+u('one of them differed: the first extension word again',
+  asrc='T0', alu='A', dst='XW', size='WORD')
+u('the first destination goes into the first compare register',
+  asrc='T2', alu='A', dst='DREG_XR', szsel='CAS')
+u('and the second extension word',
+  asrc='T1', alu='A', dst='XW', size='WORD')
+u('the second destination into the second compare register',
+  asrc='T3', alu='A', dst='DREG_XR', szsel='CAS', pf='ADV', seq='DECODE')
+
+# CAS2 is an immediate-mode encoding of CAS, which CAS cannot use, so it is
+# claimed first -- PRM 8.
+opcode('0000110011111100', 'cas2', 'CAS2.W')
+opcode('0000111011111100', 'cas2', 'CAS2.L')
+opcode('0000101011------', 'cas',  'CAS.B')
+opcode('0000110011------', 'cas',  'CAS.W')
+opcode('0000111011------', 'cas',  'CAS.L')
+
 # ==========================================================================
 # MOVEC -- PRM 6
 #

@@ -193,7 +193,6 @@ module rd68021_biu #(
   logic  [1:0] cyc_siz;
   logic  [2:0] cyc_n;        // bytes this cycle asks for: min(op_rem, 4)
   logic        cyc_rw;
-  logic        cyc_rmc;
 
   // ==========================================================================
   // Bus state. Two registers, one per edge.
@@ -732,7 +731,6 @@ module rd68021_biu #(
       cyc_siz    <= rd68021_pkg::SIZ_LONG;
       cyc_n      <= '0;
       cyc_rw     <= 1'b1;
-      cyc_rmc    <= 1'b0;
       req_ack    <= 1'b0;
       req_end_q  <= rd68021_pkg::CE_NONE;
       rst_pend_q <= 1'b0;
@@ -822,7 +820,6 @@ module rd68021_biu #(
         cyc_siz  <= this_siz;
         cyc_n    <= this_n;
         cyc_rw   <= next_rw;
-        cyc_rmc  <= next_rmc;
 
         if (take_rst || take_req || take_fetch) begin
           op_active  <= 1'b1;
@@ -991,7 +988,13 @@ module rd68021_biu #(
   assign a_o     = cyc_addr;
   assign siz_o   = cyc_siz;
   assign rw_o    = cyc_rw;
-  assign rmc_n_o = ~cyc_rmc;
+  // UM 5.5.2 makes RMC a qualifier over a RUN of cycles, not a property of one:
+  // it is asserted for the first cycle of a read-modify-write and stays
+  // asserted until the last one has finished, INCLUDING the clocks between
+  // them, because that is the whole point -- nothing else may get at the
+  // location in the gap. `rmc_hold` is exactly that run, and is already what
+  // inhibits arbitration.
+  assign rmc_n_o = ~rmc_hold;
   assign d_o     = wr_lanes;
 
   // Bus relinquish. Combinational on the way down so that the processor drives
@@ -1014,7 +1017,11 @@ module rd68021_biu #(
   assign a_oe   = addr_drive && !bus_granted;
   assign fc_oe  = a_oe;
   assign siz_oe = a_oe;
-  assign rmc_oe = a_oe;
+  // ... and it is DRIVEN for the whole of that run as well. The address may go
+  // to high impedance between cycles -- ADDR_HIZ_BETWEEN_CYCLES -- and if RMC
+  // followed it there, an external wrapper would three-state the one signal
+  // whose job is to stay asserted in the gap.
+  assign rmc_oe = (addr_drive || rmc_hold) && !bus_granted;
 
   // Write data is driven from the rising edge entering S2 and held through S5.
   // "When the processor completes a bus cycle with the HALT signal asserted, the

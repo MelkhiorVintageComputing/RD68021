@@ -317,8 +317,15 @@ module rd68021_seq #(
                             : rd68021_ucode_pkg::U_SIZE_WORD;
       rd68021_ucode_pkg::U_SZSEL_LATCHED:
         eff_size = size_q;
-      // PRM 8 gives CMP2, CHK2 and CAS their size in bits 10:9, which no other
-      // instruction uses for it.
+      // PRM 8: CAS and CAS2 number the same two bits from one, not from zero,
+      // and leave 00 unused.
+      rd68021_ucode_pkg::U_SZSEL_CAS:
+        unique case (stg_d[10:9])
+          2'b01:   eff_size = rd68021_ucode_pkg::U_SIZE_BYTE;
+          2'b10:   eff_size = rd68021_ucode_pkg::U_SIZE_WORD;
+          default: eff_size = rd68021_ucode_pkg::U_SIZE_LONG;
+        endcase
+      // PRM 8 gives CMP2 and CHK2 their size in bits 10:9 numbered from zero.
       rd68021_ucode_pkg::U_SZSEL_IR109:
         unique case (stg_d[10:9])
           2'b00:   eff_size = rd68021_ucode_pkg::U_SIZE_BYTE;
@@ -491,6 +498,7 @@ module rd68021_seq #(
       // Dq or Dl in bits 14:12, Dr or Dh in bits 2:0.
       rd68021_ucode_pkg::U_ASRC_DREG_XQ: a_bus = dreg[xw_q[14:12]];
       rd68021_ucode_pkg::U_ASRC_DREG_XR: a_bus = dreg[xw_q[2:0]];
+      rd68021_ucode_pkg::U_ASRC_DREG_XU: a_bus = dreg[xw_q[8:6]];
       rd68021_ucode_pkg::U_ASRC_CREG:  a_bus = creg_read;
       rd68021_ucode_pkg::U_ASRC_XREG:  a_bus = xreg_read;
       rd68021_ucode_pkg::U_ASRC_STG_C_HI: a_bus = {stg_c, 16'd0};
@@ -510,6 +518,7 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_BSRC_FOUR:  b_bus = 32'd4;
       rd68021_ucode_pkg::U_BSRC_SIX:    b_bus = 32'd6;
       rd68021_ucode_pkg::U_BSRC_EIGHT:  b_bus = 32'd8;
+      rd68021_ucode_pkg::U_BSRC_DREG_XR: b_bus = dreg[xw_q[2:0]];
       rd68021_ucode_pkg::U_BSRC_BF_BYTEOFF: b_bus = bf_byteoff;
       rd68021_ucode_pkg::U_BSRC_TWELVE: b_bus = 32'd12;
       // From rd68021_frame_pkg, which is generated from the same table the
@@ -1379,6 +1388,7 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_COND_MASTER: cond_true = master_mode;
       rd68021_ucode_pkg::U_COND_USER:  cond_true = ~super_mode;
       rd68021_ucode_pkg::U_COND_DIVZERO: cond_true = div_zero;
+      rd68021_ucode_pkg::U_COND_ZSET:    cond_true = flag_z;
       rd68021_ucode_pkg::U_COND_CSET:    cond_true = flag_c;
       rd68021_ucode_pkg::U_COND_VSET:    cond_true = flag_v;
       // PRM 4: the extension word of CMP2 and CHK2 says which of the two this

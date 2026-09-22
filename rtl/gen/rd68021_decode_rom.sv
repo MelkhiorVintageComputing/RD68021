@@ -12,7 +12,7 @@
 // priority chain and does not flatten it. assemble.py resolves the order once, in
 // Python, and proves the two tables agree over all 65536 opcodes.
 //
-// 325 ordered patterns became 838 disjoint ones.
+// 330 ordered patterns became 853 disjoint ones.
 
 module rd68021_decode_rom (
     input  logic [15:0]                         ir,
@@ -468,7 +468,7 @@ module rd68021_decode_rom (
       16'b1000???1101?????: entry = 13'd384;   // OR Dn,<ea>
       16'b1000???11001????: entry = 13'd384;   // OR Dn,<ea>
       16'b0000000000111100: entry = 13'd677;   // ORI #imm,CCR
-      16'b0000000001111100: entry = 13'd1230;   // ORI #imm,SR
+      16'b0000000001111100: entry = 13'd1267;   // ORI #imm,SR
       16'b0000000000000???: entry = 13'd421;   // ORI.B #imm,Dn
       16'b000000000001????: entry = 13'd422;   // ORI.B #imm,<ea>
       16'b0000000000001???: entry = 13'd422;   // ORI.B #imm,<ea>
@@ -490,7 +490,7 @@ module rd68021_decode_rom (
       16'b000000001001????: entry = 13'd425;   // ORI.L #imm,<ea>
       16'b0000000010001???: entry = 13'd425;   // ORI.L #imm,<ea>
       16'b0000001000111100: entry = 13'd675;   // ANDI #imm,CCR
-      16'b0000001001111100: entry = 13'd1227;   // ANDI #imm,SR
+      16'b0000001001111100: entry = 13'd1264;   // ANDI #imm,SR
       16'b0000001000000???: entry = 13'd432;   // ANDI.B #imm,Dn
       16'b000000100001????: entry = 13'd433;   // ANDI.B #imm,<ea>
       16'b0000001000001???: entry = 13'd433;   // ANDI.B #imm,<ea>
@@ -536,7 +536,7 @@ module rd68021_decode_rom (
       16'b000001101001????: entry = 13'd458;   // ADDI.L #imm,<ea>
       16'b0000011010001???: entry = 13'd458;   // ADDI.L #imm,<ea>
       16'b0000101000111100: entry = 13'd679;   // EORI #imm,CCR
-      16'b0000101001111100: entry = 13'd1233;   // EORI #imm,SR
+      16'b0000101001111100: entry = 13'd1270;   // EORI #imm,SR
       16'b0000101000000???: entry = 13'd465;   // EORI.B #imm,Dn
       16'b000010100001????: entry = 13'd466;   // EORI.B #imm,<ea>
       16'b0000101000001???: entry = 13'd466;   // EORI.B #imm,<ea>
@@ -593,9 +593,9 @@ module rd68021_decode_rom (
       16'b0101???110000???: entry = 13'd494;   // SUBQ.L #q,Dn
       16'b0101???1101?????: entry = 13'd495;   // SUBQ.L #q,<ea>
       16'b0101???11001????: entry = 13'd495;   // SUBQ.L #q,<ea>
-      16'b0101????11111100: entry = 13'd1249;   // TRAPcc
-      16'b0101????11111010: entry = 13'd1251;   // TRAPcc.W #d
-      16'b0101????11111011: entry = 13'd1254;   // TRAPcc.L #d
+      16'b0101????11111100: entry = 13'd1286;   // TRAPcc
+      16'b0101????11111010: entry = 13'd1288;   // TRAPcc.W #d
+      16'b0101????11111011: entry = 13'd1291;   // TRAPcc.L #d
       16'b0101????11001???: entry = 13'd506;   // DBcc Dn,#d16
       16'b0101????11000???: entry = 13'd499;   // Scc Dn
       16'b0101????1101????: entry = 13'd502;   // Scc <ea>
@@ -772,7 +772,7 @@ module rd68021_decode_rom (
       16'b0100100000000???: entry = 13'd808;   // NBCD Dn
       16'b01001000001?????: entry = 13'd810;   // NBCD <ea>
       16'b010010000001????: entry = 13'd810;   // NBCD <ea>
-      16'b0100101011111100: entry = 13'd1055;   // ILLEGAL
+      16'b0100101011111100: entry = 13'd1092;   // ILLEGAL
       16'b0100101011000???: entry = 13'd814;   // TAS Dn
       16'b010010101101????: entry = 13'd816;   // TAS <ea>
       16'b0100101011001???: entry = 13'd816;   // TAS <ea>
@@ -837,30 +837,45 @@ module rd68021_decode_rom (
       16'b11101111111?????: entry = 13'd1011;   // BFINS <ea>{o:w}
       16'b111011111101????: entry = 13'd1011;   // BFINS <ea>{o:w}
       16'b1110111111001???: entry = 13'd1011;   // BFINS <ea>{o:w}
-      16'b0100111001111010: entry = 13'd1019;   // MOVEC Rc,Rn
-      16'b0100111001111011: entry = 13'd1022;   // MOVEC Rn,Rc
-      16'b010011100100????: entry = 13'd1072;   // TRAP #n
-      16'b1010????????????: entry = 13'd1057;   // an A-line instruction
-      16'b1111????????????: entry = 13'd1059;   // an F-line instruction
-      16'b0100111001110000: entry = 13'd1240;   // RESET
-      16'b0100111001110010: entry = 13'd1242;   // STOP #imm
-      16'b0100111001110011: entry = 13'd1074;   // RTE
-      16'b0100011011000???: entry = 13'd1210;   // MOVE Dn,SR
-      16'b0100011011111100: entry = 13'd1212;   // MOVE #imm,SR
-      16'b010001101110????: entry = 13'd1217;   // MOVE <ea>,SR
-      16'b0100011011110???: entry = 13'd1217;   // MOVE <ea>,SR
-      16'b01000110111110??: entry = 13'd1217;   // MOVE <ea>,SR
-      16'b010001101111111?: entry = 13'd1217;   // MOVE <ea>,SR
-      16'b0100011011111101: entry = 13'd1217;   // MOVE <ea>,SR
-      16'b010001101101????: entry = 13'd1217;   // MOVE <ea>,SR
-      16'b0100011011001???: entry = 13'd1217;   // MOVE <ea>,SR
-      16'b0100000011000???: entry = 13'd1222;   // MOVE SR,Dn
-      16'b01000000111?????: entry = 13'd1224;   // MOVE SR,<ea>
-      16'b010000001101????: entry = 13'd1224;   // MOVE SR,<ea>
-      16'b0100000011001???: entry = 13'd1224;   // MOVE SR,<ea>
-      16'b0100111001100???: entry = 13'd1236;   // MOVE An,USP
-      16'b0100111001101???: entry = 13'd1238;   // MOVE USP,An
-      16'b0100111001110110: entry = 13'd1246;   // TRAPV
+      16'b0000110011111100: entry = 13'd1028;   // CAS2.W
+      16'b0000111011111100: entry = 13'd1028;   // CAS2.L
+      16'b0000101011??????: entry = 13'd1019;   // CAS.B
+      16'b00001100110?????: entry = 13'd1019;   // CAS.W
+      16'b000011001110????: entry = 13'd1019;   // CAS.W
+      16'b0000110011110???: entry = 13'd1019;   // CAS.W
+      16'b00001100111110??: entry = 13'd1019;   // CAS.W
+      16'b000011001111111?: entry = 13'd1019;   // CAS.W
+      16'b0000110011111101: entry = 13'd1019;   // CAS.W
+      16'b00001110110?????: entry = 13'd1019;   // CAS.L
+      16'b000011101110????: entry = 13'd1019;   // CAS.L
+      16'b0000111011110???: entry = 13'd1019;   // CAS.L
+      16'b00001110111110??: entry = 13'd1019;   // CAS.L
+      16'b000011101111111?: entry = 13'd1019;   // CAS.L
+      16'b0000111011111101: entry = 13'd1019;   // CAS.L
+      16'b0100111001111010: entry = 13'd1056;   // MOVEC Rc,Rn
+      16'b0100111001111011: entry = 13'd1059;   // MOVEC Rn,Rc
+      16'b010011100100????: entry = 13'd1109;   // TRAP #n
+      16'b1010????????????: entry = 13'd1094;   // an A-line instruction
+      16'b1111????????????: entry = 13'd1096;   // an F-line instruction
+      16'b0100111001110000: entry = 13'd1277;   // RESET
+      16'b0100111001110010: entry = 13'd1279;   // STOP #imm
+      16'b0100111001110011: entry = 13'd1111;   // RTE
+      16'b0100011011000???: entry = 13'd1247;   // MOVE Dn,SR
+      16'b0100011011111100: entry = 13'd1249;   // MOVE #imm,SR
+      16'b010001101110????: entry = 13'd1254;   // MOVE <ea>,SR
+      16'b0100011011110???: entry = 13'd1254;   // MOVE <ea>,SR
+      16'b01000110111110??: entry = 13'd1254;   // MOVE <ea>,SR
+      16'b010001101111111?: entry = 13'd1254;   // MOVE <ea>,SR
+      16'b0100011011111101: entry = 13'd1254;   // MOVE <ea>,SR
+      16'b010001101101????: entry = 13'd1254;   // MOVE <ea>,SR
+      16'b0100011011001???: entry = 13'd1254;   // MOVE <ea>,SR
+      16'b0100000011000???: entry = 13'd1259;   // MOVE SR,Dn
+      16'b01000000111?????: entry = 13'd1261;   // MOVE SR,<ea>
+      16'b010000001101????: entry = 13'd1261;   // MOVE SR,<ea>
+      16'b0100000011001???: entry = 13'd1261;   // MOVE SR,<ea>
+      16'b0100111001100???: entry = 13'd1273;   // MOVE An,USP
+      16'b0100111001101???: entry = 13'd1275;   // MOVE USP,An
+      16'b0100111001110110: entry = 13'd1283;   // TRAPV
       default: begin
         entry   = rd68021_ucode_pkg::ENTRY_ILLEGAL;
         illegal = 1'b1;

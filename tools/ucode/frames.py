@@ -266,7 +266,6 @@ EXEMPT = [
     ('biu', 'cyc_fc',       'its function code'),
     ('biu', 'cyc_rw',       'its direction'),
     ('biu', 'cyc_siz',      'its size code'),
-    ('biu', 'cyc_rmc',      'its RMC'),
     ('biu', 'cyc_n',        'how many bytes it asks for'),
     ('biu', 'd_latched',    'the data pins latched at S5'),
     ('biu', 'dsack_q',      'the port size the slave reported'),

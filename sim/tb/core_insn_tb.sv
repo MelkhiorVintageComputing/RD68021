@@ -19,6 +19,22 @@ module core_insn_tb;
   logic [15:0] got;
   int unsigned k;
 
+  // UM 5.5.2 and PRM 4: a compare-and-swap holds RMC across every cycle of the
+  // sequence, so that nothing else can get at the location in between. These
+  // count the cycles that ran while it was asserted and the times it was let
+  // go and taken again -- which must be never, within one instruction.
+  int unsigned rmc_cycles, rmc_breaks;
+  bit          rmc_seen;
+  always @(negedge clk) if (rst_n) begin
+    if (rmc_oe && !rmc_n_o) begin
+      rmc_cycles = rmc_cycles + 1;
+      rmc_seen   = 1'b1;
+    end else if (rmc_seen) begin
+      rmc_breaks = rmc_breaks + 1;
+      rmc_seen   = 1'b0;
+    end
+  end
+
   // One CMP2 or CHK2: the bounds pair at DATA, the register loaded, and the
   // codes read back out of the status register.
   //
@@ -256,6 +272,129 @@ module core_insn_tb;
           "stepping: (A1)+ at a byte gives $00000081, not a sign extension");
     check(dut.u_seq.dreg[0][15:0] === 16'h1234, "stepping: and the word read");
     check(dut.u_seq.dreg[2][15:0] === 16'h1234, "stepping: ... and read back");
+
+
+    // ======================================================================
+    // CAS -- PRM 4. "Compares the effective address operand to the compare
+    // operand (Dc). If the operands are equal, the instruction writes the
+    // update operand (Du) to the effective address operand; otherwise, the
+    // instruction writes the effective address operand to the compare operand
+    // (Dc)."
+    //
+    // Both outcomes, and RMC held across the whole of each.
+    // ======================================================================
+    setup();
+    poke_l(DATA, 32'h1234_5678);
+    poke_w(CODE +  0, 16'h247C);           // MOVEA.L #DATA,A2
+    poke_l(CODE +  2, DATA);
+    poke_w(CODE +  6, 16'h223C);           // MOVE.L #$12345678,D1  -- matches
+    poke_l(CODE +  8, 32'h1234_5678);
+    poke_w(CODE + 12, 16'h243C);           // MOVE.L #$AAAABBBB,D2  -- the update
+    poke_l(CODE + 14, 32'hAAAA_BBBB);
+    poke_w(CODE + 18, 16'h0ED2);           // CAS.L D1,D2,(A2)
+    poke_w(CODE + 20, 16'h0081);           //   Du = D2, Dc = D1
+    poke_w(CODE + 22, 16'h60FE);
+    reset_dut();
+    rmc_cycles = 0; rmc_breaks = 0; rmc_seen = 1'b0;
+    run_until(CODE + 22, 2000, reached);
+    check(reached, "CAS match: the program finishes");
+    check(peek_l(DATA) === 32'hAAAA_BBBB,
+          "CAS match: the update operand went to memory");
+    check(dut.u_seq.dreg[1] === 32'h1234_5678,
+          "CAS match: the compare register is untouched");
+    check(dut.u_seq.sr_q[2] === 1'b1, "CAS match: Z says so");
+    check(rmc_breaks <= 1,
+          "CAS match: RMC was held across the read and the write, unbroken");
+    check(rmc_cycles > 0, "CAS match: ... and it was asserted at all");
+
+    setup();
+    poke_l(DATA, 32'h1234_5678);
+    poke_w(CODE +  0, 16'h247C);
+    poke_l(CODE +  2, DATA);
+    poke_w(CODE +  6, 16'h223C);           // MOVE.L #$0BADC0DE,D1 -- differs
+    poke_l(CODE +  8, 32'h0BAD_C0DE);
+    poke_w(CODE + 12, 16'h243C);
+    poke_l(CODE + 14, 32'hAAAA_BBBB);
+    poke_w(CODE + 18, 16'h0ED2);           // CAS.L D1,D2,(A2)
+    poke_w(CODE + 20, 16'h0081);
+    poke_w(CODE + 22, 16'h60FE);
+    reset_dut();
+    rmc_cycles = 0; rmc_breaks = 0; rmc_seen = 1'b0;
+    run_until(CODE + 22, 2000, reached);
+    check(reached, "CAS miss: the program finishes");
+    check(peek_l(DATA) === 32'h1234_5678,
+          "CAS miss: memory is untouched");
+    check(dut.u_seq.dreg[1] === 32'h1234_5678,
+          "CAS miss: what memory held went into the compare register");
+    check(dut.u_seq.sr_q[2] === 1'b0, "CAS miss: Z says so");
+    check(rmc_breaks <= 1, "CAS miss: RMC was held and let go once");
+
+    // ======================================================================
+    // CAS2 -- PRM 4. Two locations at once, with the whole of it indivisible.
+    // "If either comparison fails, the instruction writes the memory operands
+    // (Rn1 and Rn2) to the compare operands (Dc1 and Dc2)" -- BOTH of them,
+    // which is why both are read before either is compared.
+    // ======================================================================
+    setup();
+    poke_l(DATA,      32'h1111_1111);
+    poke_l(DATA + 8,  32'h2222_2222);
+    poke_w(CODE +  0, 16'h247C);           // MOVEA.L #DATA,A2
+    poke_l(CODE +  2, DATA);
+    poke_w(CODE +  6, 16'h267C);           // MOVEA.L #DATA+8,A3
+    poke_l(CODE +  8, DATA + 8);
+    poke_w(CODE + 12, 16'h203C);           // MOVE.L #$11111111,D0
+    poke_l(CODE + 14, 32'h1111_1111);
+    poke_w(CODE + 18, 16'h223C);           // MOVE.L #$22222222,D1
+    poke_l(CODE + 20, 32'h2222_2222);
+    poke_w(CODE + 24, 16'h243C);           // MOVE.L #$AAAA0001,D2
+    poke_l(CODE + 26, 32'hAAAA_0001);
+    poke_w(CODE + 30, 16'h263C);           // MOVE.L #$BBBB0002,D3
+    poke_l(CODE + 32, 32'hBBBB_0002);
+    poke_w(CODE + 36, 16'h0EFC);           // CAS2.L
+    poke_w(CODE + 38, 16'hA080);           //   Rn1 = A2, Du1 = D2, Dc1 = D0
+    poke_w(CODE + 40, 16'hB0C1);           //   Rn2 = A3, Du2 = D3, Dc2 = D1
+    poke_w(CODE + 42, 16'h60FE);
+    reset_dut();
+    rmc_cycles = 0; rmc_breaks = 0; rmc_seen = 1'b0;
+    run_until(CODE + 42, 3000, reached);
+    check(reached, "CAS2 match: the program finishes");
+    check(peek_l(DATA)     === 32'hAAAA_0001, "CAS2 match: the first update landed");
+    check(peek_l(DATA + 8) === 32'hBBBB_0002, "CAS2 match: and the second");
+    check(rmc_breaks <= 1,
+          "CAS2 match: RMC was held across all four transfers, unbroken");
+
+    // ... and with the SECOND comparison failing, so that both compare
+    // registers are loaded although the first one matched.
+    setup();
+    poke_l(DATA,      32'h1111_1111);
+    poke_l(DATA + 8,  32'h9999_9999);      // not what D1 holds
+    poke_w(CODE +  0, 16'h247C);
+    poke_l(CODE +  2, DATA);
+    poke_w(CODE +  6, 16'h267C);
+    poke_l(CODE +  8, DATA + 8);
+    poke_w(CODE + 12, 16'h203C);
+    poke_l(CODE + 14, 32'h1111_1111);
+    poke_w(CODE + 18, 16'h223C);
+    poke_l(CODE + 20, 32'h2222_2222);
+    poke_w(CODE + 24, 16'h243C);
+    poke_l(CODE + 26, 32'hAAAA_0001);
+    poke_w(CODE + 30, 16'h263C);
+    poke_l(CODE + 32, 32'hBBBB_0002);
+    poke_w(CODE + 36, 16'h0EFC);
+    poke_w(CODE + 38, 16'hA080);
+    poke_w(CODE + 40, 16'hB0C1);
+    poke_w(CODE + 42, 16'h60FE);
+    reset_dut();
+    rmc_cycles = 0; rmc_breaks = 0; rmc_seen = 1'b0;
+    run_until(CODE + 42, 3000, reached);
+    check(reached, "CAS2 miss: the program finishes");
+    check(peek_l(DATA)     === 32'h1111_1111, "CAS2 miss: neither location moved");
+    check(peek_l(DATA + 8) === 32'h9999_9999, "CAS2 miss: ... nor the second");
+    check(dut.u_seq.dreg[0] === 32'h1111_1111,
+          "CAS2 miss: the first compare register took what memory held");
+    check(dut.u_seq.dreg[1] === 32'h9999_9999,
+          "CAS2 miss: and so did the second, though it was the one that failed");
+    check(rmc_breaks <= 1, "CAS2 miss: RMC was held across both reads");
 
     if (pipe_fails != 0)
       $display("  FAIL: the pipe invariant broke %0d times", pipe_fails);
