@@ -2018,6 +2018,10 @@ u('a six-word frame?',
   seq='COND', cond='FMT2', next='rte_six')
 u('a four-word one?',
   seq='COND', cond='FMT0', next='rte_four')
+u('a short bus fault frame?',
+  seq='COND', cond='FMTA', next='rte_fault_short')
+u('a long one?',
+  seq='COND', cond='FMTB', next='rte_fault_long')
 u('and anything else is a format error -- UM 6.1.8',
   next='exc_format')
 
@@ -2076,6 +2080,114 @@ u('write the status register, which chooses the stack the next frame is on',
   asrc='T3', alu='A', dst='SR', size='WORD')
 u('and do it all again',
   next='rte')
+
+
+
+# ==========================================================================
+# RTE out of a bus fault frame -- UM 6.2.3 and doc/ssw.md
+#
+# "Another method of completing a faulted bus cycle is to allow the processor to
+# rerun the bus cycles during execution of the RTE instruction that terminates
+# the exception handler. The RTE instruction is always executed. Unless the
+# handler routine has corrected the error and cleared the fault (and cleared the
+# RB/RC and DF bits of the SSW), the RTE instruction cannot complete the bus
+# cycle(s)."
+#
+# So this routine does three things in order: put the whole machine back, rerun
+# what the special status word still asks for, and jump to the micro-address the
+# frame carries. The third is a jump and nothing else, because doc/checkpoint.md
+# rule 2 made the faulted microword re-executable: it committed nothing, so
+# running it again reissues exactly the same request.
+#
+# The frame is read with `ea_save`, which is the one register in the set that
+# RTE does not have to put back -- the slot it lands in at +$3C is the
+# exception's own pointer and means nothing afterwards. Everything else is read
+# straight into the register it came from, in an order in which each one is dead
+# by the time it is written.
+#
+# The status register comes LAST and the stack pointer is stepped before it, for
+# the reason UM 6.1.12 gives the four-word frame: writing the status register is
+# what decides which of the three stack pointers A7 means.
+# ==========================================================================
+def rte_fault(stem, long_frame):
+    label(stem)
+    u('the frame base, which is where the walk starts',
+      asrc='SP', alu='A', dst='EA_SAVE', size='LONG')
+
+    fields = [
+        (0x02, 4, 'PC_D'),
+        (0x08, 2, 'INT08'),
+        (0x0A, 2, 'SSW'),
+        (0x0C, 2, 'STG_C'),
+        (0x0E, 2, 'STG_B'),
+        (0x10, 4, 'DFA'),
+        (0x14, 2, 'RUPC'),
+        (0x16, 2, 'STG_D'),
+        (0x18, 4, 'DOB'),
+    ]
+    if long_frame:
+        fields += [
+            (0x1C, 4, 'T0'),
+            (0x20, 4, 'T1'),
+            (0x24, 4, 'FILL'),
+            (0x28, 4, 'T2'),
+            (0x2C, 4, 'DIB'),
+            (0x30, 4, 'T3'),
+            (0x34, 2, 'XW'),
+            (0x36, 2, 'INT36'),
+            (0x38, 4, 'EA'),
+            (0x44, 2, 'LINK'),
+            (0x46, 4, 'PC_PREV'),
+        ]
+    else:
+        # UM 6.2: "when the short bus fault stack frame applies, the address of
+        # the pipe stage B word is the value in the PC plus four". The long
+        # frame carries that address; the short one is only ever built at an
+        # instruction boundary, where the pipe is sequential and the arithmetic
+        # is exact, so it is derived rather than read.
+        fields += [(0x1C, 2, 'INT36')]
+
+    at = 0
+    for off, nbytes, dst in fields:
+        step = off - at
+        u('... to +$%02X' % off,
+          asrc='EA_SAVE', bsrc={2: 'TWO', 4: 'FOUR', 6: 'SIX', 8: 'EIGHT',
+                                12: 'TWELVE'}[step],
+          alu='ADD', dst='EA_SAVE', size='LONG')
+        u('read +$%02X' % off,
+          bus='READ', fc='DATA', asel='EA_SAVE', bytes=nbytes)
+        u('... into %s' % dst.lower(),
+          asrc='RDATA', alu='A', dst=dst, size='LONG' if nbytes == 4 else 'WORD')
+        at = off
+
+    if not long_frame:
+        u('stage B is at the program counter plus four -- UM 6.2',
+          asrc='PC_D', bsrc='FOUR', alu='ADD', dst='FILL', size='LONG')
+
+    u('the pipe is whole again, and its depth is what the rerun bits say',
+      dst='PIPE_F')
+    u('+$00: the status register, read while the stack pointer is still the base',
+      bus='READ', fc='DATA', asel='SP', bytes=2)
+    u('the stack pointer, past the frame, while it is still this stack',
+      asrc='SP', bsrc='FRAME_B_BYTES' if long_frame else 'FRAME_A_BYTES',
+      alu='ADD', dst='SP', size='LONG')
+    u('and now the status register, which may change which stack that was',
+      asrc='RDATA', alu='A', dst='SR', size='WORD',
+      seq='COND', cond='SSW_DF', next=stem + '_rerun')
+    u('nothing left to rerun: the handler did the access itself -- UM 6.2.2',
+      seq='RESUME')
+
+    label(stem + '_rerun')
+    # UM 6.2.3: "if the DF bit is still set at the time of the RTE execution, the
+    # faulted data cycle is rerun by the RTE instruction". The bus unit is handed
+    # the residual, not a fresh request: doc/checkpoint.md rule 3, the unit of
+    # restart is the operand.
+    u('rerun the faulted data access',
+      rstop=1, seq='RESUME')
+
+
+rte_fault('rte_fault_short', False)
+rte_fault('rte_fault_long', True)
 
 exc_here('exc_format', 14, executed=True)
 

@@ -55,6 +55,9 @@ SEQ = enc(
                  # that one opcode pattern covers every addressing mode instead
                  # of one pattern per mode
     'RET',       # return to the micro-address in the link register
+    'RESUME',    # ... or to the one RTE read out of a fault frame, which is the
+                 # microword that faulted: doc/checkpoint.md rule 2 makes it
+                 # re-executable, so resuming is a jump and nothing else
 )
 
 # Conditions the COND arm can test. M5 needs none of them yet; the field exists
@@ -81,6 +84,12 @@ COND = enc(
     'FMT0',      # the format word in xw says a four-word frame
     'FMT1',      # ... a throwaway four-word frame
     'FMT2',      # ... a six-word frame
+    'FMTA',      # ... a short bus fault frame
+    'FMTB',      # ... and a long one
+    # UM 6.2.2: the three bits of the special status word a handler is allowed
+    # to have changed, plus the two that say what the faulted access was, which
+    # RTE needs to know which buffer to rerun it from.
+    'SSW_DF', 'SSW_RB', 'SSW_RC', 'SSW_RW', 'SSW_RM',
     'MASTER',    # the M bit is set, so the active supervisor stack is the
                  # master one and an interrupt owes a throwaway frame -- UM 6.1.9
     'USER',      # the S bit is clear: a privileged instruction may not run
@@ -114,6 +123,9 @@ ASEL = enc(
     'T1',
     'T2',
     'T3',
+    'SP',        # whichever of the three the S and M bits select. RTE reads the
+                 # frame it was handed through this, which is what makes the
+                 # frame base reachable again after the walk has moved on.
     'EA',        # the address output buffer
     'EA_SAVE',   # ... and the exception's own, which is a second one so that a
                  # fault frame can be built without disturbing the first: a bus
@@ -322,6 +334,14 @@ DST = enc(
     'SR',
     'EA',
     'EA_SAVE',   # the exception's own frame pointer -- see ASEL
+    # RTE putting a fault frame back, one field per microword. The six that name
+    # a pipe field go out over the checkpoint port to rd68021_ifu; the two
+    # packed words are unpacked here into the registers they came from.
+    'STG_D', 'STG_C', 'STG_B', 'PC_D', 'FILL', 'PIPE_F',
+    'INT08', 'INT36',
+    'LINK', 'PC_PREV',
+    'SSW', 'DFA', 'DOB', 'DIB',
+    'RUPC',      # the micro-address to resume at
     'AREG_EA',   # the address register the EA field names, for (An)+ and -(An)
     'DREG_R',    # the data register bits 2:0 name -- the destination when the
                  # effective address IS a register, which is every one-operand
@@ -453,7 +473,7 @@ FIELDS = OrderedDict([
     ('asrc',  (6,  ASRC,  'ZERO')),
     ('bsrc',  (5,  BSRC,  'ZERO')),
     ('alu',   (5,  ALU,   'A')),
-    ('dst',   (5,  DST,   'NONE')),
+    ('dst',   (6,  DST,   'NONE')),
     ('size',  (2,  SIZE,  'LONG')),
     ('ccr',   (5,  CCR,   'NONE')),
     ('szsel', (3,  SZSEL, 'FIXED')),
@@ -506,10 +526,11 @@ FIELDS = OrderedDict([
     # PRM 6 RESET: "asserts the RSTO signal for 512 clock periods". The bus unit
     # owns the pin and the counter; this bit asks for it and stalls until done.
     ('rsto',  (1,  None,  0)),
-    # UM 6.2.3. RTE reads DF, RB and RC out of the frame and may owe reruns
-    # after it has finished restoring the context; this bit says so, and it is
-    # cleared at the instruction boundary the reruns are finished at.
-    ('rrset', (1,  None,  0)),
+    # UM 6.2.3: "the faulted data cycle is rerun by the RTE instruction". The
+    # bus unit is handed the residual out of the frame and finishes the operand;
+    # this bit is what hands it over, and the microword stalls on the
+    # acknowledge like any other.
+    ('rstop', (1,  None,  0)),
     ('eadst', (1,  None,  0)),
     # Whether the base of an indexed effective address is the program counter or
     # an address register. It is in the OPCODE, not the extension word, so the

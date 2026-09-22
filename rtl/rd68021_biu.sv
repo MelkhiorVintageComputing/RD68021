@@ -586,6 +586,7 @@ module rd68021_biu #(
   // ==========================================================================
   // Starting a cycle, and starting an operand
   // ==========================================================================
+  logic        take_rst;
   logic        take_req;
   logic        take_fetch;
   logic [31:0] next_addr;
@@ -596,8 +597,14 @@ module rd68021_biu #(
 
   // A new operand may be taken when none is active, or at the very edge the
   // active one completes.
-  assign take_req   = !op_continuing && req_valid;
-  assign take_fetch = !op_continuing && !req_valid && fetch_valid;
+  // UM 6.2.3: RTE "reruns the faulted data access". It is the SAME operand, not
+  // a new one -- doc/checkpoint.md rule 3, the unit of restart is the operand --
+  // so it comes in with the residual the frame carried and the bytes already
+  // gathered, and outranks anything the sequencer or the pipe is asking for.
+  assign take_rst   = !op_continuing && rst_op_valid;
+  assign take_req   = !op_continuing && !rst_op_valid && req_valid;
+  assign take_fetch = !op_continuing && !rst_op_valid && !req_valid
+                   && fetch_valid;
 
   // CPU space synthesises its address from the type field -- UM figure 5-31.
   logic [31:0] cpu_space_addr;
@@ -616,7 +623,13 @@ module rd68021_biu #(
   end
 
   always_comb begin
-    if (take_req) begin
+    if (take_rst) begin
+      next_addr = rst_addr;
+      next_rem  = rst_bytes;
+      next_fc   = rst_fc;
+      next_rw   = rst_rw;
+      next_rmc  = rst_rmc;
+    end else if (take_req) begin
       next_addr = (req_fc == rd68021_pkg::FC_CPU) ? cpu_space_addr : req_addr;
       next_rem  = req_bytes;
       next_fc   = req_fc;
@@ -781,7 +794,7 @@ module rd68021_biu #(
         cyc_rw   <= next_rw;
         cyc_rmc  <= next_rmc;
 
-        if (take_req || take_fetch) begin
+        if (take_rst || take_req || take_fetch) begin
           op_active  <= 1'b1;
           op_addr    <= next_addr;
           op_rem     <= next_rem;
@@ -790,8 +803,11 @@ module rd68021_biu #(
           op_rmc     <= next_rmc;
           op_first   <= 1'b1;
           op_isfetch <= take_fetch;
-          if (take_fetch) op_data <= '0;
-          else            op_data <= req_wdata;
+          // A restarted operand keeps what it had already transferred: the
+          // residual says how much is left, and the buffer holds the rest.
+          if (take_rst)        op_data <= {8'd0, rst_dob};
+          else if (take_fetch) op_data <= '0;
+          else                 op_data <= req_wdata;
         end
       end else if ((st_p_nxt == rd68021_pkg::ST_IDLE) && !req_rmc) begin
         // Nothing locked is pending and the bus is going idle, so let go of RMC

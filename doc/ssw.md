@@ -91,7 +91,7 @@ handler left:
 |---|---|
 | `DF` set | rerun the faulted data access from `flt_*` restored into the bus unit, and — if `RM` is also set — rerun the whole read-modify-write |
 | `DF` clear, `RM` set | UM 6.2.2: "the RTE instruction expects the entire operation to have been completed". Retire the instruction |
-| `RC` or `RB` set | run the prefetch for that stage. `FC`/`FB` set as well means the cycle faulted and is rerun; clear means the stage was merely pending |
+| `RC` or `RB` set | run the prefetch for that stage. `FC`/`FB` set as well means the cycle faulted and is rerun; clear means the stage was merely pending. This core expresses it as the **queue depth**: RC and RB say which stages RTE still owes a word, the depth comes back from them, and a queue with room asks the bus unit for the next long word by itself. There is no separate rerun path for a prefetch to get wrong, and no flag carried across the rest of the RTE |
 | `RC`, `RB`, `DF` all clear | the images on the stack are taken as valid and nothing is rerun |
 
 "If a fault occurs when the RTE instruction attempts to rerun the bus cycle(s),

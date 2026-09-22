@@ -129,7 +129,6 @@ This is a cycle-count divergence, measured and justified in
 |---|---|---|---|
 | `+$08` | 2:0 | `bytes` | residual byte count of the faulted operand |
 | `+$08` | 4 | `notrace` | the trace pending for this instruction was cancelled |
-| `+$08` | 5 | `rr_pending` | a rerun flag out of the frame is still to be applied |
 | `+$08` | 6 | `eapc` | the base of the effective address under way is the PC |
 | `+$08` | 8:7 | `opsize` | the operand size the dispatching microword resolved |
 | `+$08` | 9 | `eadst` | the effective address under way is a MOVE destination |
@@ -151,7 +150,7 @@ This is a cycle-count divergence, measured and justified in
 | `+$40` | 31:0 | `pc_fetch` | the next long word the pipe will fetch |
 | `+$44` | 15:0 | `link` | the return address of the subroutine under way |
 
-**492 bits available, 339 used, 9 words spare** (`+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
+**492 bits available, 338 used, 9 words spare** (`+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
 
 ### The frozen set
 
@@ -188,7 +187,6 @@ This is a cycle-count divergence, measured and justified in
 | `seq` | `ea_save` | 32 | `ea_save` | the frame builder's own pointer, so that ea_q -- which is the instruction's and is +$38 -- is not disturbed. RTE ignores what lands in this slot |
 | `seq` | `xw_q` | 16 | `xw` |  |
 | `seq` | `notrace_q` | 1 | `notrace` | the instruction was never executed, so UM 6.1.7 does not trace it |
-| `seq` | `rr_pending_q` | 1 | `rr_pending` |  |
 | `seq` | `eapc_q` | 1 | `eapc` | seq = EADEC latches it; EABASE reads it |
 | `seq` | `size_q` | 2 | `opsize` | seq = EAMODE latches it; the shared EA routines read it |
 | `seq` | `eadst_q` | 1 | `eadst` | likewise, and rsel reads it |
@@ -296,6 +294,31 @@ afterwards.
 8. **Recompute the budget on every addition.** The table above is printed from the
    source, so it cannot be out of date; the discipline is that the number is
    looked at.
+
+---
+
+## How RTE puts it back
+
+The restore is one microword per field, read straight into the register the
+field came from, in an order in which each one is dead by the time it is
+written. Three things about it are worth stating, because each is a decision:
+
+- **The read pointer is `ea_save`.** It is the one register in the set RTE does
+  not have to put back: the slot it lands in at `+$3C` held the frame builder's
+  own pointer and means nothing afterwards.
+- **The queue depth is not in the frame.** `RC` and `RB` are, and they say which
+  stages RTE still owes a word; the depth comes back from them. A queue with
+  room asks the bus unit for the next long word by itself, so UM 6.2.3's "the
+  processor may execute a bus cycle to prefetch the instruction word for stage C
+  of the pipe (if it is required)" happens with no separate rerun path at all.
+- **Resuming is a jump and nothing else.** Rule 2 is what buys that: the faulted
+  microword committed nothing, so re-executing it reissues exactly the same
+  request. `seq = RESUME` sets the micro-address from the frame and there is no
+  restart sequence to get wrong.
+
+The status register is written last and the stack pointer is stepped before it,
+for the reason UM 6.1.12 gives the four-word frame: writing the status register
+is what decides which of the three stack pointers A7 means.
 
 ---
 

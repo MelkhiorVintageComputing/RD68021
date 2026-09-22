@@ -73,6 +73,9 @@ module rd68021_seq #(
     input  logic [31:0] pc_d,
     input  logic [31:0] stg_b_addr,
     output logic        ckpt_save,
+    output logic        ckpt_wr,
+    output logic  [2:0] ckpt_sel,
+    output logic [31:0] ckpt_data,
     output logic        ckpt_load,
     input  logic [31:0] ckpt_pc_fetch,
 
@@ -1091,15 +1094,28 @@ module rd68021_seq #(
   // processor enters the halted state". This is the window.
   logic        g0_q;
 
-  // UM 6.2.3: RTE may still owe the reruns the frame asked for once it has put
-  // the context back.
-  logic        rr_pending_q;
 
   // The faulted microword's own address. By the time the builder writes frame
   // field +$14 its own micro-address is deep inside itself, and the fault entry
   // replaced `upc` on the very edge the fault was reported, so this is the only
   // moment the value exists.
   logic [rd68021_ucode_pkg::UADDR-1:0] flt_upc;
+
+  // What RTE has read back so far. The special status word arrives several
+  // microwords before the pipe's flags can be written, because the pipe needs
+  // stage D's fault bit out of the OTHER packed word; these two hold the halves
+  // until they can be put together. Neither survives the instruction.
+  // doc/ssw.md: the word is assembled when a frame is built and taken apart
+  // when RTE reads one back, and is never stored. These are the bits of it this
+  // core acts on; the reserved ones and SIZE are not among them, because the
+  // residual byte count comes out of the internal word, which can say five and
+  // UM table 5-2's two-bit field cannot.
+  logic        rs_fc_q, rs_fb_q, rs_rc_q, rs_rb_q;
+  logic        rs_df_q, rs_rm_q, rs_rw_q;
+  logic  [2:0] rs_space_q;
+  logic        rdf_q;
+  // ... and the micro-address to resume at.
+  logic [rd68021_ucode_pkg::UADDR-1:0] rupc_q;
 
   // UM figure 6-8. Two halves about two different things, assembled here and
   // never stored: the pipe owns FC, FB, RC and RB, and the bus unit owns the
@@ -1130,7 +1146,6 @@ module rd68021_seq #(
     int08 = 16'd0;
     int08[rd68021_frame_pkg::I_BYTES_LO      +: 3] = flt_bytes;
     int08[rd68021_frame_pkg::I_NOTRACE_LO    +: 1] = notrace_q;
-    int08[rd68021_frame_pkg::I_RR_PENDING_LO +: 1] = rr_pending_q;
     int08[rd68021_frame_pkg::I_EAPC_LO       +: 1] = eapc_q;
     int08[rd68021_frame_pkg::I_OPSIZE_LO     +: 2] = size_q;
     int08[rd68021_frame_pkg::I_EADST_LO      +: 1] = eadst_q;
@@ -1213,6 +1228,17 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_COND_FMT0:  cond_true = (xw_q[15:12] == 4'h0);
       rd68021_ucode_pkg::U_COND_FMT1:  cond_true = (xw_q[15:12] == 4'h1);
       rd68021_ucode_pkg::U_COND_FMT2:  cond_true = (xw_q[15:12] == 4'h2);
+      rd68021_ucode_pkg::U_COND_FMTA:  cond_true = (xw_q[15:12] == 4'hA);
+      rd68021_ucode_pkg::U_COND_FMTB:  cond_true = (xw_q[15:12] == 4'hB);
+      // UM 6.2.2: "the only bits in the SSW that may be modified are DF, RB, and
+      // RC", so these three are the whole of what a handler can tell RTE, and
+      // doc/checkpoint.md's rule on bus-steering conditions admits them: every
+      // one is a single bit of a register whose only source is read data.
+      rd68021_ucode_pkg::U_COND_SSW_DF: cond_true = rs_df_q;
+      rd68021_ucode_pkg::U_COND_SSW_RB: cond_true = rs_rb_q;
+      rd68021_ucode_pkg::U_COND_SSW_RC: cond_true = rs_rc_q;
+      rd68021_ucode_pkg::U_COND_SSW_RW: cond_true = rs_rw_q;
+      rd68021_ucode_pkg::U_COND_SSW_RM: cond_true = rs_rm_q;
       rd68021_ucode_pkg::U_COND_MASTER: cond_true = master_mode;
       rd68021_ucode_pkg::U_COND_USER:  cond_true = ~super_mode;
       rd68021_ucode_pkg::U_COND_DIVZERO: cond_true = div_zero;
@@ -1311,6 +1337,7 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_ASEL_T1:   req_addr_sel = t_q[1];
       rd68021_ucode_pkg::U_ASEL_T2:   req_addr_sel = t_q[2];
       rd68021_ucode_pkg::U_ASEL_T3:   req_addr_sel = t_q[3];
+      rd68021_ucode_pkg::U_ASEL_SP:   req_addr_sel = sp_read;
       rd68021_ucode_pkg::U_ASEL_EA:   req_addr_sel = ea_q;
       // A bus fault is taken mid-instruction, so the frame is built with a
       // pointer of its own and the instruction's address buffer is left alone:
@@ -1434,6 +1461,10 @@ module rd68021_seq #(
         rd68021_ucode_pkg::U_SEQ_EADEC:  upc_nxt = ea_entry;
         rd68021_ucode_pkg::U_SEQ_EAMODE: upc_nxt = eam_entry;
         rd68021_ucode_pkg::U_SEQ_RET:    upc_nxt = link_q;
+        // doc/checkpoint.md rule 2 is what makes this a jump and nothing else:
+        // the microword that faulted committed nothing, so re-executing it
+        // reissues exactly the same request.
+        rd68021_ucode_pkg::U_SEQ_RESUME: upc_nxt = rupc_q;
         // Branch when the condition holds, fall through when it does not.
         rd68021_ucode_pkg::U_SEQ_COND:   upc_nxt = cond_true ? `UF(NEXT)
                                                              : upc + 1'b1;
@@ -1470,7 +1501,19 @@ module rd68021_seq #(
       notrace_q    <= 1'b0;
       pc_prev_q    <= '0;
       pc_kept_q    <= 1'b0;
-      rr_pending_q <= 1'b0;
+      rs_fc_q      <= 1'b0;
+      rs_fb_q      <= 1'b0;
+      rs_rc_q      <= 1'b0;
+      rs_rb_q      <= 1'b0;
+      rs_df_q      <= 1'b0;
+      rs_rm_q      <= 1'b0;
+      rs_rw_q      <= 1'b1;
+      rs_space_q   <= 3'd0;
+      rdf_q        <= 1'b0;
+      rupc_q       <= '0;
+      rst_addr_q   <= '0;
+      rst_data_q   <= '0;
+      rst_bytes_q  <= 3'd0;
       size_q  <= rd68021_ucode_pkg::U_SIZE_LONG;
       for (i_r = 0; i_r < 8; i_r = i_r + 1) dreg[i_r] <= '0;
       for (i_r = 0; i_r < 7; i_r = i_r + 1) areg[i_r] <= '0;
@@ -1505,7 +1548,6 @@ module rd68021_seq #(
         if (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE) begin
           eapc_q  <= 1'b0;
           eadst_q <= 1'b0;
-          rr_pending_q <= 1'b0;
           // The instruction that is about to start. Its trace mode is the one
           // the status register holds NOW -- UM 6.1.7 -- and it has not
           // changed the flow yet.
@@ -1537,7 +1579,6 @@ module rd68021_seq #(
           if (`UF(PF) == rd68021_ucode_pkg::U_PF_FLUSH
               || `UF(DST) == rd68021_ucode_pkg::U_DST_SR) flow_q <= 1'b1;
           if (`UF(NOTRACE)) notrace_q <= 1'b1;
-          if (`UF(RRSET))   rr_pending_q <= 1'b1;
         end
 
         unique case (`UF(DST))
@@ -1546,6 +1587,47 @@ module rd68021_seq #(
           rd68021_ucode_pkg::U_DST_T2: t_q[2] <= y;
           rd68021_ucode_pkg::U_DST_T3: t_q[3] <= y;
           rd68021_ucode_pkg::U_DST_XW: xw_q   <= y[15:0];
+          // ------------------------------------------------------------------
+          // RTE putting a fault frame back. The two packed words are unpacked
+          // into exactly the registers they were packed from, and the positions
+          // come from rd68021_frame_pkg at both ends, so the pair cannot drift.
+          // ------------------------------------------------------------------
+          rd68021_ucode_pkg::U_DST_INT08: begin
+            notrace_q    <= y[rd68021_frame_pkg::I_NOTRACE_LO];
+            eapc_q       <= y[rd68021_frame_pkg::I_EAPC_LO];
+            size_q       <= y[rd68021_frame_pkg::I_OPSIZE_LO +: 2];
+            eadst_q      <= y[rd68021_frame_pkg::I_EADST_LO];
+            cnt_q        <= y[rd68021_frame_pkg::I_REGCNT_LO +: 5];
+            // The residual byte count, which UM table 5-2's SIZE field in the
+            // special status word cannot hold when it is five -- doc/ssw.md.
+            rst_bytes_q  <= y[rd68021_frame_pkg::I_BYTES_LO +: 3];
+          end
+          rd68021_ucode_pkg::U_DST_INT36: begin
+            rdf_q        <= y[rd68021_frame_pkg::I_STAGE_D_F_LO];
+            trace_mode_q <= y[rd68021_frame_pkg::I_TRMODE_LO +: 2];
+            flow_q       <= y[rd68021_frame_pkg::I_FLOW_LO];
+            pc_kept_q    <= y[rd68021_frame_pkg::I_PC_KEPT_LO];
+          end
+          rd68021_ucode_pkg::U_DST_SSW: begin
+            rs_fc_q    <= y[15];
+            rs_fb_q    <= y[14];
+            rs_rc_q    <= y[13];
+            rs_rb_q    <= y[12];
+            rs_df_q    <= y[8];
+            rs_rm_q    <= y[7];
+            rs_rw_q    <= y[6];
+            rs_space_q <= y[2:0];
+          end
+          rd68021_ucode_pkg::U_DST_DFA:     rst_addr_q <= y;
+          // The two buffers are one register in the bus unit, and which of
+          // them the frame means is the direction of the faulted access. Both
+          // are read back so that the walk needs no conditional step; the one
+          // that matters is the one that lands.
+          rd68021_ucode_pkg::U_DST_DOB: if (!rs_rw_q) rst_data_q <= y;
+          rd68021_ucode_pkg::U_DST_DIB: if ( rs_rw_q) rst_data_q <= y;
+          rd68021_ucode_pkg::U_DST_LINK:    link_q    <= y[rd68021_ucode_pkg::UADDR-1:0];
+          rd68021_ucode_pkg::U_DST_PC_PREV: pc_prev_q <= y;
+          rd68021_ucode_pkg::U_DST_RUPC:    rupc_q    <= y[rd68021_ucode_pkg::UADDR-1:0];
           rd68021_ucode_pkg::U_DST_EA: ea_q   <= y;
           rd68021_ucode_pkg::U_DST_SR: sr_q   <= y[15:0]
                                                  & rd68021_pkg::SR_IMPLEMENTED;
@@ -1829,16 +1911,62 @@ module rd68021_seq #(
   assign cacr      = cacr_q;
   assign caar      = caar_q;
   assign cach_op   = 2'b00;
+  // ==========================================================================
+  // RTE putting a fault frame back -- UM 6.2.3, doc/ssw.md
+  //
+  // One field per microword: six go straight out to the pipe over the
+  // checkpoint port, and the rest land here. Nothing is buffered, because the
+  // frame is read in an order in which each field's register is dead by the
+  // time it is written.
+  // ==========================================================================
   assign ckpt_save = 1'b0;
-  assign ckpt_load = 1'b0;
 
-  assign rst_op_valid = 1'b0;
-  assign rst_addr     = '0;
-  assign rst_bytes    = '0;
-  assign rst_fc       = rd68021_pkg::FC_SUPER_DATA;
-  assign rst_rw       = 1'b1;
-  assign rst_rmc      = 1'b0;
-  assign rst_dob      = '0;
+  logic ckpt_is_pipe;
+  always_comb begin
+    ckpt_is_pipe = 1'b1;
+    unique case (`UF(DST))
+      rd68021_ucode_pkg::U_DST_STG_D:  ckpt_sel = rd68021_pkg::CK_STG_D;
+      rd68021_ucode_pkg::U_DST_STG_C:  ckpt_sel = rd68021_pkg::CK_STG_C;
+      rd68021_ucode_pkg::U_DST_STG_B:  ckpt_sel = rd68021_pkg::CK_STG_B;
+      rd68021_ucode_pkg::U_DST_PC_D:   ckpt_sel = rd68021_pkg::CK_PC_D;
+      rd68021_ucode_pkg::U_DST_FILL:   ckpt_sel = rd68021_pkg::CK_FILL;
+      rd68021_ucode_pkg::U_DST_PIPE_F: ckpt_sel = rd68021_pkg::CK_FLAGS;
+      default: begin
+        ckpt_sel     = rd68021_pkg::CK_STG_D;
+        ckpt_is_pipe = 1'b0;
+      end
+    endcase
+  end
+
+  assign ckpt_wr = commit && ckpt_is_pipe;
+  // The pipe's fault bits and its depth come from two frame fields that arrive
+  // in different microwords, so the one that completes them is the one that
+  // says the pipe is whole -- doc/ssw.md.
+  assign ckpt_load = commit
+                  && (`UF(DST) == rd68021_ucode_pkg::U_DST_PIPE_F);
+  // {stage_d_fault, FB, FC, RB, RC}, as rd68021_ifu takes them.
+  assign ckpt_data = (`UF(DST) == rd68021_ucode_pkg::U_DST_PIPE_F)
+                     ? {27'd0, rdf_q, rs_fb_q, rs_fc_q, rs_rb_q, rs_rc_q}
+                     : y;
+
+  // ==========================================================================
+  // Handing the faulted operand back to the bus unit -- UM 6.2.3
+  //
+  // Everything but the data comes out of the special status word and the packed
+  // internal word; the data is whichever buffer the direction makes meaningful,
+  // and the microcode reads the one RW names.
+  // ==========================================================================
+  logic [31:0] rst_addr_q;
+  logic [31:0] rst_data_q;
+  logic  [2:0] rst_bytes_q;
+
+  assign rst_op_valid = commit && `UF(RSTOP);
+  assign rst_addr     = rst_addr_q;
+  assign rst_bytes    = rst_bytes_q;
+  assign rst_fc       = rs_space_q;
+  assign rst_rw       = rs_rw_q;
+  assign rst_rmc      = rs_rm_q;
+  assign rst_dob      = rst_data_q;
 
   // UM 6.1.2: "if a bus error occurs during the exception processing for a bus
   // error, address error, or reset ... a double bus fault occurs and the

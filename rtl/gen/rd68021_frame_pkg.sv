@@ -64,7 +64,7 @@ package rd68021_frame_pkg;
   // ==========================================================================
   // This design's own state, in the long frame's internal words
   //
-  // 492 bits available, 339 used, 9 words spare. Recompute this whenever
+  // 492 bits available, 338 used, 9 words spare. Recompute this whenever
   // something is added: doc/checkpoint.md carries the same table, printed from
   // the same source.
   // ==========================================================================
@@ -74,9 +74,6 @@ package rd68021_frame_pkg;
   localparam int OFF_I_NOTRACE   = 'h08;   //  1 bits, the trace pending for this instruction was cancelled
   localparam int I_NOTRACE_HI    = 4;
   localparam int I_NOTRACE_LO    = 4;
-  localparam int OFF_I_RR_PENDING = 'h08;   //  1 bits, a rerun flag out of the frame is still to be applied
-  localparam int I_RR_PENDING_HI = 5;
-  localparam int I_RR_PENDING_LO = 5;
   localparam int OFF_I_EAPC      = 'h08;   //  1 bits, the base of the effective address under way is the PC
   localparam int I_EAPC_HI       = 6;
   localparam int I_EAPC_LO       = 6;

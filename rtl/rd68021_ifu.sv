@@ -61,6 +61,11 @@ module rd68021_ifu #(
 
     // Checkpoint port ---------------------------------------------------------
     input  logic        ckpt_save,
+    // RTE putting the pipe back out of a fault frame, one field per microword,
+    // and then `ckpt_load` to say it is whole again -- doc/checkpoint.md.
+    input  logic        ckpt_wr,
+    input  logic  [2:0] ckpt_sel,      // rd68021_pkg::CK_*
+    input  logic [31:0] ckpt_data,
     input  logic        ckpt_load,
     output logic [31:0] ckpt_pc_fetch,
 
@@ -207,6 +212,47 @@ module rd68021_ifu #(
       end else if (!fetch_pend_q && room && !chr_hit) begin
         fetch_pend_q <= 1'b1;
         fetch_addr_q <= {fill_q[31:2], 2'b00};
+      end
+
+      // ------------------------------------------------------------------
+      // RTE putting the pipe back -- UM 6.2.1 and 6.2.3
+      //
+      // The queue DEPTH is not in the frame; the rerun bits are, and they say
+      // which stages RTE still owes a word. Restoring the depth from them is
+      // what makes "the processor may execute a bus cycle to prefetch the
+      // instruction word for stage C of the pipe (if it is required)" happen by
+      // itself: a queue with room asks the bus unit for the next long word, so
+      // a stage the frame says is missing is fetched by the ordinary refill and
+      // there is no separate rerun path to get wrong.
+      // ------------------------------------------------------------------
+      if (ckpt_wr) begin
+        unique case (ckpt_sel)
+          rd68021_pkg::CK_STG_D: d_q    <= ckpt_data[15:0];
+          rd68021_pkg::CK_STG_C: c_q    <= ckpt_data[15:0];
+          rd68021_pkg::CK_STG_B: b_q    <= ckpt_data[15:0];
+          rd68021_pkg::CK_PC_D:  pc_d_q <= ckpt_data;
+          // Frame +$24 is the address of the STAGE B word; the fill point is
+          // two beyond it once the queue is two deep, which is the same
+          // relation stg_b_addr reads the other way.
+          rd68021_pkg::CK_FILL:  fill_q <= ckpt_data;
+          default: begin                       // CK_FLAGS
+            d_f_q <= ckpt_data[4];
+            b_f_q <= ckpt_data[3];
+            c_f_q <= ckpt_data[2];
+            cnt_q <= ckpt_data[0] ? 2'd0 : (ckpt_data[1] ? 2'd1 : 2'd2);
+          end
+        endcase
+      end
+
+      if (ckpt_load) begin
+        // The pipe is whole again. The cache holding register is not restored
+        // -- doc/checkpoint.md -- so it is invalidated and re-read, and a
+        // prefetch still in flight belongs to the stream the fault interrupted
+        // and is thrown away when it lands, exactly as a flush does it.
+        primed_q  <= 1'b1;
+        d_v_q     <= 1'b1;
+        chr_v_q   <= 1'b0;
+        if (fetch_pend_q) discard_q <= 1'b1;
       end
 
       // ------------------------------------------------------------------

@@ -152,6 +152,9 @@ module rd68021_top #(
   // frame by the sequencer. The cache holding register is deliberately absent:
   // doc/checkpoint.md records why it is not saved.
   logic        ckpt_save;
+  logic        ckpt_wr;
+  logic  [2:0] ckpt_sel;
+  logic [31:0] ckpt_data;
   logic        ckpt_load;
   logic [31:0] ckpt_pc_fetch;
 
@@ -239,6 +242,9 @@ module rd68021_top #(
       .pc_d           (pc_d),
       .stg_b_addr     (stg_b_addr),
       .ckpt_save      (ckpt_save),
+      .ckpt_wr        (ckpt_wr),
+      .ckpt_sel       (ckpt_sel),
+      .ckpt_data      (ckpt_data),
       .ckpt_load      (ckpt_load),
       .ckpt_pc_fetch  (ckpt_pc_fetch),
 
@@ -277,6 +283,9 @@ module rd68021_top #(
       .pc_d           (pc_d),
       .stg_b_addr     (stg_b_addr),
       .ckpt_save      (ckpt_save),
+      .ckpt_wr        (ckpt_wr),
+      .ckpt_sel       (ckpt_sel),
+      .ckpt_data      (ckpt_data),
       .ckpt_load      (ckpt_load),
       .ckpt_pc_fetch  (ckpt_pc_fetch),
 

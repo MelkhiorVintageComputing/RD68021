@@ -115,7 +115,6 @@ INTERNAL = [
     # offset, hi, lo, name, bits, what
     (0x08,  2,  0, 'bytes',      3,  'residual byte count of the faulted operand'),
     (0x08,  4,  4, 'notrace',    1,  'the trace pending for this instruction was cancelled'),
-    (0x08,  5,  5, 'rr_pending', 1,  'a rerun flag out of the frame is still to be applied'),
     (0x08,  6,  6, 'eapc',       1,  'the base of the effective address under way is the PC'),
     (0x08,  8,  7, 'opsize',     2,  'the operand size the dispatching microword resolved'),
     (0x08,  9,  9, 'eadst',      1,  'the effective address under way is a MOVE destination'),
@@ -185,7 +184,6 @@ CHECKPOINT = [
     ('seq', 'ea_save',          32, 'ea_save',       "the frame builder's own pointer, so that ea_q -- which is the instruction's and is +$38 -- is not disturbed. RTE ignores what lands in this slot"),
     ('seq', 'xw_q',             16, 'xw',            ''),
     ('seq', 'notrace_q',         1, 'notrace',       'the instruction was never executed, so UM 6.1.7 does not trace it'),
-    ('seq', 'rr_pending_q',      1, 'rr_pending',    ''),
     ('seq', 'eapc_q',            1, 'eapc',          'seq = EADEC latches it; EABASE reads it'),
     ('seq', 'size_q',            2, 'opsize',        'seq = EAMODE latches it; the shared EA routines read it'),
     ('seq', 'eadst_q',           1, 'eadst',         'likewise, and rsel reads it'),
@@ -328,6 +326,27 @@ EXEMPT = [
                             'frame carries is flt_upc, latched on the clock '
                             'the fault was reported -- by then this one is the '
                             "frame builder's own."),
+
+    # The two halves of the pipe's state arrive in different microwords of the
+    # RTE, and these hold them until they can be put together. RTE reading its
+    # own frame cannot fault without it being a double bus fault -- UM 6.1.2 --
+    # so there is no window in which they must survive one.
+    ('seq', 'rs_fc_q',      'the special status word RTE has read back, taken '
+                            'apart: FC'),
+    ('seq', 'rs_fb_q',      '... FB'),
+    ('seq', 'rs_rc_q',      '... RC'),
+    ('seq', 'rs_rb_q',      '... RB'),
+    ('seq', 'rs_df_q',      '... DF'),
+    ('seq', 'rs_rm_q',      '... RM'),
+    ('seq', 'rs_rw_q',      '... RW'),
+    ('seq', 'rs_space_q',   '... and the address space of the data cycle'),
+    ('seq', 'rdf_q',        "... and stage D's fault bit, out of the other word"),
+    ('seq', 'rupc_q',       'the micro-address RTE will resume at'),
+    ('seq', 'rst_addr_q',   'the faulted operand RTE is handing back to the '
+                            'bus unit: its address'),
+    ('seq', 'rst_data_q',   '... whichever of its two data buffers the '
+                            'direction makes meaningful'),
+    ('seq', 'rst_bytes_q',  '... and how much of it is left'),
 
     ('seq', 'div_go_q',     'the divider is running. A divide makes no bus cycle, '
                             'so nothing can fault inside one: the microword that '

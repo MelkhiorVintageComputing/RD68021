@@ -114,6 +114,76 @@ module core_fault_tb;
     check(peek_l(base + 32'h10) === GONE,
           "read fault: +$10 the data cycle fault address");
 
+
+    // ======================================================================
+    // The whole point of the milestone: a handler that maps the page and lets
+    // RTE finish the access. UM 6.2.3 -- "another method of completing a
+    // faulted bus cycle is to allow the processor to rerun the bus cycles
+    // during execution of the RTE instruction that terminates the exception
+    // handler".
+    //
+    // The handler here does nothing but RTE. Mapping the page is the
+    // testbench's job -- `berr_en` goes low -- which is exactly what a pager
+    // does that the instruction cannot see.
+    // ======================================================================
+    base_setup();
+    poke_w(CODE + 0, 16'h207C);            // MOVEA.L #GONE,A0
+    poke_l(CODE + 2, GONE);
+    poke_w(CODE + 6, 16'h2080);            // MOVE.L D0,(A0) -- faults
+    poke_w(CODE + 8, 16'h7255);            // MOVEQ #$55,D1  -- must run after
+    poke_w(CODE + 10, 16'h60FE);
+    poke_w(HAND + 0, 16'h4E73);            // RTE -- with DF still set
+    reset_dut();
+    dut.u_seq.dreg[0] = 32'hDEAD_BEEF;
+    // The handler maps the page in: run until it is entered, then let the
+    // access through.
+    run_until(HAND + 0, 3000, reached);
+    check(reached, "rerun: the handler is entered");
+    berr_en = 1'b0;
+    run_until(CODE + 10, 3000, reached);
+    check(reached, "rerun: and the program gets past the faulted instruction");
+    check(peek_l(GONE) === 32'hDEAD_BEEF,
+          "rerun: RTE finished the write the instruction started");
+    check(dut.u_seq.dreg[1] === 32'h0000_0055,
+          "rerun: and the instruction after it ran");
+    check(dut.u_seq.isp_q === ISP0,
+          "rerun: RTE took the frame off the stack");
+    check(dut.u_seq.areg[0] === GONE,
+          "rerun: the address register is untouched");
+    check(dut.u_seq.sr_q === 16'h2700, "rerun: and so is the status register");
+
+    // ======================================================================
+    // The same fault, repaired by the handler instead: it writes the word
+    // itself and clears DF, so RTE runs no bus cycle of its own -- UM 6.2.2.
+    // ======================================================================
+    base_setup();
+    poke_w(CODE + 0, 16'h207C);
+    poke_l(CODE + 2, GONE);
+    poke_w(CODE + 6, 16'h2080);            // MOVE.L D0,(A0) -- faults
+    poke_w(CODE + 8, 16'h7255);
+    poke_w(CODE + 10, 16'h60FE);
+    // ANDI.W #$FEFF,($0A,A7) clears DF and nothing else. UM 6.2.2: "the only
+    // bits in the SSW that may be modified are DF, RB, and RC".
+    poke_w(HAND + 0, 16'h026F);            // ANDI.W #imm,(d16,A7)
+    poke_w(HAND + 2, 16'hFEFF);
+    poke_w(HAND + 4, 16'h000A);
+    poke_w(HAND + 6, 16'h4E73);            // RTE
+    reset_dut();
+    dut.u_seq.dreg[0] = 32'hCAFE_F00D;
+    run_until(HAND + 6, 3000, reached);
+    check(reached, "repaired: the handler reaches its RTE");
+    // The handler "moves the properly sized data from the data output buffer".
+    // Here the testbench is the handler's memory system and does it directly.
+    poke_l(GONE, peek_l(ISP0 - 32'h5C + 32'h18));
+    berr_en = 1'b0;
+    run_until(CODE + 10, 3000, reached);
+    check(reached, "repaired: the program gets past the faulted instruction");
+    check(peek_l(GONE) === 32'hCAFE_F00D,
+          "repaired: the handler's own write is what landed");
+    check(dut.u_seq.dreg[1] === 32'h0000_0055,
+          "repaired: and the instruction after it ran");
+    check(dut.u_seq.isp_q === ISP0, "repaired: the frame came off the stack");
+
     // ======================================================================
     // A double bus fault. UM 6.1.2: a bus error during the exception
     // processing for a bus error "and the processor enters the halted state.

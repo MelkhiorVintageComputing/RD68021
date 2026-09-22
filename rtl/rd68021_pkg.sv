@@ -30,6 +30,16 @@ package rd68021_pkg;
   // ==========================================================================
   // CPU space types -- UM Figure 5-31, encoded on A19-A16 when FC = FC_CPU
   // ==========================================================================
+  // Which field of the instruction pipe RTE is putting back -- doc/checkpoint.md
+  // and rd68021_ifu. CK_FLAGS carries {stage_d_fault, FB, FC, RB, RC} in its low
+  // five bits, and the queue depth comes out of the two rerun bits.
+  localparam logic [2:0] CK_STG_D = 3'd0;
+  localparam logic [2:0] CK_STG_C = 3'd1;
+  localparam logic [2:0] CK_STG_B = 3'd2;
+  localparam logic [2:0] CK_PC_D  = 3'd3;
+  localparam logic [2:0] CK_FILL  = 3'd4;
+  localparam logic [2:0] CK_FLAGS = 3'd5;
+
   localparam logic [3:0] CPUS_BKPT      = 4'h0;  // breakpoint acknowledge
   localparam logic [3:0] CPUS_ACCESS    = 4'h1;  // access level control (CALLM/RTM)
   localparam logic [3:0] CPUS_COPROC    = 4'h2;  // coprocessor communication
