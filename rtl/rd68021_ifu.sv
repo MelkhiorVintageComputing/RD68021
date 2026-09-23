@@ -278,8 +278,16 @@ module rd68021_ifu #(
         endcase
       end
 
-      if (ckpt_load)    ckpt_busy_q <= 1'b0;
-      else if (ckpt_wr) ckpt_busy_q <= 1'b1;
+      // The restore always writes the program counter FIRST -- rte_fault in
+      // tools/ucode/program.py, and check_restore_order in assemble.py holds it
+      // there -- so that is what starts the window. A write of stage D alone is
+      // not a restore: BKPT puts the word its acknowledge cycle returned there
+      // and carries on, and freezing the pipe for that would freeze it for good,
+      // because nothing would ever load it again.
+      if (ckpt_load)
+        ckpt_busy_q <= 1'b0;
+      else if (ckpt_wr && (ckpt_sel == rd68021_pkg::CK_PC_D))
+        ckpt_busy_q <= 1'b1;
 
       if (ckpt_load) begin
         // The pipe is whole again. The cache holding register is not restored

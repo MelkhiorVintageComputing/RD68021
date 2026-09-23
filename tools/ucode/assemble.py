@@ -555,7 +555,7 @@ OUTPUTS = {
 COND_READS = {
     'FMT0': 'XW', 'FMT1': 'XW', 'FMT2': 'XW', 'FMTA': 'XW', 'FMTB': 'XW',
     'XW10': 'XW', 'XW11': 'XW', 'XW15': 'XW',
-    'MASK0': 'T0',
+    'MASK0': 'T0', 'MODBAD': 'T0', 'MODTYPE1': 'T0', 'MODOPT4': 'T0',
     'USER': 'SR', 'MASTER': 'SR',
 }
 
@@ -634,6 +634,31 @@ def check_areg_size():
     return bad
 
 
+def check_restore_order():
+    """RTE writes the pipe's program counter before any other pipe field.
+
+    rd68021_ifu stops its autonomous refill from the first write of the program
+    counter until the load that completes the restore -- the refill would
+    otherwise push the handler's instruction stream into the stages being put
+    back. So the program counter has to come first, and a write of stage D on
+    its own, which is what BKPT does, is not the start of a restore.
+    """
+    bad = []
+    pipe = ('STG_D', 'STG_C', 'STG_B', 'PC_D', 'FILL', 'PIPE_F')
+    for entry in ('rte_fault_short', 'rte_fault_long'):
+        i = program.LABELS[entry]
+        while i < len(program.WORDS):
+            f, c = program.WORDS[i]
+            if f.get('dst') in pipe:
+                if f['dst'] != 'PC_D':
+                    bad.append('%s writes %s before the program counter, so the '
+                               'pipe is not frozen while it is put back -- '
+                               'microword %d, %s' % (entry, f['dst'], i, c))
+                break
+            i += 1
+    return bad
+
+
 def check_cond_dst():
     bad = []
     for i, (f, c) in enumerate(program.WORDS):
@@ -659,7 +684,7 @@ def main():
     args = ap.parse_args()
 
     bad = (frames.check() + isa.check() + check_cond_dst() + check_boundary()
-           + check_areg_size())
+           + check_areg_size() + check_restore_order())
     if bad:
         print('FAIL: the tables are not self-consistent')
         for b in bad:

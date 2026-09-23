@@ -78,7 +78,14 @@ module rd68021_slave #(
   endfunction
 
   logic selected;
-  assign selected = !as_n_i && ((a_i & MASK) == BASE);
+  // A memory is never selected by a CPU-space cycle. UM figure 5-31: function
+  // code 111 is where the processor talks to the things that are not memory --
+  // the interrupt acknowledge, the breakpoint acknowledge, the coprocessor, the
+  // access-level hardware -- and its addresses are synthesised, so they fall
+  // wherever they fall. A breakpoint acknowledge for BKPT #5 is at $00000014,
+  // which is inside this model's range, and without this the memory and the
+  // breakpoint device both answered it.
+  assign selected = !as_n_i && (fc_i != 3'b111) && ((a_i & MASK) == BASE);
 
   // The DSACK encoding for this port width -- UM Table 5-1, active low. A
   // localparam and an assign, not an always_comb: a process that reads only

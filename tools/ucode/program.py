@@ -698,10 +698,43 @@ u('and the stack pointer is the four bytes past it',
   asrc='T1', bsrc='FOUR', alu='ADD', dst='SP', size='LONG',
   pf='ADV', seq='DECODE')
 
+# ==========================================================================
+# BKPT -- PRM 4 and UM 5.4.2
+#
+# "The breakpoint acknowledge cycle allows the external hardware to provide an
+# instruction word directly into the instruction pipeline as the program
+# executes. ... If the external hardware terminates the cycle with DSACK1/DSACK0,
+# the data on the bus (an instruction word) is inserted into the instruction
+# pipe, replacing the breakpoint opcode, and is executed after the breakpoint
+# acknowledge cycle completes. ... If the external logic terminates the
+# breakpoint acknowledge cycle with BERR (i.e., no instruction word available),
+# the processor takes an illegal instruction exception."
+#
+# So the word goes into stage D where the BKPT was, and the decode that follows
+# decodes it: the program counter does not move, and the replacement runs at the
+# breakpoint's own address. A BERR here is not a bus error -- the bus unit does
+# not raise a fault for a CPU-space cycle -- and the end code is what says which
+# way it went.
+# ==========================================================================
+label('bkpt')
+u('the breakpoint acknowledge: CPU space type 0, the number on A4-A2, a word',
+  bus='READ', fc='CPU', bytes=2, cpuspace='BKPT')
+u('nobody had an instruction for it: an illegal instruction -- UM 5.4.2',
+  seq='COND', cond='BERR', next='exc_illegal')
+u('the word that came back replaces the breakpoint in stage D',
+  asrc='RDATA', alu='A', dst='STG_D', size='WORD')
+u('... and is decoded where it stands',
+  seq='DECODE')
+
 # The patterns, ordered so that the specific encodings inside 0100 1000 ... win
 # before the general ones. PRM 8 packs LINK.L, NBCD, SWAP, PEA, EXT and MOVEM
 # into the same line, distinguished only by bits 8:6 and the mode field.
+#
+# BKPT is the one this part added, in the slot PEA would have with an address
+# register -- which is not an addressing mode PEA has, and which the PEA pattern
+# took anyway until the inventory in M10 found it.
 opcode('0100100000001---', 'link_l',  'LINK.L An,#d32')
+opcode('0100100001001---', 'bkpt',    'BKPT #n')
 opcode('0100100001000---', 'swap',    'SWAP Dn')
 opcode('0100100001------', 'pea',     'PEA <ea>')
 opcode('0100100010000---', 'ext_w',   'EXT.W Dn')
@@ -2238,6 +2271,197 @@ opcode('0000111011111100', 'cas2', 'CAS2.L')
 opcode('0000101011------', 'cas',  'CAS.B')
 opcode('0000110011------', 'cas',  'CAS.W')
 opcode('0000111011------', 'cas',  'CAS.L')
+
+
+# ==========================================================================
+# CALLM and RTM -- PRM 4 and UM 9.7-9.8, the MC68020's module calls
+#
+# Motorola dropped them from the MC68030 and nothing emulates them, so these are
+# written from UM section 9 and nothing else, and checked by directed tests
+# only -- doc/divergences.md says exactly what that does and does not cover.
+#
+# A module descriptor (UM figure 9-10):
+#
+#   +$00  opt[31:29]  type[28:24]  access level[23:16]  reserved[15:0]
+#   +$04  module entry word pointer
+#   +$08  module data area pointer
+#
+# and the module stack frame CALLM builds and RTM takes apart (figure 9-12),
+# six long words from the stack pointer up:
+#
+#   +$00  opt[15:13]  type[12:8]  saved access level[7:0]
+#   +$02  the condition codes of the calling module
+#   +$04  the argument count
+#   +$06  reserved
+#   +$08  module descriptor pointer
+#   +$0C  saved program counter -- the instruction after the CALLM
+#   +$10  saved module data area pointer -- the old value of the register the
+#         entry word names
+#   +$14  saved stack pointer
+#
+# "The first word at the entry address specifies the register to be saved in
+# the module stack frame and then loaded with the module descriptor data area
+# pointer; the first instruction of the module starts with the next word." That
+# word has the register in exactly the layout an extension word does -- D/A in
+# bit 15, the number in 14:12 -- so it goes into `xw` and XREG does the rest.
+#
+# Both instructions check the options and the type BEFORE they change anything:
+# UM 9.8.1, on a refusal, "no visible processor registers are changed".
+# ==========================================================================
+label('callm')
+u('the argument count, which is the word after the opcode',
+  asrc='STG_C', alu='A', dst='T3', size='WORD', pf='CONSUME')
+u('the address of the module descriptor',
+  call=1, seq='EAMODE', size='LONG')
+u('its first long word: the options, the type and the access level',
+  bus='READ', fc='DATA', asel='EA', bytes=4)
+u('... held, with the argument count put in the low half the manual reserves, '
+  'which is where the frame wants it',
+  asrc='RDATA', bsrc='T3', alu='ORLOW16', dst='T0', size='LONG')
+u('anything but options 000 and 100 and types $00 and $01 is a format error, '
+  'taken before anything has changed -- UM 9.7.1',
+  seq='COND', cond='MODBAD', next='exc_format')
+u('type $01 changes the access level -- UM 9.8.1',
+  seq='COND', cond='MODTYPE1', next='callm_type1')
+u('the module entry word pointer is at +$04',
+  asrc='EA', bsrc='FOUR', alu='ADD', dst='T1', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T1', bytes=4)
+u('... held: it is where the module starts',
+  asrc='RDATA', alu='A', dst='T1', size='LONG')
+u('the module data area pointer is at +$08',
+  asrc='EA', bsrc='EIGHT', alu='ADD', dst='T2', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T2', bytes=4)
+u('... held',
+  asrc='RDATA', alu='A', dst='T2', size='LONG')
+u('the module entry word, which names the register the data area pointer goes '
+  'into. It is the first word of the module code, so it is read as program',
+  bus='READ', fc='PROG', asel='T1', bytes=2)
+u('... into xw, where XREG reads a register name from',
+  asrc='RDATA', alu='A', dst='XW', size='WORD')
+
+label('callm_frame')
+# The frame is built top down from the stack pointer, with T3 walking. The
+# order is the frame's own, highest first, and it ends with T3 on the base.
+u('the frame is built down from the stack pointer',
+  asrc='SP', alu='A', dst='T3', size='LONG')
+u('+$14: the saved stack pointer',
+  asrc='T3', bsrc='FOUR', alu='SUB', dst='T3', size='LONG')
+u('... written',
+  bus='WRITE', fc='DATA', asel='T3', asrc='SP', alu='A', bytes=4)
+u('+$10: the old value of the register the entry word names',
+  asrc='T3', bsrc='FOUR', alu='SUB', dst='T3', size='LONG')
+u('... written',
+  bus='WRITE', fc='DATA', asel='T3', asrc='XREG', alu='A', bytes=4)
+u('+$0C: the instruction after the CALLM, which is where RTM goes back to',
+  asrc='T3', bsrc='FOUR', alu='SUB', dst='T3', size='LONG')
+u('... written',
+  bus='WRITE', fc='DATA', asel='T3', asrc='PC_C', alu='A', bytes=4)
+u('+$08: the module descriptor pointer',
+  asrc='T3', bsrc='FOUR', alu='SUB', dst='T3', size='LONG')
+u('... written',
+  bus='WRITE', fc='DATA', asel='T3', asrc='EA', alu='A', bytes=4)
+u('+$06: reserved',
+  asrc='T3', bsrc='TWO', alu='SUB', dst='T3', size='LONG')
+u('... written as zero',
+  bus='WRITE', fc='DATA', asel='T3', asrc='ZERO', alu='A', bytes=2)
+u('+$04: the argument count',
+  asrc='T3', bsrc='TWO', alu='SUB', dst='T3', size='LONG')
+u('... written: it is the low half of T0',
+  bus='WRITE', fc='DATA', asel='T3', asrc='T0', alu='A', bytes=2)
+u('+$02: the condition codes of the calling module',
+  asrc='T3', bsrc='TWO', alu='SUB', dst='T3', size='LONG')
+u('... written',
+  bus='WRITE', fc='DATA', asel='T3', asrc='CCRW', alu='A', bytes=2)
+u('+$00: the options, the type and the access level',
+  asrc='T3', bsrc='TWO', alu='SUB', dst='T3', size='LONG')
+u('... written: they are the high half of T0',
+  bus='WRITE', fc='DATA', asel='T3', asrc='T0', alu='SWAP', bytes=2)
+# UM 9.7.1: "if the called module does not wish the module data area pointer to
+# be loaded into a register, the module entry word can select register A7, and
+# the loaded value will be overwritten with the correct stack pointer value
+# after the module stack frame is created" -- so the register first and the
+# stack pointer second.
+u('the register the entry word names gets the module data area pointer',
+  asrc='T2', alu='A', dst='XREG', size='LONG')
+u('and the stack pointer is the frame, overwriting that if the register was A7',
+  asrc='T3', alu='A', dst='SP', size='LONG')
+u('the module starts at the word after its entry word',
+  asrc='T1', bsrc='TWO', alu='ADD', pf='FLUSH')
+u('... then wait for the pipe and decode',
+  seq='DECODE')
+
+label('rtm')
+u('the register to restore, from the opcode, put where XREG reads a name from',
+  asrc='RTM_XW', alu='A', dst='XW', size='WORD')
+u('the frame is at the top of the stack',
+  asrc='SP', alu='A', dst='T3', size='LONG')
+u('+$00: the options, the type and the access level',
+  bus='READ', fc='DATA', asel='T3', bytes=2)
+u('... moved up to where a descriptor has them, so that the same conditions '
+  'judge both',
+  asrc='RDATA', alu='SHL16', dst='T0', size='LONG')
+u('a frame RTM does not recognise is a format error, before anything changes '
+  '-- UM 9.7.2',
+  seq='COND', cond='MODBAD', next='exc_format')
+u('type $01 changes the access level back -- UM 9.8.2',
+  seq='COND', cond='MODTYPE1', next='rtm_type1')
+
+label('rtm_restore')
+u('+$04: the argument count',
+  asrc='T3', bsrc='FOUR', alu='ADD', dst='T1', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T1', bytes=2)
+u('... which, with the frame, is how far the stack goes back',
+  asrc='RDATA', bsrc='T3', alu='ADD', dst='T1', size='LONG')
+u('... twelve bytes of it',
+  asrc='T1', bsrc='TWELVE', alu='ADD', dst='T1', size='LONG')
+u('... and twelve more: the frame is six long words',
+  asrc='T1', bsrc='TWELVE', alu='ADD', dst='T1', size='LONG')
+u('+$0C: the saved program counter',
+  asrc='T3', bsrc='TWELVE', alu='ADD', dst='T2', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T2', bytes=4)
+u('... held',
+  asrc='RDATA', alu='A', dst='T2', size='LONG')
+u('+$02: the condition codes',
+  asrc='T3', bsrc='TWO', alu='ADD', dst='T0', size='LONG')
+u('read them',
+  bus='READ', fc='DATA', asel='T0', bytes=2)
+u('... held',
+  asrc='RDATA', alu='A', dst='T0', size='WORD')
+u('+$10: the saved module data area pointer',
+  asrc='T3', bsrc='EIGHT', alu='ADD', dst='T3', size='LONG')
+u('... eight more',
+  asrc='T3', bsrc='EIGHT', alu='ADD', dst='T3', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T3', bytes=4)
+# "Condition Codes: set according to the content of the word on the stack."
+u('it goes back into the register the opcode names',
+  asrc='RDATA', alu='A', dst='XREG', size='LONG')
+u('the condition codes come back',
+  asrc='T0', alu='A', dst='CCR', size='WORD')
+# PRM 4: "If the register specified is A7 (SP), the updated value of the
+# register reflects the stack pointer operations, and the saved module data
+# area pointer is lost" -- so the stack pointer is written after it.
+u('the stack goes back past the frame and the arguments',
+  asrc='T1', alu='A', dst='SP', size='LONG')
+u('and the calling module carries on after its CALLM',
+  asrc='T2', alu='A', pf='FLUSH')
+u('... then wait for the pipe and decode',
+  seq='DECODE')
+
+# The access-level change of type $01 -- UM 9.8. The next step.
+label('callm_type1')
+u('type $01 is the next step', next='exc_format')
+label('rtm_type1')
+u('type $01 is the next step', next='exc_format')
+
+# RTM is CALLM's encoding with a data or address register as the effective
+# address, which CALLM cannot use, so it is claimed first -- PRM 8.
+opcode('000001101100----', 'rtm',   'RTM Rn')
+opcode('0000011011------', 'callm', 'CALLM #n,<ea>')
 
 # ==========================================================================
 # MOVEC -- PRM 6

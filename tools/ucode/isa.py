@@ -109,6 +109,14 @@ COND = enc(
     'DIVZERO',   # the divisor was zero. PRM 4: "division by zero causes a
                  # trap", which is a different thing from an overflow -- the
                  # overflow arm returns and this one does not
+    # UM 9.7: a module descriptor's first long word, or a module frame's first
+    # word moved to the same place, held in T0 -- options in 31:29 and type in
+    # 28:24. The processor "recognizes only the options of 000 and 100" and
+    # "only descriptors of type $00 and $01; all others cause a format
+    # exception".
+    'MODBAD',    # anything else: a format error
+    'MODTYPE1',  # type $01, which changes the access level
+    'MODOPT4',   # option 100: the arguments are reached through a pointer
     'ZSET',      # the zero flag, which is how CAS and CAS2 say the compare
                  # matched -- PRM 4, "if Z, update operand -> destination"
     'CSET',      # the carry flag, which is where CMP2 leaves its verdict
@@ -239,6 +247,10 @@ ASRC = enc(
     'BF_MERGED',   # a data register with the field replaced
     'FLTVEC',    # the vector offset this bus fault takes: 8 or 12
     'FLTFMT',    # ... and the same, packed with the frame format code
+    # RTM's register, from bits 3:0 of the opcode, put in the place the
+    # extension-word register sources read it from -- D/A in bit 15 and the
+    # number in 14:12, which is also where CALLM's module entry word has it.
+    'RTM_XW',
     'SSW',       # assembled from the pipe's half and the bus unit's
     'DFA',       # the data fault address: frame +$10
     'DOB',       # the data output buffer: frame +$18
@@ -544,13 +556,13 @@ UADDR_BITS = 13
 
 FIELDS = OrderedDict([
     ('seq',   (3,  SEQ,   'NEXT')),
-    ('cond',  (5,  COND,  'NEVER')),
+    ('cond',  (6,  COND,  'NEVER')),
     ('next',  (UADDR_BITS, None, 0)),
     ('bus',   (2,  BUS,   'NONE')),
     ('asel',  (4,  ASEL,  'ZERO')),
     ('fc',    (3,  FC,    'DATA')),
     ('bytes', (3,  None,  0)),      # operand size in bytes, 0 when bus is NONE
-    ('asrc',  (6,  ASRC,  'ZERO')),
+    ('asrc',  (7,  ASRC,  'ZERO')),
     ('bsrc',  (5,  BSRC,  'ZERO')),
     ('alu',   (6,  ALU,   'A')),
     ('dst',   (6,  DST,   'NONE')),

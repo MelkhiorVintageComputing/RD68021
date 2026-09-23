@@ -461,6 +461,9 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_ASRC_VBR:   a_bus = vbr_q;
       // The fault frame's fields -- doc/ssw.md and doc/checkpoint.md.
       rd68021_ucode_pkg::U_ASRC_SSW:        a_bus = {16'd0, ssw};
+      // PRM 4, RTM: "D/A field ... register field" in bits 3:0 of the opcode,
+      // moved to bit 15 and bits 14:12 so that XREG reads the register.
+      rd68021_ucode_pkg::U_ASRC_RTM_XW:     a_bus = {16'd0, stg_d[3:0], 12'd0};
       rd68021_ucode_pkg::U_ASRC_DFA:        a_bus = flt_addr;
       rd68021_ucode_pkg::U_ASRC_DOB:        a_bus = flt_dob;
       rd68021_ucode_pkg::U_ASRC_DIB:        a_bus = flt_dib;
@@ -1388,6 +1391,13 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_COND_MASTER: cond_true = master_mode;
       rd68021_ucode_pkg::U_COND_USER:  cond_true = ~super_mode;
       rd68021_ucode_pkg::U_COND_DIVZERO: cond_true = div_zero;
+      // UM 9.7.1 and 9.7.2. T0 holds a descriptor's control word, or a
+      // frame's first word shifted into the same place.
+      rd68021_ucode_pkg::U_COND_MODBAD:
+        cond_true = !((t_q[0][31:29] == 3'b000) || (t_q[0][31:29] == 3'b100))
+                 || !((t_q[0][28:24] == 5'h00)  || (t_q[0][28:24] == 5'h01));
+      rd68021_ucode_pkg::U_COND_MODTYPE1: cond_true = (t_q[0][28:24] == 5'h01);
+      rd68021_ucode_pkg::U_COND_MODOPT4:  cond_true = (t_q[0][31:29] == 3'b100);
       rd68021_ucode_pkg::U_COND_ZSET:    cond_true = flag_z;
       rd68021_ucode_pkg::U_COND_CSET:    cond_true = flag_c;
       rd68021_ucode_pkg::U_COND_VSET:    cond_true = flag_v;
@@ -1634,9 +1644,13 @@ module rd68021_seq #(
     endcase
   end
 
-  // An acknowledge cycle puts the level on A3-A1 -- the bus unit builds the
-  // rest of the address.
-  assign req_cpuaddr  = {5'd0, irq_taking_q};
+  // What goes in the CPU-space address besides the type. An interrupt
+  // acknowledge puts the level on A3-A1, and a breakpoint acknowledge puts the
+  // breakpoint number on A4-A2 -- UM 5.4.1 and 5.4.2, figure 5-31. The bus unit
+  // builds the rest of the address from the type.
+  assign req_cpuaddr  = (`UF(CPUSPACE) == rd68021_ucode_pkg::U_CPUSPACE_BKPT)
+                        ? {5'd0, stg_d[2:0]}
+                        : {5'd0, irq_taking_q};
 
   // ==========================================================================
   // The instruction pipe

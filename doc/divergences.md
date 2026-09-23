@@ -639,3 +639,37 @@ against an independent bit-at-a-time model.
 **What could differ:** a device that cares which bytes are touched -- memory
 with side effects on read, or a bus analyser -- sees four accesses where this
 core makes one. Ordinary memory cannot tell.
+
+---
+
+## CALLM and RTM have no oracle
+
+Motorola removed CALLM and RTM from the MC68030 onward, Musashi does not
+implement them, and neither does anything else this project can run. They are in
+scope by decision, so they are written from UM section 9.7–9.8 and nothing else,
+and checked by `sim/tb/core_insn_tb.sv` against the manual's own figures.
+
+**What that covers:**
+
+- the module descriptor read field by field, and the format error for any
+  options other than 000 and 100 or any type other than $00 and $01, taken
+  before anything has changed;
+- the module stack frame of UM figure 9-12 checked as memory, every field;
+- the module entry word naming the register that gets the data area pointer,
+  and execution starting at the word after it;
+- RTM putting back the register, the condition codes and the program counter,
+  and the stack pointer going back past the frame **and** the arguments.
+
+**What it does not, and what was decided without a way to check it:**
+
+- **the entry word is read as program space.** The manual does not say which;
+  it is the first word of the called module's code, and the instruction words
+  that follow it are program fetches, so it is read the same way.
+- **the saved stack pointer at `+$14` is written for option 000 too.** UM 9.8.1
+  says that with option 000 the processor "does not save the stack pointer",
+  which reads as not writing the field. Writing it costs one bus cycle and is
+  harmless: RTM for a type $00 frame never reads it, and computes the stack
+  from the frame base and the argument count as UM 9.8.2 describes.
+- **type $01** — the access-level change through CPU space type 1 — is not yet
+  implemented. A type $01 descriptor currently takes a format error. That is
+  wrong behaviour, not merely untested behaviour, and it is the next step.

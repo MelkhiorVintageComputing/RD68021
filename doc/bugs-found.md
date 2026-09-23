@@ -1511,3 +1511,21 @@ construction instead of by coincidence.
 read-modify-write on a 32-bit port leaves a gap of a few clocks that nothing in
 the testbench was watching. What made it visible was writing down what the
 manual promises and counting.
+
+## M10 · The memory model answered CPU-space cycles
+
+**What:** not a bug in the core — in the testbench's memory model, found because
+it made BKPT fail.
+
+A breakpoint acknowledge for `BKPT #5` goes to `$00000014` in CPU space: type 0
+on A19–A16, the breakpoint number on A4–A2. The 32-bit memory at `$0` decoded
+the address and ignored the function code, so it answered too, and the data bus
+had two drivers.
+
+No real memory is ever selected by a CPU-space cycle. Function code 111 is where
+the processor talks to the things that are not memory, and its addresses are
+*synthesised*, so they land wherever they land. The interrupt acknowledge had
+never shown this because its addresses are all `$FFFFFFFx`, outside every memory
+the harness has.
+
+**Fixed by:** the model deselecting itself for function code 111.

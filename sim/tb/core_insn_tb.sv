@@ -23,6 +23,43 @@ module core_insn_tb;
   // sequence, so that nothing else can get at the location in between. These
   // count the cycles that ran while it was asserted and the times it was let
   // go and taken again -- which must be never, within one instruction.
+  // ------------------------------------------------------------------------
+  // A breakpoint device -- UM 5.4.2. It watches for CPU space type 0, notes the
+  // breakpoint number on A4-A2, and either answers with a replacement
+  // instruction word or asserts BERR because it has none. A 16-bit port, so
+  // the word arrives on D31-D16.
+  // ------------------------------------------------------------------------
+  logic [15:0] bkpt_word;
+  bit          bkpt_answer;
+  logic  [2:0] bkpt_num;
+  int unsigned bkpt_cycles;
+  initial begin
+    bkpt_word = 16'h4E71; bkpt_answer = 1'b1; bkpt_num = 3'd0; bkpt_cycles = 0;
+  end
+
+  wire bkpt_now = !as_n_o && (fc_o === 3'b111) && (a_o[19:16] === 4'h0);
+
+  always @(*) begin
+    dsack_ext  = 2'b11;
+    oe_ext     = 1'b0;
+    d_ext      = 32'd0;
+    berr_force = 1'b0;
+    if (bkpt_now) begin
+      if (bkpt_answer) begin
+        dsack_ext = 2'b01;                 // DSACK1 alone: a 16-bit port
+        oe_ext    = 1'b1;
+        d_ext     = {bkpt_word, 16'd0};
+      end else begin
+        berr_force = 1'b1;
+      end
+    end
+  end
+
+  always @(posedge bkpt_now) begin
+    bkpt_cycles = bkpt_cycles + 1;
+    bkpt_num    = a_o[4:2];
+  end
+
   int unsigned rmc_cycles, rmc_breaks;
   bit          rmc_seen;
   always @(negedge clk) if (rst_n) begin
@@ -395,6 +432,160 @@ module core_insn_tb;
     check(dut.u_seq.dreg[1] === 32'h9999_9999,
           "CAS2 miss: and so did the second, though it was the one that failed");
     check(rmc_breaks <= 1, "CAS2 miss: RMC was held across both reads");
+
+
+    // ======================================================================
+    // BKPT -- UM 5.4.2. The device answers with an instruction, and that
+    // instruction runs where the breakpoint was.
+    // ======================================================================
+    setup();
+    poke_w(CODE + 0, 16'h7201);            // MOVEQ #1,D1
+    poke_w(CODE + 2, 16'h484D);            // BKPT #5
+    poke_w(CODE + 4, 16'h7403);            // MOVEQ #3,D2
+    poke_w(CODE + 6, 16'h60FE);
+    bkpt_word   = 16'h7C5A;                // MOVEQ #$5A,D6, in its place
+    bkpt_answer = 1'b1;
+    bkpt_cycles = 0;
+    reset_dut();
+    run_until(CODE + 6, 2000, reached);
+    check(reached, "BKPT: the program carries on past it");
+    check(bkpt_cycles == 1, "BKPT: one breakpoint acknowledge cycle");
+    check(bkpt_num === 3'd5, "BKPT: with the breakpoint number on A4-A2");
+    check(dut.u_seq.dreg[6] === 32'h0000_005A,
+          "BKPT: the word the device supplied was executed");
+    check(dut.u_seq.dreg[1] === 32'h0000_0001 && dut.u_seq.dreg[2] === 32'h0000_0003,
+          "BKPT: and the instructions either side of it ran once each");
+
+    // ... and with nobody to answer, an illegal instruction at the
+    // breakpoint's own address.
+    setup();
+    poke_l(32'h0000_0010, 32'h0000_0500);  // vector 4
+    poke_w(32'h0000_0500, 16'h7E77);       // MOVEQ #$77,D7
+    poke_w(32'h0000_0502, 16'h60FE);
+    poke_w(CODE + 0, 16'h4849);            // BKPT #1
+    poke_w(CODE + 2, 16'h60FE);
+    bkpt_answer = 1'b0;
+    bkpt_cycles = 0;
+    reset_dut();
+    run_until(32'h0000_0502, 2000, reached);
+    check(reached, "BKPT, no answer: an illegal instruction exception");
+    check(dut.u_seq.dreg[7] === 32'h0000_0077, "BKPT, no answer: the handler ran");
+    check(peek_l(ISP0 - 6) === CODE,
+          "BKPT, no answer: the frame points at the breakpoint itself");
+    check(peek_w(ISP0 - 2) === 16'h0010,
+          "BKPT, no answer: format $0, vector offset $010");
+    bkpt_answer = 1'b1;
+
+
+    // ======================================================================
+    // CALLM and RTM -- UM 9.7 and 9.8, type $00. No oracle has these, so the
+    // expectations are the manual's figures read field by field.
+    //
+    //   descriptor at $3000   opt 000, type $00; entry $0600; data $CAFE0000
+    //   module at $0600       entry word names A5; MOVE.L A5,D3; MOVEQ #$11,D1
+    //   caller                A5 = $12345678, one long word of argument pushed,
+    //                         CCR = $0F, then CALLM #4,($3000).L
+    // ======================================================================
+    setup();
+    poke_l(32'h0000_3000, 32'h0000_0000);  // opt 000, type $00
+    poke_l(32'h0000_3004, 32'h0000_0600);  // module entry word pointer
+    poke_l(32'h0000_3008, 32'hCAFE_0000);  // module data area pointer
+    poke_w(32'h0000_0600, 16'hD000);       // entry word: A5
+    poke_w(32'h0000_0602, 16'h260D);       // MOVE.L A5,D3
+    poke_w(32'h0000_0604, 16'h7211);       // MOVEQ #$11,D1
+    poke_w(32'h0000_0606, 16'h60FE);       // BRA * -- stop inside the module
+    poke_w(CODE +  0, 16'h2A7C);           // MOVEA.L #$12345678,A5
+    poke_l(CODE +  2, 32'h1234_5678);
+    poke_w(CODE +  6, 16'h2F3C);           // MOVE.L #$AAAAAAAA,-(A7)
+    poke_l(CODE +  8, 32'hAAAA_AAAA);
+    poke_w(CODE + 12, 16'h44FC);           // MOVE #$0F,CCR
+    poke_w(CODE + 14, 16'h000F);
+    poke_w(CODE + 16, 16'h06F9);           // CALLM #4,($3000).L
+    poke_w(CODE + 18, 16'h0004);
+    poke_l(CODE + 20, 32'h0000_3000);
+    poke_w(CODE + 24, 16'h7422);           // MOVEQ #$22,D2
+    poke_w(CODE + 26, 16'h60FE);
+    reset_dut();
+    run_until(32'h0000_0606, 3000, reached);
+    check(reached, "CALLM: the module runs, from the word after its entry word");
+    check(dut.u_seq.dreg[3] === 32'hCAFE_0000,
+          "CALLM: the register the entry word names holds the data area pointer");
+    check(dut.u_seq.isp_q === 32'h0000_0FE4,
+          "CALLM: the stack pointer is the base of a six-long-word frame");
+    // UM figure 9-12, field by field.
+    check(peek_w(32'h0FE4) === 16'h0000, "CALLM frame +$00: options, type, access");
+    check(peek_w(32'h0FE6) === 16'h000F, "CALLM frame +$02: the caller's CCR");
+    check(peek_w(32'h0FE8) === 16'h0004, "CALLM frame +$04: the argument count");
+    check(peek_l(32'h0FEC) === 32'h0000_3000, "CALLM frame +$08: the descriptor");
+    check(peek_l(32'h0FF0) === CODE + 24,
+          "CALLM frame +$0C: the instruction after the CALLM");
+    check(peek_l(32'h0FF4) === 32'h1234_5678,
+          "CALLM frame +$10: the register's old value");
+    check(peek_l(32'h0FF8) === 32'h0000_0FFC,
+          "CALLM frame +$14: the stack pointer when CALLM began");
+    check(peek_l(32'h0FFC) === 32'hAAAA_AAAA,
+          "CALLM: the argument is just below the frame, where opt 000 says");
+
+    // ... and back out.
+    poke_w(32'h0000_0606, 16'h06CD);       // RTM A5
+    setup();
+    poke_l(32'h0000_3000, 32'h0000_0000);
+    poke_l(32'h0000_3004, 32'h0000_0600);
+    poke_l(32'h0000_3008, 32'hCAFE_0000);
+    poke_w(32'h0000_0600, 16'hD000);
+    poke_w(32'h0000_0602, 16'h260D);
+    poke_w(32'h0000_0604, 16'h7211);       // MOVEQ changes the codes...
+    poke_w(32'h0000_0606, 16'h06CD);       // RTM A5
+    poke_w(CODE +  0, 16'h2A7C);
+    poke_l(CODE +  2, 32'h1234_5678);
+    poke_w(CODE +  6, 16'h2F3C);
+    poke_l(CODE +  8, 32'hAAAA_AAAA);
+    poke_w(CODE + 12, 16'h44FC);
+    poke_w(CODE + 14, 16'h000F);
+    poke_w(CODE + 16, 16'h06F9);
+    poke_w(CODE + 18, 16'h0004);
+    poke_l(CODE + 20, 32'h0000_3000);
+    // LEA and not MOVEQ after the call: LEA leaves the condition codes alone,
+    // so what is in them afterwards is what RTM put there.
+    poke_w(CODE + 24, 16'h45F8);           // LEA ($0022).W,A2
+    poke_w(CODE + 26, 16'h0022);
+    poke_w(CODE + 28, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 28, 3000, reached);
+    check(reached, "RTM: the caller carries on after its CALLM");
+    check(dut.u_seq.dreg[1] === 32'h0000_0011, "RTM: the module ran");
+    check(dut.u_seq.areg[2] === 32'h0000_0022, "RTM: and so did the caller, after");
+    check(dut.u_seq.areg[5] === 32'h1234_5678,
+          "RTM: the caller's data area pointer is back");
+    check(dut.u_seq.isp_q === ISP0,
+          "RTM: the stack is back past the frame AND the argument");
+    // ... which the MOVEQ inside the module had changed.
+    check(dut.u_seq.sr_q[4:0] === 5'h0F, "RTM: the caller's condition codes are back");
+
+    // ======================================================================
+    // A descriptor CALLM does not recognise -- UM 9.7.1, "all others cause a
+    // format exception", and 9.8.1, "no visible processor registers are
+    // changed".
+    // ======================================================================
+    setup();
+    poke_l(32'h0000_0038, 32'h0000_0500);  // vector 14
+    poke_w(32'h0000_0500, 16'h7E14);       // MOVEQ #$14,D7
+    poke_w(32'h0000_0502, 16'h60FE);
+    poke_l(32'h0000_3000, 32'h0200_0000);  // type $02
+    poke_l(32'h0000_3004, 32'h0000_0600);
+    poke_l(32'h0000_3008, 32'hCAFE_0000);
+    poke_w(CODE +  0, 16'h2A7C);
+    poke_l(CODE +  2, 32'h1234_5678);
+    poke_w(CODE +  6, 16'h06F9);           // CALLM #0,($3000).L
+    poke_w(CODE +  8, 16'h0000);
+    poke_l(CODE + 10, 32'h0000_3000);
+    poke_w(CODE + 14, 16'h60FE);
+    reset_dut();
+    run_until(32'h0000_0502, 3000, reached);
+    check(reached, "CALLM, type $02: a format error");
+    check(dut.u_seq.areg[5] === 32'h1234_5678, "CALLM, type $02: A5 untouched");
+    check(peek_l(ISP0 - 6) === CODE + 6,
+          "CALLM, type $02: the frame points at the CALLM");
 
     if (pipe_fails != 0)
       $display("  FAIL: the pipe invariant broke %0d times", pipe_fails);
