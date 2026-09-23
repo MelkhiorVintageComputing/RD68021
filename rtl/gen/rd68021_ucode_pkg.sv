@@ -14,7 +14,7 @@
 
 package rd68021_ucode_pkg;
 
-  localparam int UW    = 100;   // microword width
+  localparam int UW    = 101;   // microword width
   localparam int UADDR = 13;   // micro-address width
 
   localparam int U_SEQ_LSB = 0;
@@ -66,18 +66,18 @@ package rd68021_ucode_pkg;
   localparam int U_NOTRACE_LSB = 91;
   localparam int U_NOTRACE_W   = 1;
   localparam int U_CPUSPACE_LSB = 92;
-  localparam int U_CPUSPACE_W   = 2;
-  localparam int U_RMC_LSB = 94;
+  localparam int U_CPUSPACE_W   = 3;
+  localparam int U_RMC_LSB = 95;
   localparam int U_RMC_W   = 1;
-  localparam int U_STOP_LSB = 95;
+  localparam int U_STOP_LSB = 96;
   localparam int U_STOP_W   = 1;
-  localparam int U_RSTO_LSB = 96;
+  localparam int U_RSTO_LSB = 97;
   localparam int U_RSTO_W   = 1;
-  localparam int U_RSTOP_LSB = 97;
+  localparam int U_RSTOP_LSB = 98;
   localparam int U_RSTOP_W   = 1;
-  localparam int U_EADST_LSB = 98;
+  localparam int U_EADST_LSB = 99;
   localparam int U_EADST_W   = 1;
-  localparam int U_EAPC_LSB = 99;
+  localparam int U_EAPC_LSB = 100;
   localparam int U_EAPC_W   = 1;
 
   localparam logic [2:0] U_SEQ_NEXT = 3'd0;
@@ -114,13 +114,16 @@ package rd68021_ucode_pkg;
   localparam logic [5:0] U_COND_MODBAD = 6'd23;
   localparam logic [5:0] U_COND_MODTYPE1 = 6'd24;
   localparam logic [5:0] U_COND_MODOPT4 = 6'd25;
-  localparam logic [5:0] U_COND_ZSET = 6'd26;
-  localparam logic [5:0] U_COND_CSET = 6'd27;
-  localparam logic [5:0] U_COND_VSET = 6'd28;
-  localparam logic [5:0] U_COND_AVEC = 6'd29;
-  localparam logic [5:0] U_COND_BERR = 6'd30;
-  localparam logic [5:0] U_COND_RESNEG = 6'd31;
-  localparam logic [5:0] U_COND_GTZ = 6'd32;
+  localparam logic [5:0] U_COND_ASTAT_BAD = 6'd26;
+  localparam logic [5:0] U_COND_ASTAT_STACK = 6'd27;
+  localparam logic [5:0] U_COND_T3ZERO = 6'd28;
+  localparam logic [5:0] U_COND_ZSET = 6'd29;
+  localparam logic [5:0] U_COND_CSET = 6'd30;
+  localparam logic [5:0] U_COND_VSET = 6'd31;
+  localparam logic [5:0] U_COND_AVEC = 6'd32;
+  localparam logic [5:0] U_COND_BERR = 6'd33;
+  localparam logic [5:0] U_COND_RESNEG = 6'd34;
+  localparam logic [5:0] U_COND_GTZ = 6'd35;
 
   localparam logic [1:0] U_BUS_NONE = 2'd0;
   localparam logic [1:0] U_BUS_READ = 2'd1;
@@ -265,19 +268,21 @@ package rd68021_ucode_pkg;
   localparam logic [5:0] U_ALU_PACK = 6'd19;
   localparam logic [5:0] U_ALU_UNPK = 6'd20;
   localparam logic [5:0] U_ALU_BYTEPAIR = 6'd21;
-  localparam logic [5:0] U_ALU_SHIFT = 6'd22;
-  localparam logic [5:0] U_ALU_ANDNOT = 6'd23;
-  localparam logic [5:0] U_ALU_LSR1 = 6'd24;
-  localparam logic [5:0] U_ALU_XSZ = 6'd25;
-  localparam logic [5:0] U_ALU_XSZHI = 6'd26;
-  localparam logic [5:0] U_ALU_SHL16 = 6'd27;
-  localparam logic [5:0] U_ALU_ORLOW16 = 6'd28;
-  localparam logic [5:0] U_ALU_ABCD = 6'd29;
-  localparam logic [5:0] U_ALU_SBCD = 6'd30;
-  localparam logic [5:0] U_ALU_SHR8 = 6'd31;
-  localparam logic [5:0] U_ALU_SHL8OR = 6'd32;
-  localparam logic [5:0] U_ALU_ROL8 = 6'd33;
-  localparam logic [5:0] U_ALU_SETB7 = 6'd34;
+  localparam logic [5:0] U_ALU_SETB2 = 6'd22;
+  localparam logic [5:0] U_ALU_ZXB = 6'd23;
+  localparam logic [5:0] U_ALU_SHIFT = 6'd24;
+  localparam logic [5:0] U_ALU_ANDNOT = 6'd25;
+  localparam logic [5:0] U_ALU_LSR1 = 6'd26;
+  localparam logic [5:0] U_ALU_XSZ = 6'd27;
+  localparam logic [5:0] U_ALU_XSZHI = 6'd28;
+  localparam logic [5:0] U_ALU_SHL16 = 6'd29;
+  localparam logic [5:0] U_ALU_ORLOW16 = 6'd30;
+  localparam logic [5:0] U_ALU_ABCD = 6'd31;
+  localparam logic [5:0] U_ALU_SBCD = 6'd32;
+  localparam logic [5:0] U_ALU_SHR8 = 6'd33;
+  localparam logic [5:0] U_ALU_SHL8OR = 6'd34;
+  localparam logic [5:0] U_ALU_ROL8 = 6'd35;
+  localparam logic [5:0] U_ALU_SETB7 = 6'd36;
 
   localparam logic [5:0] U_DST_NONE = 6'd0;
   localparam logic [5:0] U_DST_T0 = 6'd1;
@@ -382,18 +387,19 @@ package rd68021_ucode_pkg;
   localparam logic [2:0] U_FRAME_FA = 3'd4;
   localparam logic [2:0] U_FRAME_FB = 3'd5;
 
-  localparam logic [1:0] U_CPUSPACE_NONE = 2'd0;
-  localparam logic [1:0] U_CPUSPACE_IACK = 2'd1;
-  localparam logic [1:0] U_CPUSPACE_BKPT = 2'd2;
-  localparam logic [1:0] U_CPUSPACE_COPROC = 2'd3;
+  localparam logic [2:0] U_CPUSPACE_NONE = 3'd0;
+  localparam logic [2:0] U_CPUSPACE_IACK = 3'd1;
+  localparam logic [2:0] U_CPUSPACE_BKPT = 3'd2;
+  localparam logic [2:0] U_CPUSPACE_COPROC = 3'd3;
+  localparam logic [2:0] U_CPUSPACE_ACCESS = 3'd4;
 
   // Named entry points.
   localparam logic [UADDR-1:0] ENTRY_RESET = 13'd0;
   localparam logic [UADDR-1:0] ENTRY_ILLEGAL = 13'd5;
-  localparam logic [UADDR-1:0] ENTRY_TRACE = 13'd1361;
-  localparam logic [UADDR-1:0] ENTRY_IRQ = 13'd1364;
-  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 13'd1392;
-  localparam logic [UADDR-1:0] ENTRY_FAULT_SHORT = 13'd1453;
+  localparam logic [UADDR-1:0] ENTRY_TRACE = 13'd1410;
+  localparam logic [UADDR-1:0] ENTRY_IRQ = 13'd1413;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 13'd1441;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_SHORT = 13'd1502;
 
 endpackage
 

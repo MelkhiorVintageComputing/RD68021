@@ -117,6 +117,12 @@ COND = enc(
     'MODBAD',    # anything else: a format error
     'MODTYPE1',  # type $01, which changes the access level
     'MODOPT4',   # option 100: the arguments are reached through a pointer
+    # UM table 9-6, the access status register, read into T2. Zero is a refusal
+    # and anything above seven is undefined; both are a format error. Four to
+    # seven say the stack changes as well.
+    'ASTAT_BAD',
+    'ASTAT_STACK',
+    'T3ZERO',    # T3 has counted down to nothing: the argument copy is done
     'ZSET',      # the zero flag, which is how CAS and CAS2 say the compare
                  # matched -- PRM 4, "if Z, update operand -> destination"
     'CSET',      # the carry flag, which is where CMP2 leaves its verdict
@@ -373,6 +379,11 @@ ALU = enc(
     # into. The shift that gets UNPK's second byte back out is SHR8, which MOVEP
     # already had.
     'BYTEPAIR',
+    # B's low byte put in bits 23:16 of A: the caller's access level, read from
+    # the access-control hardware, replacing the called module's in the word
+    # that becomes the frame's first -- UM figure 9-12, "saved access level".
+    'SETB2',
+    'ZXB',       # A's low byte, zero extended: CALLM's argument count
     'SHIFT',     # whatever rd68021_shifter made of the A source
     'ANDNOT',    # A with the bits of B cleared, which is what BCLR does
     'LSR1',      # A shifted right one place, for walking MOVEM's mask
@@ -529,7 +540,12 @@ MDOP = enc('NONE', 'MUL', 'DIV')
 
 # The CPU address spaces of UM figure 5-31. The breakpoint and the module call
 # arrive with M10, the coprocessor with M13.
-CPUSPACE = enc('NONE', 'IACK', 'BKPT', 'COPROC')
+CPUSPACE = enc('NONE', 'IACK', 'BKPT', 'COPROC',
+               # UM 9.8: the access-level control hardware CALLM and RTM talk to
+               # for a type $01 module. The register offset comes out of the
+               # microword's `vec` field, which is otherwise the exception
+               # vector and is free on every microword that makes one of these.
+               'ACCESS')
 
 # Which exception stack frame a microword is building. UM table 6-5 names the
 # exceptions that take each; the code below is the value that goes in bits 15:12
@@ -605,7 +621,7 @@ FIELDS = OrderedDict([
     ('notrace', (1, None,  0)),
     # Which CPU address space a request goes to -- UM figure 5-31. Only the
     # interrupt acknowledge is used before M10.
-    ('cpuspace', (2, CPUSPACE, 'NONE')),
+    ('cpuspace', (3, CPUSPACE, 'NONE')),
     # Hold RMC across the accesses of an indivisible read-modify-write. UM 5.5.2:
     # on this part RMC is a qualifier across a run of ordinary bus cycles, each
     # retried separately, and not one long cycle.

@@ -1078,6 +1078,10 @@ module rd68021_seq #(
         y = {24'd0, a_bus[11:8], a_bus[3:0]};
       rd68021_ucode_pkg::U_ALU_UNPK:
         y = {16'd0, 4'd0, a_bus[7:4], 4'd0, a_bus[3:0]};
+      rd68021_ucode_pkg::U_ALU_ZXB:
+        y = {24'd0, a_bus[7:0]};
+      rd68021_ucode_pkg::U_ALU_SETB2:
+        y = {a_bus[31:24], b_bus[7:0], a_bus[15:0]};
       rd68021_ucode_pkg::U_ALU_BYTEPAIR:
         y = {16'd0, a_bus[7:0], b_bus[7:0]};
       rd68021_ucode_pkg::U_ALU_SX:
@@ -1398,6 +1402,12 @@ module rd68021_seq #(
                  || !((t_q[0][28:24] == 5'h00)  || (t_q[0][28:24] == 5'h01));
       rd68021_ucode_pkg::U_COND_MODTYPE1: cond_true = (t_q[0][28:24] == 5'h01);
       rd68021_ucode_pkg::U_COND_MODOPT4:  cond_true = (t_q[0][31:29] == 3'b100);
+      // UM table 9-6.
+      rd68021_ucode_pkg::U_COND_ASTAT_BAD:
+        cond_true = (t_q[2][7:0] == 8'h00) || (t_q[2][7:0] > 8'h07);
+      rd68021_ucode_pkg::U_COND_ASTAT_STACK:
+        cond_true = (t_q[2][7:0] >= 8'h04) && (t_q[2][7:0] <= 8'h07);
+      rd68021_ucode_pkg::U_COND_T3ZERO:   cond_true = (t_q[3] == 32'd0);
       rd68021_ucode_pkg::U_COND_ZSET:    cond_true = flag_z;
       rd68021_ucode_pkg::U_COND_CSET:    cond_true = flag_c;
       rd68021_ucode_pkg::U_COND_VSET:    cond_true = flag_v;
@@ -1640,6 +1650,7 @@ module rd68021_seq #(
     unique case (`UF(CPUSPACE))
       rd68021_ucode_pkg::U_CPUSPACE_BKPT:   req_cpuspace = rd68021_pkg::CPUS_BKPT;
       rd68021_ucode_pkg::U_CPUSPACE_COPROC: req_cpuspace = rd68021_pkg::CPUS_COPROC;
+      rd68021_ucode_pkg::U_CPUSPACE_ACCESS: req_cpuspace = rd68021_pkg::CPUS_ACCESS;
       default:                              req_cpuspace = rd68021_pkg::CPUS_IACK;
     endcase
   end
@@ -1648,9 +1659,15 @@ module rd68021_seq #(
   // acknowledge puts the level on A3-A1, and a breakpoint acknowledge puts the
   // breakpoint number on A4-A2 -- UM 5.4.1 and 5.4.2, figure 5-31. The bus unit
   // builds the rest of the address from the type.
-  assign req_cpuaddr  = (`UF(CPUSPACE) == rd68021_ucode_pkg::U_CPUSPACE_BKPT)
-                        ? {5'd0, stg_d[2:0]}
-                        : {5'd0, irq_taking_q};
+  // ... and the access-level hardware of UM 9.8 takes a register offset, which
+  // the microword carries in its `vec` field.
+  always_comb begin
+    unique case (`UF(CPUSPACE))
+      rd68021_ucode_pkg::U_CPUSPACE_BKPT:   req_cpuaddr = {5'd0, stg_d[2:0]};
+      rd68021_ucode_pkg::U_CPUSPACE_ACCESS: req_cpuaddr = `UF(VEC);
+      default:                              req_cpuaddr = {5'd0, irq_taking_q};
+    endcase
+  end
 
   // ==========================================================================
   // The instruction pipe

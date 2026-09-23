@@ -556,6 +556,7 @@ COND_READS = {
     'FMT0': 'XW', 'FMT1': 'XW', 'FMT2': 'XW', 'FMTA': 'XW', 'FMTB': 'XW',
     'XW10': 'XW', 'XW11': 'XW', 'XW15': 'XW',
     'MASK0': 'T0', 'MODBAD': 'T0', 'MODTYPE1': 'T0', 'MODOPT4': 'T0',
+    'ASTAT_BAD': 'T2', 'ASTAT_STACK': 'T2', 'T3ZERO': 'T3',
     'USER': 'SR', 'MASTER': 'SR',
 }
 

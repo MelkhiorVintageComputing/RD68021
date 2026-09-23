@@ -670,6 +670,10 @@ and checked by `sim/tb/core_insn_tb.sv` against the manual's own figures.
   which reads as not writing the field. Writing it costs one bus cycle and is
   harmless: RTM for a type $00 frame never reads it, and computes the stack
   from the frame base and the argument count as UM 9.8.2 describes.
-- **type $01** — the access-level change through CPU space type 1 — is not yet
-  implemented. A type $01 descriptor currently takes a format error. That is
-  wrong behaviour, not merely untested behaviour, and it is the next step.
+- **type $01 is checked against a device model written from UM 9.8 and
+  figure 9-13**, not against hardware: CAL read, descriptor address written to
+  `$44`/`$54` by the caller's FC, IAL written, status read, and the three
+  outcomes of table 9-6 — refused (format error, no register changed), granted
+  on the same stack, granted with a change of stack and the argument copied —
+  then RTM writing DAL and taking the old stack back from `+$14`. A bug shared
+  between the model and the core would not show.

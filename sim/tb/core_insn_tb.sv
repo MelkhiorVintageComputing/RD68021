@@ -39,11 +39,48 @@ module core_insn_tb;
 
   wire bkpt_now = !as_n_o && (fc_o === 3'b111) && (a_o[19:16] === 4'h0);
 
+  // ------------------------------------------------------------------------
+  // The access-level control hardware of UM 9.8, in CPU space type 1 at the
+  // register offsets of figure 9-13. A 32-bit port. It remembers what the
+  // processor wrote and answers with what the test told it to.
+  // ------------------------------------------------------------------------
+  logic  [7:0] acc_cal, acc_status, acc_ial, acc_dal;
+  logic [31:0] acc_desc;
+  logic  [7:0] acc_desc_at;
+  int unsigned acc_cycles;
+  initial begin
+    acc_cal = 8'h11; acc_status = 8'h01; acc_ial = 8'h00; acc_dal = 8'h00;
+    acc_desc = 32'd0; acc_desc_at = 8'h00; acc_cycles = 0;
+  end
+
+  wire acc_now = !as_n_o && (fc_o === 3'b111) && (a_o[19:16] === 4'h1);
+
+  always @(posedge acc_now) acc_cycles = acc_cycles + 1;
+
+  always @(negedge clk) if (acc_now && !rw_o && !ds_n_o) begin
+    case (a_o[7:0])
+      8'h08:   acc_ial = dbus[31:24];
+      8'h0C:   acc_dal = dbus[31:24];
+      default: if (a_o[7:0] >= 8'h40) begin
+        acc_desc    = dbus;
+        acc_desc_at = a_o[7:0];
+      end
+    endcase
+  end
+
   always @(*) begin
     dsack_ext  = 2'b11;
     oe_ext     = 1'b0;
     d_ext      = 32'd0;
     berr_force = 1'b0;
+    if (acc_now) begin
+      dsack_ext = 2'b00;                   // a 32-bit port
+      if (rw_o) begin
+        oe_ext = 1'b1;
+        d_ext  = (a_o[7:0] == 8'h04) ? {acc_status, 24'd0}
+               :                       {acc_cal,    24'd0};
+      end
+    end
     if (bkpt_now) begin
       if (bkpt_answer) begin
         dsack_ext = 2'b01;                 // DSACK1 alone: a 16-bit port
@@ -586,6 +623,110 @@ module core_insn_tb;
     check(dut.u_seq.areg[5] === 32'h1234_5678, "CALLM, type $02: A5 untouched");
     check(peek_l(ISP0 - 6) === CODE + 6,
           "CALLM, type $02: the frame points at the CALLM");
+
+    // ======================================================================
+    // CALLM type $01 -- UM 9.8.1. The descriptor asks for access level $33;
+    // the hardware says the caller is at $11 and grants it with no change of
+    // stack. The frame must keep the CALLER's level, and the hardware must
+    // have been told the descriptor's address and the level asked for.
+    // ======================================================================
+    setup();
+    poke_l(32'h0000_3000, 32'h0133_0000);  // opt 000, type $01, level $33
+    poke_l(32'h0000_3004, 32'h0000_0600);
+    poke_l(32'h0000_3008, 32'hCAFE_0000);
+    poke_w(32'h0000_0600, 16'hD000);       // entry word: A5
+    poke_w(32'h0000_0602, 16'h60FE);       // stop inside the module
+    poke_w(CODE +  0, 16'h2A7C);           // MOVEA.L #$12345678,A5
+    poke_l(CODE +  2, 32'h1234_5678);
+    poke_w(CODE +  6, 16'h06F9);           // CALLM #0,($3000).L
+    poke_w(CODE +  8, 16'h0000);
+    poke_l(CODE + 10, 32'h0000_3000);
+    poke_w(CODE + 14, 16'h60FE);
+    acc_cal = 8'h11; acc_status = 8'h01; acc_ial = 8'h00; acc_desc = 32'd0;
+    acc_cycles = 0;
+    reset_dut();
+    run_until(32'h0000_0602, 3000, reached);
+    check(reached, "CALLM type $01, granted: the module runs");
+    check(acc_ial === 8'h33, "CALLM type $01: IAL was told the level asked for");
+    check(acc_desc === 32'h0000_3000 && acc_desc_at === 8'h54,
+          "CALLM type $01: the descriptor address went to FC 5's register, $54");
+    check(acc_cycles == 4,
+          "CALLM type $01: four access cycles -- CAL, descriptor, IAL, status");
+    check(peek_w(ISP0 - 32'h18) === 16'h0111,
+          "CALLM type $01: frame +$00 keeps the CALLER's level, $11, not $33");
+    check(dut.u_seq.areg[5] === 32'hCAFE_0000,
+          "CALLM type $01: the data area pointer is loaded as for type $00");
+
+    // ... refused: UM 9.8.1, "the processor takes a format error exception.
+    // No visible processor registers are changed".
+    setup();
+    poke_l(32'h0000_0038, 32'h0000_0500);  // vector 14
+    poke_w(32'h0000_0500, 16'h7E14);
+    poke_w(32'h0000_0502, 16'h60FE);
+    poke_l(32'h0000_3000, 32'h0133_0000);
+    poke_l(32'h0000_3004, 32'h0000_0600);
+    poke_l(32'h0000_3008, 32'hCAFE_0000);
+    poke_w(CODE +  0, 16'h2A7C);
+    poke_l(CODE +  2, 32'h1234_5678);
+    poke_w(CODE +  6, 16'h06F9);
+    poke_w(CODE +  8, 16'h0000);
+    poke_l(CODE + 10, 32'h0000_3000);
+    poke_w(CODE + 14, 16'h60FE);
+    acc_status = 8'h00;
+    reset_dut();
+    run_until(32'h0000_0502, 3000, reached);
+    check(reached, "CALLM type $01, refused: a format error");
+    check(dut.u_seq.areg[5] === 32'h1234_5678, "CALLM type $01, refused: A5 untouched");
+    check(peek_l(ISP0 - 6) === CODE + 6,
+          "CALLM type $01, refused: the frame is the format error's, at the CALLM");
+
+    // ======================================================================
+    // ... granted WITH a change of stack -- UM table 9-6, status four to
+    // seven. The new stack pointer comes from the descriptor at +$0C, option
+    // 000 copies the argument across, and the frame's +$14 is the OLD stack.
+    // Then RTM takes it all back: it tells DAL the saved level, and the stack
+    // comes back from +$14 plus the argument count.
+    // ======================================================================
+    setup();
+    poke_l(32'h0000_3000, 32'h0133_0000);
+    poke_l(32'h0000_3004, 32'h0000_0600);
+    poke_l(32'h0000_3008, 32'hCAFE_0000);
+    poke_l(32'h0000_300C, 32'h0000_2000);  // the called module's stack
+    poke_w(32'h0000_0600, 16'hD000);       // entry word: A5
+    poke_w(32'h0000_0602, 16'h60FE);       // stop inside the module
+    poke_w(CODE +  0, 16'h2A7C);           // MOVEA.L #$12345678,A5
+    poke_l(CODE +  2, 32'h1234_5678);
+    poke_w(CODE +  6, 16'h2F3C);           // MOVE.L #$AAAAAAAA,-(A7)
+    poke_l(CODE +  8, 32'hAAAA_AAAA);
+    poke_w(CODE + 12, 16'h06F9);           // CALLM #4,($3000).L
+    poke_w(CODE + 14, 16'h0004);
+    poke_l(CODE + 16, 32'h0000_3000);
+    poke_w(CODE + 20, 16'h45F8);           // LEA ($0022).W,A2
+    poke_w(CODE + 22, 16'h0022);
+    poke_w(CODE + 24, 16'h60FE);
+    acc_cal = 8'h11; acc_status = 8'h04;
+    reset_dut();
+    run_until(32'h0000_0602, 3000, reached);
+    check(reached, "CALLM new stack: the module runs");
+    check(dut.u_seq.isp_q === 32'h0000_2000 - 32'h4 - 32'h18,
+          "CALLM new stack: the frame is on the NEW stack, below the argument");
+    check(peek_l(32'h0000_1FFC) === 32'hAAAA_AAAA,
+          "CALLM new stack: the argument was copied across");
+    check(peek_l(32'h0000_2000 - 32'h4 - 32'h18 + 32'h14) === 32'h0000_0FFC,
+          "CALLM new stack: frame +$14 holds the OLD stack pointer");
+
+    // ... and back.
+    poke_w(32'h0000_0602, 16'h06CD);       // RTM A5
+    acc_dal = 8'h00;
+    reset_dut();
+    run_until(CODE + 24, 4000, reached);
+    check(reached, "RTM type $01: the caller carries on");
+    check(acc_dal === 8'h11, "RTM type $01: DAL was told the saved level");
+    check(dut.u_seq.isp_q === ISP0,
+          "RTM type $01: the stack is the caller's again, past its argument");
+    check(dut.u_seq.areg[5] === 32'h1234_5678, "RTM type $01: A5 is back");
+    check(dut.u_seq.areg[2] === 32'h0000_0022, "RTM type $01: the caller ran on");
+    acc_status = 8'h01;
 
     if (pipe_fails != 0)
       $display("  FAIL: the pipe invariant broke %0d times", pipe_fails);

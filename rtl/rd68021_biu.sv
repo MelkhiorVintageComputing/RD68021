@@ -635,6 +635,12 @@ module rd68021_biu #(
         // The breakpoint number on A4-A2.
         cpu_space_addr = {12'h000, rd68021_pkg::CPUS_BKPT, 11'h000,
                           req_cpuaddr[2:0], 2'b00};
+      rd68021_pkg::CPUS_ACCESS:
+        // UM figure 9-13: the access-level control registers are at byte
+        // offsets $00 to $5C, which is A7-A0 -- not the A15-A8 the other types
+        // put their field on.
+        cpu_space_addr = {12'h000, rd68021_pkg::CPUS_ACCESS, 8'h00,
+                          req_cpuaddr};
       default:
         cpu_space_addr = {12'h000, req_cpuspace, req_cpuaddr, 8'h00};
     endcase

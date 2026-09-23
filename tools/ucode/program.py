@@ -2323,6 +2323,7 @@ u('anything but options 000 and 100 and types $00 and $01 is a format error, '
   seq='COND', cond='MODBAD', next='exc_format')
 u('type $01 changes the access level -- UM 9.8.1',
   seq='COND', cond='MODTYPE1', next='callm_type1')
+label('callm_ptrs')
 u('the module entry word pointer is at +$04',
   asrc='EA', bsrc='FOUR', alu='ADD', dst='T1', size='LONG')
 u('read it',
@@ -2346,7 +2347,11 @@ label('callm_frame')
 # order is the frame's own, highest first, and it ends with T3 on the base.
 u('the frame is built down from the stack pointer',
   asrc='SP', alu='A', dst='T3', size='LONG')
-u('+$14: the saved stack pointer',
+# A type $01 call that moves the stack comes in here with T3 already at the top
+# of the new one, below the arguments it copied.
+label('callm_frame_at')
+u('+$14: the saved stack pointer -- the OLD one, since the register has not '
+  'been written yet',
   asrc='T3', bsrc='FOUR', alu='SUB', dst='T3', size='LONG')
 u('... written',
   bus='WRITE', fc='DATA', asel='T3', asrc='SP', alu='A', bytes=4)
@@ -2419,6 +2424,7 @@ u('... twelve bytes of it',
   asrc='T1', bsrc='TWELVE', alu='ADD', dst='T1', size='LONG')
 u('... and twelve more: the frame is six long words',
   asrc='T1', bsrc='TWELVE', alu='ADD', dst='T1', size='LONG')
+label('rtm_restore_rest')
 u('+$0C: the saved program counter',
   asrc='T3', bsrc='TWELVE', alu='ADD', dst='T2', size='LONG')
 u('read it',
@@ -2452,11 +2458,159 @@ u('and the calling module carries on after its CALLM',
 u('... then wait for the pipe and decode',
   seq='DECODE')
 
-# The access-level change of type $01 -- UM 9.8. The next step.
+# --------------------------------------------------------------------------
+# Type $01: a change of access level -- UM 9.8
+#
+# The processor does not interpret access levels; it carries them between the
+# descriptor, the frame, and external hardware at the registers of UM figure
+# 9-13, in CPU space type 1, and does what the access status register tells it.
+# "If the processor receives a bus error on any of these CPU space accesses
+# during the execution of a CALLM or RTM instruction, the processor will take a
+# format error exception" -- so every one of them is followed by that test.
+# --------------------------------------------------------------------------
 label('callm_type1')
-u('type $01 is the next step', next='exc_format')
+# UM 9.8.1, in the manual's own order: "the processor must first obtain the
+# current access level from external hardware. It also verifies that the
+# calling module has the right to read from the area pointed to by the current
+# value of the stack pointer by reading from that address. It passes the
+# descriptor address and increase access level to external hardware for
+# validation and then reads the access status."
+u('the current access level: CAL, CPU space type 1 at $00',
+  bus='READ', fc='CPU', bytes=1, cpuspace='ACCESS', vec=0x00)
+u('a bus error on any of these is a format error -- UM 9.8',
+  seq='COND', cond='BERR', next='exc_format')
+u('... held: it goes in the frame',
+  asrc='RDATA', alu='A', dst='T1', size='LONG')
+u('the caller has to be able to read its own stack: read it',
+  bus='READ', fc='DATA', asel='SP', bytes=2)
+u('the descriptor address, to the register for the space it was read from',
+  seq='COND', cond='USER', next='callm_t1_user')
+u('... supervisor data, function code 5, is $54',
+  bus='WRITE', fc='CPU', bytes=4, cpuspace='ACCESS', vec=0x54,
+  asrc='EA', alu='A', next='callm_t1_ial')
+label('callm_t1_user')
+u('... user data, function code 1, is $44',
+  bus='WRITE', fc='CPU', bytes=4, cpuspace='ACCESS', vec=0x44,
+  asrc='EA', alu='A')
+label('callm_t1_ial')
+u('... and refused with a bus error, a format error',
+  seq='COND', cond='BERR', next='exc_format')
+u('the access level the descriptor asks for, to IAL at $08. It is bits 23:16 '
+  'of T0, which SWAP brings down to the byte that goes out',
+  bus='WRITE', fc='CPU', bytes=1, cpuspace='ACCESS', vec=0x08,
+  asrc='T0', alu='SWAP')
+u('... refused with a bus error',
+  seq='COND', cond='BERR', next='exc_format')
+u('the verdict: the access status register at $04',
+  bus='READ', fc='CPU', bytes=1, cpuspace='ACCESS', vec=0x04)
+u('... refused with a bus error',
+  seq='COND', cond='BERR', next='exc_format')
+u('... held',
+  asrc='RDATA', alu='A', dst='T2', size='LONG')
+u('zero is a refusal and above seven is undefined: a format error, and '
+  'nothing visible has changed -- UM 9.8.1',
+  seq='COND', cond='ASTAT_BAD', next='exc_format')
+u('the frame keeps the CALLER\'s access level, in place of the one asked for',
+  asrc='T0', bsrc='T1', alu='SETB2', dst='T0', size='LONG')
+u('a new stack as well? -- UM table 9-6, four to seven',
+  seq='COND', cond='ASTAT_STACK', next='callm_t1_stack')
+u('no: from here it is a type $00 call',
+  next='callm_ptrs')
+
+label('callm_t1_stack')
+# "If the access status register indicates that a change in the stack pointer
+# is required, the stack pointer is saved internally, a new value is loaded from
+# the module descriptor, and arguments are copied from the calling stack to the
+# new stack." Saved internally means: not written yet. The register keeps the
+# old value until the frame has been built, which is what puts it at +$14.
+u('the new stack pointer, from the descriptor at +$0C',
+  asrc='EA', bsrc='TWELVE', alu='ADD', dst='T1', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T1', bytes=4)
+u('... held',
+  asrc='RDATA', alu='A', dst='T1', size='LONG')
+u('option 100 reaches the arguments through the saved stack pointer and '
+  'copies nothing -- UM 9.7.1',
+  seq='COND', cond='MODOPT4', next='callm_t1_placed')
+u('option 000 copies them: this many bytes',
+  asrc='T0', alu='ZXB', dst='T3', size='LONG')
+u('... from the top end of them on the old stack',
+  asrc='SP', bsrc='T3', alu='ADD', dst='T2', size='LONG')
+label('callm_t1_copy')
+u('all copied?',
+  seq='COND', cond='T3ZERO', next='callm_t1_placed')
+u('back one on the old stack',
+  asrc='T2', bsrc='ONE', alu='SUB', dst='T2', size='LONG')
+u('back one on the new',
+  asrc='T1', bsrc='ONE', alu='SUB', dst='T1', size='LONG')
+u('a byte from the old',
+  bus='READ', fc='DATA', asel='T2', bytes=1)
+u('... to the new',
+  bus='WRITE', fc='DATA', asel='T1', asrc='RDATA', alu='A', bytes=1)
+u('one fewer to go',
+  asrc='T3', bsrc='ONE', alu='SUB', dst='T3', size='LONG',
+  next='callm_t1_copy')
+
+label('callm_t1_placed')
+u('the frame goes on the new stack, below whatever arguments came with it',
+  asrc='T1', alu='A', dst='T3', size='LONG')
+u('the module entry word pointer is at +$04',
+  asrc='EA', bsrc='FOUR', alu='ADD', dst='T1', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T1', bytes=4)
+u('... held',
+  asrc='RDATA', alu='A', dst='T1', size='LONG')
+u('the module data area pointer is at +$08',
+  asrc='EA', bsrc='EIGHT', alu='ADD', dst='T2', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T2', bytes=4)
+u('... held',
+  asrc='RDATA', alu='A', dst='T2', size='LONG')
+u('the module entry word',
+  bus='READ', fc='PROG', asel='T1', bytes=2)
+u('... into xw',
+  asrc='RDATA', alu='A', dst='XW', size='WORD', next='callm_frame_at')
+
 label('rtm_type1')
-u('type $01 is the next step', next='exc_format')
+# UM 9.8.2: "the processor reads the access level, condition codes, PC, saved
+# module data area pointer, and saved stack pointer from the module stack frame.
+# The access level is written to the DAL for validation by external hardware;
+# the processor then reads the access status to check the validation. If ... the
+# access status is zero, ... the processor takes a format error exception. No
+# visible processor registers are changed."
+u('the saved access level, to DAL at $0C. The frame\'s word was moved up by '
+  'sixteen, so it is bits 23:16 of T0 and SWAP brings it down',
+  bus='WRITE', fc='CPU', bytes=1, cpuspace='ACCESS', vec=0x0C,
+  asrc='T0', alu='SWAP')
+u('a bus error is a format error',
+  seq='COND', cond='BERR', next='exc_format')
+u('the access status at $04',
+  bus='READ', fc='CPU', bytes=1, cpuspace='ACCESS', vec=0x04)
+u('... refused with a bus error',
+  seq='COND', cond='BERR', next='exc_format')
+u('... held',
+  asrc='RDATA', alu='A', dst='T2', size='LONG')
+u('refused: a format error, and nothing has changed',
+  seq='COND', cond='ASTAT_BAD', next='exc_format')
+# The stack comes back from the frame's +$14 and not from the frame base: a
+# type $01 call may have moved it, and "the argument count is added to the new
+# stack pointer value".
+u('+$04: the argument count',
+  asrc='T3', bsrc='FOUR', alu='ADD', dst='T1', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T1', bytes=2)
+u('... held',
+  asrc='RDATA', alu='A', dst='T1', size='LONG')
+u('+$14: the saved stack pointer',
+  asrc='T3', bsrc='TWELVE', alu='ADD', dst='T2', size='LONG')
+u('... eight more',
+  asrc='T2', bsrc='EIGHT', alu='ADD', dst='T2', size='LONG')
+u('read it',
+  bus='READ', fc='DATA', asel='T2', bytes=4)
+u('... plus the arguments is where the stack goes back to',
+  asrc='RDATA', bsrc='T1', alu='ADD', dst='T1', size='LONG',
+  next='rtm_restore_rest')
+
 
 # RTM is CALLM's encoding with a data or address register as the effective
 # address, which CALLM cannot use, so it is claimed first -- PRM 8.
