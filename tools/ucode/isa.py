@@ -568,7 +568,14 @@ SHOP = enc(
 # struct: yosys and Quartus are happier, and the generated package gives every
 # field a position so the RTL cannot disagree about one.
 # --------------------------------------------------------------------------
-UADDR_BITS = 13
+# The micro-address. 4096 words: 1529 are used after M11, and the coprocessor
+# interface (M13) is the last large block of microcode still to come. The width
+# is the depth of the microcode store, and the store is built at its full depth
+# -- 8192 words cost 24.5 block RAMs on the Artix where 4096 cost half that --
+# so it is sized to the program, not to the plan's first estimate. The frame
+# carries a micro-address in a sixteen-bit word, so it can grow to 16 without
+# touching the checkpoint layout.
+UADDR_BITS = 12
 
 FIELDS = OrderedDict([
     ('seq',   (3,  SEQ,   'NEXT')),

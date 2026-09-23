@@ -1552,3 +1552,22 @@ written down did not stop them coming back.
 signal, and `tools/src_lint.py` in `make lint` -- a scan for exactly these two
 shapes, cheap enough to run on every build, so the next one is found by the
 three free front-ends rather than by a vendor run a milestone later.
+
+## M12 · D7–D0 of a three-byte write carried the wrong byte
+
+**What:** a write that continues a long word begun at A1A0 = 11 -- three bytes
+left, SIZ = 11, A1A0 = 00 -- drove OP1 on D7–D0 where UM table 5-5 names OP0.
+
+The lane is footnoted "due to the current implementation, this byte is output but
+never used", and table 5-7 enables it for no port, so no memory could ever see
+the difference. It was written down as a deliberate divergence, on the reasoning
+that OP0 had already been sent and the bus unit no longer held it. The reasoning
+was wrong: the bus unit keeps the whole operand and only counts the remainder
+down, so OP0 was one multiplexer away.
+
+**Found by:** `make suska`. The Suska WF68K30L drives OP0 there, the manual agrees
+with it, and the first 26 data cycles of the probe had matched exactly up to that
+lane.
+
+**Fixed by:** `op_above`, the byte just above the ones still to send, on that one
+table entry.

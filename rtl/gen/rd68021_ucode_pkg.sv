@@ -14,70 +14,70 @@
 
 package rd68021_ucode_pkg;
 
-  localparam int UW    = 101;   // microword width
-  localparam int UADDR = 13;   // micro-address width
+  localparam int UW    = 100;   // microword width
+  localparam int UADDR = 12;   // micro-address width
 
   localparam int U_SEQ_LSB = 0;
   localparam int U_SEQ_W   = 3;
   localparam int U_COND_LSB = 3;
   localparam int U_COND_W   = 6;
   localparam int U_NEXT_LSB = 9;
-  localparam int U_NEXT_W   = 13;
-  localparam int U_BUS_LSB = 22;
+  localparam int U_NEXT_W   = 12;
+  localparam int U_BUS_LSB = 21;
   localparam int U_BUS_W   = 2;
-  localparam int U_ASEL_LSB = 24;
+  localparam int U_ASEL_LSB = 23;
   localparam int U_ASEL_W   = 4;
-  localparam int U_FC_LSB = 28;
+  localparam int U_FC_LSB = 27;
   localparam int U_FC_W   = 3;
-  localparam int U_BYTES_LSB = 31;
+  localparam int U_BYTES_LSB = 30;
   localparam int U_BYTES_W   = 3;
-  localparam int U_ASRC_LSB = 34;
+  localparam int U_ASRC_LSB = 33;
   localparam int U_ASRC_W   = 7;
-  localparam int U_BSRC_LSB = 41;
+  localparam int U_BSRC_LSB = 40;
   localparam int U_BSRC_W   = 5;
-  localparam int U_ALU_LSB = 46;
+  localparam int U_ALU_LSB = 45;
   localparam int U_ALU_W   = 6;
-  localparam int U_DST_LSB = 52;
+  localparam int U_DST_LSB = 51;
   localparam int U_DST_W   = 6;
-  localparam int U_SIZE_LSB = 58;
+  localparam int U_SIZE_LSB = 57;
   localparam int U_SIZE_W   = 2;
-  localparam int U_CCR_LSB = 60;
+  localparam int U_CCR_LSB = 59;
   localparam int U_CCR_W   = 5;
-  localparam int U_SZSEL_LSB = 65;
+  localparam int U_SZSEL_LSB = 64;
   localparam int U_SZSEL_W   = 4;
-  localparam int U_PF_LSB = 69;
+  localparam int U_PF_LSB = 68;
   localparam int U_PF_W   = 2;
-  localparam int U_CALL_LSB = 71;
+  localparam int U_CALL_LSB = 70;
   localparam int U_CALL_W   = 1;
-  localparam int U_SHOP_LSB = 72;
+  localparam int U_SHOP_LSB = 71;
   localparam int U_SHOP_W   = 2;
-  localparam int U_BITIMM_LSB = 74;
+  localparam int U_BITIMM_LSB = 73;
   localparam int U_BITIMM_W   = 1;
-  localparam int U_CNT_LSB = 75;
+  localparam int U_CNT_LSB = 74;
   localparam int U_CNT_W   = 2;
-  localparam int U_MDOP_LSB = 77;
+  localparam int U_MDOP_LSB = 76;
   localparam int U_MDOP_W   = 2;
-  localparam int U_MDEXT_LSB = 79;
+  localparam int U_MDEXT_LSB = 78;
   localparam int U_MDEXT_W   = 1;
-  localparam int U_VEC_LSB = 80;
+  localparam int U_VEC_LSB = 79;
   localparam int U_VEC_W   = 8;
-  localparam int U_FRAME_LSB = 88;
+  localparam int U_FRAME_LSB = 87;
   localparam int U_FRAME_W   = 3;
-  localparam int U_NOTRACE_LSB = 91;
+  localparam int U_NOTRACE_LSB = 90;
   localparam int U_NOTRACE_W   = 1;
-  localparam int U_CPUSPACE_LSB = 92;
+  localparam int U_CPUSPACE_LSB = 91;
   localparam int U_CPUSPACE_W   = 3;
-  localparam int U_RMC_LSB = 95;
+  localparam int U_RMC_LSB = 94;
   localparam int U_RMC_W   = 1;
-  localparam int U_STOP_LSB = 96;
+  localparam int U_STOP_LSB = 95;
   localparam int U_STOP_W   = 1;
-  localparam int U_RSTO_LSB = 97;
+  localparam int U_RSTO_LSB = 96;
   localparam int U_RSTO_W   = 1;
-  localparam int U_RSTOP_LSB = 98;
+  localparam int U_RSTOP_LSB = 97;
   localparam int U_RSTOP_W   = 1;
-  localparam int U_EADST_LSB = 99;
+  localparam int U_EADST_LSB = 98;
   localparam int U_EADST_W   = 1;
-  localparam int U_EAPC_LSB = 100;
+  localparam int U_EAPC_LSB = 99;
   localparam int U_EAPC_W   = 1;
 
   localparam logic [2:0] U_SEQ_NEXT = 3'd0;
@@ -394,12 +394,12 @@ package rd68021_ucode_pkg;
   localparam logic [2:0] U_CPUSPACE_ACCESS = 3'd4;
 
   // Named entry points.
-  localparam logic [UADDR-1:0] ENTRY_RESET = 13'd0;
-  localparam logic [UADDR-1:0] ENTRY_ILLEGAL = 13'd5;
-  localparam logic [UADDR-1:0] ENTRY_TRACE = 13'd1410;
-  localparam logic [UADDR-1:0] ENTRY_IRQ = 13'd1413;
-  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 13'd1441;
-  localparam logic [UADDR-1:0] ENTRY_FAULT_SHORT = 13'd1502;
+  localparam logic [UADDR-1:0] ENTRY_RESET = 12'd0;
+  localparam logic [UADDR-1:0] ENTRY_ILLEGAL = 12'd5;
+  localparam logic [UADDR-1:0] ENTRY_TRACE = 12'd1410;
+  localparam logic [UADDR-1:0] ENTRY_IRQ = 12'd1413;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 12'd1441;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_SHORT = 12'd1502;
 
 endpackage
 

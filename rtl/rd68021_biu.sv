@@ -535,6 +535,14 @@ module rd68021_biu #(
     end
   end
 
+  // The byte just above the ones still to send -- the operand byte the previous
+  // cycle of this operand sent last. op_data keeps the whole operand and only
+  // op_rem counts down, so it is still there. Table 5-5 puts it on D7-D0 of a
+  // three-byte transfer at A1A0 = 00, which only arises as the rest of a long
+  // word begun at A1A0 = 11: the manual's OP0.
+  logic [7:0] op_above;
+  assign op_above = opv[op_rem];
+
   logic [31:0] wr_lanes;
 
   always_comb begin
@@ -551,10 +559,11 @@ module rd68021_biu #(
       {rd68021_pkg::SIZ_WORD,  2'b01},
       {rd68021_pkg::SIZ_WORD,  2'b11}: wr_lanes = {opb[0], opb[0], opb[1], opb[0]};
 
-      // 3 bytes. The D7-D0 entry of the first row is the manual's OP0, which is
-      // not one of the three bytes left to send; it is one of the two starred
-      // "output but never used" cells, and Table 5-7 leaves that lane disabled.
-      {rd68021_pkg::SIZ_3BYTE, 2'b00}: wr_lanes = {opb[0], opb[1], opb[2], opb[0]};
+      // 3 bytes. The D7-D0 entry of the first row is OP0, the byte sent
+      // before these three -- footnoted "output but never used", and Table 5-7
+      // leaves the lane disabled, but it is what the part drives and so what
+      // this drives. The Suska WF68K30L drives the same (make suska).
+      {rd68021_pkg::SIZ_3BYTE, 2'b00}: wr_lanes = {opb[0], opb[1], opb[2], op_above};
       {rd68021_pkg::SIZ_3BYTE, 2'b01}: wr_lanes = {opb[0], opb[0], opb[1], opb[2]};
       {rd68021_pkg::SIZ_3BYTE, 2'b10}: wr_lanes = {opb[0], opb[1], opb[0], opb[1]};
       {rd68021_pkg::SIZ_3BYTE, 2'b11}: wr_lanes = {opb[0], opb[0], opb[1], opb[0]};

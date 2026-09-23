@@ -134,6 +134,16 @@ make vectors-all      # every group there is
 make cosim            # real programs, every register at every instruction
 make cache            # the same results with no instruction cache, and only fetches saved
 make timing-verbose   # the AC solver, with the binding constraint named
+make cycles           # instruction clock counts against UM section 8, each a regression check
+make suska            # the data cycles against a second core, the Suska WF68K30L under ghdl
+```
+
+Implementation, each a vendor run of tens of minutes:
+
+```sh
+make impl             # Vivado place and route, xc7a100t, out of context
+make paths            # what limits the clock, with the unreachable routes excluded
+make quartus          # the Cyclone V fit, for a second toolchain's number
 ```
 
 `make vectors` defaults to the groups whose microcode exists, so it stays green

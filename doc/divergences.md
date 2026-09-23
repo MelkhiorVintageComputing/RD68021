@@ -149,17 +149,21 @@ measurement in M12 is not a surprise.
 
 ---
 
-## Two write-data lanes the manual says are never used
+## The write-data lanes the manual says are never used -- no longer a divergence
 
-UM Table 5-5 footnotes two cells "due to the current implementation, this byte is
-output but never used": the D7–D0 lane of a three-byte transfer at A1A0 = 00, and
-the D15–D8 lane of a three-byte transfer at A1A0 = 11 and of a long word at
-A1A0 = 11. Table 5-7 confirms that no port enables those lanes for those transfers.
+UM Table 5-5 footnotes three cells "due to the current implementation, this byte
+is output but never used": the D7–D0 lane of a three-byte transfer at A1A0 = 00,
+and the D15–D8 lane of a three-byte transfer and of a long word at A1A0 = 11.
+Table 5-7 confirms that no port enables those lanes for those transfers.
 
-The first of them names an operand byte that is not among the bytes still to be
-sent, so this design drives the most significant one that is. The other two are
-driven as the table names them. Nothing can observe the difference, and if
-something did, it would be observing a byte the manual says is meaningless.
+Until M12 this design drove the first of them differently. The table names OP0
+there -- the byte of the operand sent in the previous cycle, since a three-byte
+transfer at A1A0 = 00 only arises as the rest of a long word begun at 11 -- and
+this drove OP1, reasoning that the bus unit holds only what it still has to send.
+It does not: it keeps the whole operand and counts down, so OP0 was there all
+along. `make suska` found the difference -- the Suska WF68K30L drives OP0 -- and
+the table settled it. All three cells are now driven exactly as the table names
+them, and the data cycles of the two cores agree on every lane.
 
 ---
 

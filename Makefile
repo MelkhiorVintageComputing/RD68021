@@ -51,8 +51,8 @@ VLT  := rtl/rd68021.vlt
 IVFLAGS := -g2012 -Wall -Wno-timescale -DTB_ICACHE_ENTRIES=$(ICACHE_ENTRIES)
 
 .PHONY: all help dirs lint lint-source lint-iverilog lint-verilator lint-yosys \
-        lint-quartus lint-questa synth audit ucode ucode-check sim sim-bus \
-        timing timing-verbose ea cache check clean
+        lint-quartus lint-questa quartus synth impl paths audit ucode ucode-check sim sim-bus \
+        timing timing-verbose ea cache cycles suska check clean
 
 all: lint
 
@@ -67,6 +67,8 @@ help:
 	@echo "  make timing    AC-specification feasibility, all four speed grades"
 	@echo "  make ea        every addressing mode against Musashi"
 	@echo "  make cache     the same results with no instruction cache at all"
+	@echo "  make cycles    instruction clock counts against UM section 8"
+	@echo "  make suska     the bus against a second core, the Suska WF68K30L"
 	@echo "  make ucode     regenerate rtl/gen/ from tools/ucode/"
 	@echo "  make check     the gate: ucode-check, lint, audit"
 	@echo
@@ -172,7 +174,7 @@ ucode-check: dirs
 # until M10 adds instructions the generator has no group for yet.
 VECGROUPS := all
 
-TBS := $(filter-out core_ea_tb core_vec_tb core_cosim_tb,$(patsubst sim/tb/%.sv,%,$(wildcard sim/tb/*_tb.sv)))
+TBS := $(filter-out core_ea_tb core_vec_tb core_cosim_tb core_cycles_tb,$(patsubst sim/tb/%.sv,%,$(wildcard sim/tb/*_tb.sv)))
 
 sim: dirs
 	@ok=1; for tb in $(TBS); do \
@@ -359,6 +361,25 @@ cosim: dirs $(patsubst %,$(BUILD)/programs/%.hex,$(PROGS)) \
 	test $$ok -eq 1 && echo "PASS: cosim"
 
 # ---------------------------------------------------------------------------
+# Instruction clock counts against UM section 8
+#
+# One row per instruction, each a regression check against the count frozen in
+# tools/cycles.py, and the table in doc/timing-divergences.md regenerated from
+# the measurement. Warm is the manual's cache case; cold is the first pass, with
+# the cache empty.
+# ---------------------------------------------------------------------------
+cycles: dirs
+	@python3 tools/cycles.py gen > $(BUILD)/cycles.vec
+	@iverilog $(IVFLAGS) -I sim/tb -o $(BUILD)/core_cycles_tb.vvp -s core_cycles_tb \
+	    $(RTL) sim/models/*.sv sim/tb/core_cycles_tb.sv \
+	    > $(BUILD)/core_cycles_tb.build.log 2>&1 \
+	  || { grep -v $(NOTES) $(BUILD)/core_cycles_tb.build.log; exit 1; }
+	@vvp $(BUILD)/core_cycles_tb.vvp +vec=$(BUILD)/cycles.vec > $(BUILD)/cycles.out 2>&1
+	@grep -E '^  FAIL' $(BUILD)/cycles.out | head -20; \
+	 grep -q '^PASS' $(BUILD)/cycles.out || { tail -5 $(BUILD)/cycles.out; exit 1; }
+	@python3 tools/cycles.py check $(BUILD)/cycles.out --doc doc/timing-divergences.md
+
+# ---------------------------------------------------------------------------
 # The instruction cache is architecturally invisible
 #
 # UM 4.1 caches instruction prefetches and nothing else, so a core built with no
@@ -396,6 +417,43 @@ cache: dirs $(patsubst %,$(BUILD)/programs/%.hex,$(PROGS)) \
 	    && echo "  PASS: $$p -- $$r" || { echo "  $$r"; ok=0; }; \
 	done; \
 	test $$ok -eq 1 && echo "PASS: cache"
+
+# ---------------------------------------------------------------------------
+# A second core: the Suska WF68K30L under ghdl
+#
+# The same probe (sim/suska/bus_probe.S) on both cores against the same three
+# ports, and the data cycles compared one bus cycle at a time: how every operand
+# size at every offset splits across a 32-, 16- and 8-bit port, what SIZ says,
+# what goes on all four write lanes, and where RMC is held. Suska is RUN here and
+# never read -- CLAUDE.md. Its sources are compiled out of tree, in build/suska.
+# ---------------------------------------------------------------------------
+SUSKA    := Inputs/ref/Suska_Configware/68K30L
+SUSKADIR := $(BUILD)/suska
+SUSKAVHD := wf68k30L_pkg wf68k30L_address_registers wf68k30L_alu \
+            wf68k30L_bus_interface wf68k30L_control wf68k30L_data_registers \
+            wf68k30L_exception_handler wf68k30L_opcode_decoder wf68k30L_top
+GHDLFLAGS := --std=08 -fsynopsys -Wno-hide
+
+suska: dirs
+	@mkdir -p $(SUSKADIR)
+	@$(CROSS)gcc -c -o $(SUSKADIR)/bus_probe.o sim/suska/bus_probe.S
+	@$(CROSS)ld -T sim/suska/probe.ld -o $(SUSKADIR)/bus_probe.elf $(SUSKADIR)/bus_probe.o
+	@$(CROSS)objcopy -O binary $(SUSKADIR)/bus_probe.elf $(SUSKADIR)/bus_probe.bin
+	@python3 -c "import sys; b=open(sys.argv[1],'rb').read(); \
+	    open(sys.argv[2],'w').write(''.join('%02x\n' % x for x in b))" \
+	    $(SUSKADIR)/bus_probe.bin $(SUSKADIR)/bus_probe.hex
+	@cd $(SUSKADIR) && for f in $(SUSKAVHD); do \
+	  ghdl -a $(GHDLFLAGS) $(CURDIR)/$(SUSKA)/$$f.vhd > $$f.log 2>&1 \
+	    || { echo "FAIL: ghdl could not analyse $$f"; tail -5 $$f.log; exit 1; }; \
+	done
+	@cd $(SUSKADIR) && ghdl -a $(GHDLFLAGS) $(CURDIR)/sim/suska/wf68k30l_tb.vhd \
+	  && ghdl -e $(GHDLFLAGS) wf68k30l_tb && ./wf68k30l_tb > suska.bus 2> suska.err
+	@iverilog $(IVFLAGS) -I sim/tb -o $(SUSKADIR)/rd68021_bus_tb.vvp -s rd68021_bus_tb \
+	    $(RTL) sim/models/*.sv sim/suska/rd68021_bus_tb.sv \
+	    > $(SUSKADIR)/rd68021_bus_tb.build.log 2>&1 \
+	  || { grep -v $(NOTES) $(SUSKADIR)/rd68021_bus_tb.build.log; exit 1; }
+	@vvp $(SUSKADIR)/rd68021_bus_tb.vvp +image=$(SUSKADIR)/bus_probe.hex > $(SUSKADIR)/rd68021.bus
+	@python3 tools/suska_diff.py $(SUSKADIR)/suska.bus $(SUSKADIR)/rd68021.bus
 
 cosim-long: dirs
 	@$(MAKE) --no-print-directory cosim STEPS=4000000
@@ -448,6 +506,27 @@ synth: dirs
 	@scripts/vivado.sh -mode batch -nojournal -nolog -source scripts/synth.tcl \
 	    -tclargs $(BUILD) $(TOP) $(XPART) $(ICACHE_ENTRIES) $(COPROCESSOR)
 
+# Place and route, for the frequency that means something. Out of context, with
+# hierarchy kept. Reports land in $(BUILD)/impl_*.rpt and the checkpoint beside
+# them, which `make paths` reads.
+impl: dirs
+	@printf '%s\n' $(addprefix $(CURDIR)/,$(RTL)) > $(BUILD)/rtl.f
+	@cd $(BUILD) && $(CURDIR)/scripts/vivado.sh -mode batch -nojournal -nolog \
+	    -source $(CURDIR)/scripts/impl.tcl \
+	    -tclargs $(XPART) $(TOP) $(CURDIR) $(ICACHE_ENTRIES) $(COPROCESSOR) \
+	    > impl.log 2>&1; rc=$$?; \
+	  grep -E '^(RD68021|ERROR|CRITICAL WARNING)' impl.log; exit $$rc
+
+# What limits the frequency, with the routes the microcode cannot take excluded
+# -- scripts/paths.tcl says which and why. Runs on the checkpoint `make impl`
+# left behind. doc/critical-path.md is written from it.
+paths: dirs
+	@cd $(BUILD) && $(CURDIR)/scripts/vivado.sh -mode batch -nojournal -nolog \
+	    -source $(CURDIR)/scripts/paths.tcl -tclargs $(CURDIR) > paths.log 2>&1 || \
+	    { grep -E '^(RD68021-PATHS|ERROR)' paths.log; exit 1; }
+	@grep -E '^RD68021-PATHS' $(BUILD)/paths.log
+	@python3 tools/paths_report.py $(BUILD)/paths_activatable.rpt
+
 # quartus_map returns 0 on the one thing that matters most here, so the grep is the
 # gate and not the exit code: a package-scoped constant inside an instantiation's
 # port expression becomes an implicit one-bit net and a Warning (10236), which is a
@@ -465,9 +544,32 @@ lint-quartus: dirs
 	    grep 'Warning (10236)' $(BUILD)/quartus_map.log; exit 1; fi
 	@echo "  quartus: ok"
 
+# Quartus place and route and timing, for a second toolchain's number. The fit
+# is its own build directory so that a fit and a lint-quartus do not share a
+# project. Quartus's Fmax scales both clock edges together, which is what this
+# design's edge-to-edge paths need, so it is quoted directly.
+QBUILD := $(BUILD)/quartus
+
+quartus: dirs
+	@mkdir -p $(QBUILD)
+	@printf '%s\n' $(RTL) > $(QBUILD)/rtl.f
+	@set -o pipefail; scripts/altera.sh quartus_sh -t scripts/quartus.tcl fit \
+	    $(QBUILD) $(TOP) $(AFAMILY) $(APART) $(ICACHE_ENTRIES) $(COPROCESSOR) \
+	    > $(QBUILD)/fit.log 2>&1 || { grep -E '^QUARTUS|Error' $(QBUILD)/fit.log | head; exit 1; }
+	@if grep -q 'Warning (10236)' $(QBUILD)/fit.log; then \
+	    echo "FAIL: quartus found an implicit net"; exit 1; fi
+	@grep -E '^QUARTUS' $(QBUILD)/fit.log
+	@grep -A12 'Slow 1100mV 85C Model Fmax Summary' $(QBUILD)/quartus_out/$(TOP).sta.rpt \
+	    | grep -E 'MHz' | head -3
+	@grep -E 'Logic utilization|Total registers|Total block memory bits|Total DSP|Total RAM Blocks' \
+	    $(QBUILD)/quartus_out/$(TOP).fit.summary
+
 lint-questa: dirs
 	@scripts/questa.sh $(BUILD) $(TOP) $(RTL)
 	@echo "  questa: ok"
+
+print-rtl:
+	@echo $(RTL)
 
 clean:
 	rm -rf $(BUILD)

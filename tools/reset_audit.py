@@ -65,10 +65,13 @@ UNRESET_FF = {
 # also fails if a name here stops being needed -- an exemption that has quietly
 # become unnecessary is one nobody will re-examine.
 #
-# Empty today. The microcode store's read register is expected to land here in M4:
-# a block RAM keeps it inside the primitive, and it is reset-equivalent because the
-# address it is read at is forced to the reset entry point while rst_n is low.
-EXEMPT = {}
+# One: the microcode store's read register, 100 bits -- the microword's width (rom_q in rtl/gen/rd68021_ucode_rom.sv).
+# A block RAM keeps it inside the primitive and cannot give it a reset value on
+# every part -- Quartus builds the whole store out of logic when it has one -- and
+# it is reset-EQUIVALENT: while rst_n is low the address it is read at is forced to
+# the reset entry point, so it holds the reset word from the first clock edge in
+# reset, and the clock runs during reset by requirement (UM 5.8, 520 clocks).
+EXEMPT = {'the microcode store read register, rd68021_ucode_rom.rom_q': 100}
 
 FORBIDDEN = [
     (re.compile(r'^\s*initial\b'),

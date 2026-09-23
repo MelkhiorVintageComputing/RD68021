@@ -331,8 +331,21 @@ def ucode_rom():
 // Read at `addr`, which the sequencer drives with the NEXT micro-address rather
 // than the current one, and registered: the same word arrives at the same time as
 // the micro-address it belongs to, with no clock lost and with a memory instead of
-// logic. The reset value is the word at the reset entry point, which is what makes
-// this a reset register like any other rather than an exemption from the rule.
+// logic.
+//
+// The read register has NO reset, and it is the one register in the design that
+// does not -- tools/reset_audit.py names it. A memory's output register cannot
+// carry a reset value into a block RAM on every part: Vivado absorbs one, and
+// Quartus, given one, builds the whole store out of logic instead (measured on a
+// Cyclone V: 8,797 ALMs and two memory blocks, where the store alone is 150
+// kilobits). An ASIC ROM macro has no reset on its output either.
+//
+// It is reset-EQUIVALENT instead. While reset is asserted the address is forced
+// to the reset entry point, so the register holds the reset word from the first
+// clock edge inside reset -- and the clock runs during reset by requirement: UM
+// 5.8 has RESET asserted for at least 520 clocks at power-up. The sequencer's
+// micro-PC comes out of reset at the same entry point, so the two agree on the
+// first edge after reset whichever side of it reset is released.
 
 // The port widths are literals rather than rd68021_ucode_pkg::UADDR-1 and UW-1:
 // iverilog rejects a package-scoped constant in a port declaration with a bare
@@ -345,25 +358,29 @@ module rd68021_ucode_rom (
     output logic [%d:0]   uw
 );
 
+  logic [%d:0] a;
+  assign a = rst_n ? addr : %d'd%d;
+
   // Say which memory and stop it being a choice: Vivado's ROM inference in its
   // own synthesis report is preliminary and timing optimisation may reverse it
-  // with no message, and Quartus honours ramstyle where Vivado honours rom_style.
-  (* rom_style = "block", ramstyle = "M9K" *)
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      uw <= %d'h%0*X;
-    end else begin
-      unique case (addr)""" % (isa.UADDR_BITS - 1, width - 1,
-                               width, (width + 3) // 4,
-                               words[program.entry('reset')]))
+  // with no message. The attribute is on a register DECLARATION, which is where
+  // both tools look for it -- on the always block Quartus ignores it with
+  // Warning 10335 -- and Quartus picks the block type for the family itself.
+  (* rom_style = "block" *)
+  logic [%d:0] rom_q;
+  assign uw = rom_q;
+
+  always_ff @(posedge clk) begin
+      case (a)""" % (isa.UADDR_BITS - 1, width - 1,
+                            isa.UADDR_BITS - 1, isa.UADDR_BITS,
+                            program.entry('reset'), width - 1))
     for i, w in enumerate(words):
         _f, comment = program.WORDS[i]
-        out.append("        %d'd%-5d: uw <= %d'h%0*X;%s"
+        out.append("        %d'd%-5d: rom_q <= %d'h%0*X;%s"
                    % (isa.UADDR_BITS, i, width, (width + 3) // 4, w,
                       ('   // ' + comment) if comment else ''))
-    out.append("""        default:      uw <= %d'h%0*X;   // the illegal entry
+    out.append("""        default:      rom_q <= %d'h%0*X;   // the illegal entry
       endcase
-    end
   end
 
 endmodule""" % (width, (width + 3) // 4, words[program.entry('illegal')]))
@@ -678,13 +695,63 @@ def check_cond_dst():
     return bad
 
 
+# The result bus reaches the next micro-address by exactly two routes: a
+# condition that reads the result of its own microword rather than a register,
+# and the status register written in the same microword, which `sr_eff` passes
+# straight through to the interrupt test at a boundary. From an operand source,
+# through the ALU and either route, to the microcode store is the longest
+# combinational path in the design, and scripts/paths.tcl cuts it for the deep
+# units on the strength of this check: a microword on either route takes its
+# result from the ALU alone and from shallow sources, never from the shifter,
+# the bit-field unit or the multiplier and divider. doc/critical-path.md.
+COND_LIVE = ('RESM1', 'RESNEG', 'GTZ')
+DEEP_SOURCES = ('BF_', 'MUL', 'DIV')
+
+
+def check_live_cond():
+    bad = []
+    for i, (f, c) in enumerate(program.WORDS):
+        if f.get('seq') == 'COND' and f.get('cond') in COND_LIVE:
+            why = 'branches on %s, which reads its own result' % f.get('cond')
+        elif f.get('dst') == 'SR':
+            why = 'writes SR, which the interrupt test reads the same clock'
+        else:
+            continue
+        if f.get('alu') == 'SHIFT':
+            bad.append('microword %d %s, and takes the result from the shifter '
+                       '-- %s' % (i, why, c))
+        for src in ('asrc', 'bsrc'):
+            v = f.get(src, '')
+            if any(v.startswith(d) for d in DEEP_SOURCES):
+                bad.append('microword %d %s, and feeds it from %s -- %s'
+                           % (i, why, v, c))
+    return bad
+
+
+# The shifter's operand comes from a data register or from read data and from
+# nothing else. Its input multiplexer is the A bus, which can also carry the
+# bit-field unit's outputs, and bit-field unit -> shifter -> condition codes is
+# the next-longest path once the ones above are gone; scripts/paths.tcl cuts it
+# on the strength of this check.
+SHIFT_SOURCES = ('DREG', 'RDATA')
+
+
+def check_shift_src():
+    return ['microword %d shifts %s, and the shifter is fed only from %s -- %s'
+            % (i, f.get('asrc', 'ZERO'), ' or '.join(SHIFT_SOURCES), c)
+            for i, (f, c) in enumerate(program.WORDS)
+            if f.get('alu') == 'SHIFT'
+            and f.get('asrc', 'ZERO') not in SHIFT_SOURCES]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--check', action='store_true',
                     help='fail if the checked-in files are stale')
     args = ap.parse_args()
 
-    bad = (frames.check() + isa.check() + check_cond_dst() + check_boundary()
+    bad = (frames.check() + isa.check() + check_cond_dst() + check_live_cond() + check_shift_src()
+           + check_boundary()
            + check_areg_size() + check_restore_order())
     if bad:
         print('FAIL: the tables are not self-consistent')

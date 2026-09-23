@@ -97,7 +97,6 @@ module rd68021_seq #(
     output logic        ipend_n_o
 );
 
-  int unsigned i_r;
 
   // ==========================================================================
   // The microword
@@ -1786,9 +1785,12 @@ module rd68021_seq #(
       rst_data_q   <= '0;
       rst_bytes_q  <= 3'd0;
       size_q  <= rd68021_ucode_pkg::U_SIZE_LONG;
-      for (i_r = 0; i_r < 8; i_r = i_r + 1) dreg[i_r] <= '0;
-      for (i_r = 0; i_r < 7; i_r = i_r + 1) areg[i_r] <= '0;
-      for (i_r = 0; i_r < 4; i_r = i_r + 1) t_q[i_r]  <= '0;
+      // Loop indices local to the loop: a module-level one is a variable the
+      // reset branch writes and the other branch does not, and Quartus infers
+      // a latch for it (Warning 10240).
+      for (int i = 0; i < 8; i++) dreg[i] <= '0;
+      for (int i = 0; i < 7; i++) areg[i] <= '0;
+      for (int i = 0; i < 4; i++) t_q[i]  <= '0;
     end else begin
       upc <= upc_nxt;
 
