@@ -180,6 +180,33 @@ module rd68021_seq #(
 
   // The checkpoint set -- doc/checkpoint.md.
   logic [31:0] t_q [0:3];
+
+  // The faulted operand RTE hands back to the bus unit, and the double bus
+  // fault -- both written further down, both read above where they are written.
+  logic [31:0] rst_addr_q;
+  logic [31:0] rst_data_q;
+  logic  [2:0] rst_bytes_q;
+  logic        dbf_q;
+
+  // Declared here, above the logic that reads them, rather than beside the
+  // logic that drives them: Quartus, Vivado and Questa all refuse a use above
+  // the declaration, and tools/src_lint.py holds `make lint` to that.
+  logic [31:0] a_bus, b_bus, y;
+  logic [3:0] frame_code;
+  logic [31:0] bf_offset;
+  logic [31:0] bf_byteoff;
+  logic [31:0] bf_field, bf_sxfield, bf_merged_reg;
+  logic  [5:0] bf_ffo;
+  logic [2:0] irq_taking_q;
+  logic [31:0] pc_prev_q;   // the address of the instruction just finished
+  logic [31:0] ea_save;
+  logic        flt_odd_q;
+  logic [rd68021_ucode_pkg::UADDR-1:0] flt_upc;
+  logic [15:0] ssw;
+  logic [1:0] flt_siz;
+  logic [15:0] int08;
+  logic [15:0] int36;
+  logic retire;
   logic [15:0] xw_q;
   logic [31:0] ea_q;
 
@@ -374,7 +401,6 @@ module rd68021_seq #(
   logic [31:0] div_q, div_r;
   logic [31:0] bit_mask;
 
-  logic [31:0] a_bus, b_bus, y;
 
   // What an address-register destination actually stores. PRM 2: the whole
   // register is written whatever the operation size, and a narrower result is
@@ -675,7 +701,6 @@ module rd68021_seq #(
       .x_write (sh_xwr));
 
   // The four bits of the format word. UM table 6-5.
-  logic [3:0] frame_code;
   always_comb begin
     unique case (`UF(FRAME))
       rd68021_ucode_pkg::U_FRAME_F0: frame_code = 4'h0;
@@ -735,11 +760,9 @@ module rd68021_seq #(
   // thirty-two-bit value in a data register; the width is an immediate or a
   // register modulo 32, and a zero means 32 in either case.
   // ==========================================================================
-  logic [31:0] bf_offset;
   logic  [4:0] bf_width_enc;
   logic  [5:0] bf_width;
   logic  [2:0] bf_nbytes;
-  logic [31:0] bf_byteoff;
 
   assign bf_offset    = xw_q[11] ? dreg[xw_q[8:6]] : {27'd0, xw_q[10:6]};
   assign bf_width_enc = xw_q[5]  ? dreg[xw_q[2:0]][4:0] : xw_q[4:0];
@@ -771,13 +794,16 @@ module rd68021_seq #(
   logic  [4:0] bf_msb_ix;
   assign bf_msb_ix = 5'(bf_width - 6'd1);
 
-  logic [31:0] bf_field, bf_sxfield, bf_merged_reg;
   logic [39:0] bf_merged_mem;
   logic        bf_msb, bf_zero;
-  logic  [5:0] bf_ffo;
+
+  // A named signal and not the expression in the port connection: Quartus reads
+  // a package-scoped name there as an undeclared identifier -- coding standard.
+  logic bf_is_reg;
+  assign bf_is_reg = (`UF(SZSEL) == rd68021_ucode_pkg::U_SZSEL_BFREG);
 
   rd68021_bitfield u_bf (
-      .is_reg     (`UF(SZSEL) == rd68021_ucode_pkg::U_SZSEL_BFREG),
+      .is_reg     (bf_is_reg),
       .reg_data   (dreg[rsel]),
       .mem_data   (bf_window),
       .roff       (bf_offset[4:0]),
@@ -1167,7 +1193,6 @@ module rd68021_seq #(
   // dispatches to the handler. UM 6.1.9 requires the device to hold IPL until
   // the acknowledge, but the mask and the acknowledge address must both come
   // from ONE reading of the pins and not from two.
-  logic [2:0] irq_taking_q;
   logic       irq_nmi_edge;
   logic       irq_pending;
   logic       irq_ipend;
@@ -1220,7 +1245,6 @@ module rd68021_seq #(
   logic [1:0] trace_mode_q;
   logic       flow_q;
   logic       notrace_q;
-  logic [31:0] pc_prev_q;   // the address of the instruction just finished
   logic        pc_kept_q;   // ... and it was taken early, before a flush
 
   // ==========================================================================
@@ -1229,7 +1253,6 @@ module rd68021_seq #(
   // The exception's own frame pointer. A bus fault is taken mid-instruction, so
   // the frame cannot be built with the address buffer the instruction is using:
   // ea_q is frame field +$38 and has to still be in it when RTE reads it back.
-  logic [31:0] ea_save;
 
   // "A data fault has occurred and caused the exception." Set when the bus unit
   // reports a faulted operand, and cleared at every instruction boundary, so a
@@ -1247,14 +1270,12 @@ module rd68021_seq #(
   // Which of the two group-0 vectors this fault takes: 2 for a bus error, 3 for
   // an address error -- UM 6.1.2 and 6.1.3. One frame builder serves both, and
   // this is the only thing that differs between them.
-  logic        flt_odd_q;
 
 
   // The faulted microword's own address. By the time the builder writes frame
   // field +$14 its own micro-address is deep inside itself, and the fault entry
   // replaced `upc` on the very edge the fault was reported, so this is the only
   // moment the value exists.
-  logic [rd68021_ucode_pkg::UADDR-1:0] flt_upc;
 
   // What RTE has read back so far. The special status word arrives several
   // microwords before the pipe's flags can be written, because the pipe needs
@@ -1276,7 +1297,6 @@ module rd68021_seq #(
   // rest. "The least significant half of the SSW applies to data cycles only",
   // so with no data fault it reads as zero rather than as the leavings of the
   // last one.
-  logic [15:0] ssw;
   assign ssw = {stg_c_fault, stg_b_fault, stg_c_rerun, stg_b_rerun,
                 3'b000, df_q,
                 df_q & flt_rmc, df_q & flt_rw,
@@ -1288,14 +1308,11 @@ module rd68021_seq #(
   // five. Five is what a bit-field operand spanning five bytes leaves, so the
   // residual goes into the frame's internal word as well and SIZE carries what
   // it can -- doc/ssw.md.
-  logic [1:0] flt_siz;
   assign flt_siz = (flt_bytes >= 3'd4) ? 2'b00 : flt_bytes[1:0];
 
   // The two packed internal words of the fault frames. Every bit of them is a
   // row of doc/checkpoint.md, and rd68021_frame_pkg names the positions, so
   // they are written here in exactly the order that table is printed in.
-  logic [15:0] int08;
-  logic [15:0] int36;
   always_comb begin
     int08 = 16'd0;
     int08[rd68021_frame_pkg::I_BYTES_LO      +: 3] = flt_bytes;
@@ -1481,7 +1498,6 @@ module rd68021_seq #(
 
   assign stall = (bus_req && !req_ack) || other_stall;
 
-  logic retire;
   assign retire = !stall;
 
   // ==========================================================================
@@ -2236,7 +2252,16 @@ module rd68021_seq #(
 
   assign cacr      = cacr_q;
   assign caar      = caar_q;
-  assign cach_op   = 2'b00;
+  // MOVEC setting CACR's C or CE -- UM 4.3.1. Both "always read as zero", so
+  // they are never stored: the write is an order to the cache, carried out on the
+  // edge that commits it. C clears everything and so covers CE when both are set.
+  logic cacr_wr;
+  assign cacr_wr = commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_CREG)
+                && (creg_sel == 12'h002);
+  assign cach_op = !cacr_wr                     ? 2'b00
+                 : y[rd68021_pkg::CACR_C]  ? 2'b01
+                 : y[rd68021_pkg::CACR_CE] ? 2'b10
+                 :                           2'b00;
   // ==========================================================================
   // RTE putting a fault frame back -- UM 6.2.3, doc/ssw.md
   //
@@ -2285,9 +2310,8 @@ module rd68021_seq #(
   // internal word; the data is whichever buffer the direction makes meaningful,
   // and the microcode reads the one RW names.
   // ==========================================================================
-  logic [31:0] rst_addr_q;
-  logic [31:0] rst_data_q;
-  logic  [2:0] rst_bytes_q;
+  // rst_addr_q, rst_data_q and rst_bytes_q are declared with the checkpoint set
+  // at the top of the module: the register-write block uses them first.
 
   assign rst_op_valid = commit && `UF(RSTOP);
   assign rst_addr     = rst_addr_q;
@@ -2308,8 +2332,8 @@ module rd68021_seq #(
   // restart a processor halted by a double bus fault."
   //
   // Once set it stays set: the bus unit drives HALT out from it, nothing here
-  // retires again, and only the asynchronous reset clears it.
-  logic dbf_q;
+  // retires again, and only the asynchronous reset clears it. Declared at the
+  // top of the module, because the stall logic reads it first.
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n)                 dbf_q <= 1'b0;
     else if (req_fault && g0_q) dbf_q <= 1'b1;

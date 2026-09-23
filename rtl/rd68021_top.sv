@@ -13,11 +13,13 @@
 // doc/coding-standard.md.
 
 module rd68021_top #(
-    // Number of instruction cache entries. Zero removes the cache entirely, which is
-    // still fully software compatible -- UM 4.1 caches instructions only, so the
-    // cache is architecturally invisible -- and is how the design is brought up.
-    // CACR, CAAR and CDIS exist and behave either way.
-    parameter int ICACHE_ENTRIES = 0,
+    // Number of instruction cache entries: 64 is the MC68020 (UM 4.1), and any
+    // other power of two from 2 up is a smaller cache with a wider tag. Zero
+    // removes the cache entirely, which is still fully software compatible -- UM
+    // 4.1 caches instructions only, so the cache is architecturally invisible --
+    // and `make cache` holds the two to that. CACR, CAAR and CDIS exist and
+    // behave either way.
+    parameter int ICACHE_ENTRIES = 64,
     // Whether the coprocessor interface is built. Zero takes an F-line exception on
     // every coprocessor opcode, which is also the right behaviour for a machine with
     // no coprocessor attached.

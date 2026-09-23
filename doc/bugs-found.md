@@ -1529,3 +1529,26 @@ never shown this because its addresses are all `$FFFFFFFx`, outside every memory
 the harness has.
 
 **Fixed by:** the model deselecting itself for function code 111.
+
+## M11 · Twenty signals used above their declarations, and one port Quartus misread
+
+**What:** a portability regression, not a functional one. Running `make
+lint-quartus` and `make lint-questa` for the instruction cache found that M9 and
+M10 had broken both, and nothing had noticed, because neither is in `make check`.
+
+- Questa refused four uses above their declarations (`rst_addr_q`, `rst_data_q`,
+  `rst_bytes_q`, `dbf_q`) and stopped. There were twenty in all, across the
+  sequencer and the bus unit, mostly signals the datapath multiplexers read from
+  logic written further down the file.
+- Quartus made implicit nets of `U_SZSEL_LSB`, `U_SZSEL_W` and `U_SZSEL_BFREG`
+  from a `` `UF(SZSEL) `` comparison written straight into the bit-field unit's
+  `.is_reg` port connection -- and, with exit code 0 absent the gate, would have
+  built a bit-field unit that never took the register form.
+
+Both are rows in `doc/coding-standard.md`'s table of measured quirks. Being
+written down did not stop them coming back.
+
+**Fixed by:** moving the declarations up, binding the port expression to a named
+signal, and `tools/src_lint.py` in `make lint` -- a scan for exactly these two
+shapes, cheap enough to run on every build, so the next one is found by the
+three free front-ends rather than by a vendor run a milestone later.

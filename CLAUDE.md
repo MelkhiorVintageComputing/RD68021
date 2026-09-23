@@ -132,6 +132,7 @@ make ea               # every addressing mode and extension-word shape
 make vectors OP=alu   # one instruction group, against Musashi
 make vectors-all      # every group there is
 make cosim            # real programs, every register at every instruction
+make cache            # the same results with no instruction cache, and only fetches saved
 make timing-verbose   # the AC solver, with the binding constraint named
 ```
 

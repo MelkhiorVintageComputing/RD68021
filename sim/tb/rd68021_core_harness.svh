@@ -40,7 +40,9 @@ logic        halt_n_o, halt_n_oe;
 // the idle level and never touches them.
 logic  [2:0] ipl_n_i;
 logic        avec_n_i;
+logic        cdis_n_i;
 initial begin
+  cdis_n_i = 1'b1;
   ipl_n_i  = 3'b111;
   avec_n_i = 1'b1;
 end
@@ -78,7 +80,14 @@ assign berr_n_i = ~(berr_force | berr_hit);
 wire [31:0] dbus;
 assign dbus = d_oe ? d_o : 32'bz;
 
-rd68021_top dut (
+// The cache size comes from the Makefile's ICACHE_ENTRIES, so that `make cache`
+// can run every core testbench at both 64 and 0. A testbench that is ABOUT the
+// cache sets it itself before including this.
+`ifndef TB_ICACHE_ENTRIES
+`define TB_ICACHE_ENTRIES 64
+`endif
+
+rd68021_top #(.ICACHE_ENTRIES (`TB_ICACHE_ENTRIES)) dut (
     .clk (clk), .rst_n (rst_n),
     .fc_o (fc_o), .fc_oe (fc_oe),
     .a_o (a_o), .a_oe (a_oe),
@@ -96,7 +105,7 @@ rd68021_top dut (
     .berr_n_i (berr_n_i),
     .reset_n_i (1'b1), .reset_n_o (reset_n_o), .reset_n_oe (reset_n_oe),
     .halt_n_i (1'b1), .halt_n_o (halt_n_o), .halt_n_oe (halt_n_oe),
-    .cdis_n_i (1'b1)
+    .cdis_n_i (cdis_n_i)
 );
 
 logic [1:0] dsack32, dsack16, dsack8;

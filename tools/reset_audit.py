@@ -25,6 +25,13 @@ partly-built design is most of them -- running the full flow here reported "0
 flip-flops, every one reset", which is true and worthless. Stopping before
 `opt_clean` audits every register the source actually describes.
 
+Memories are not registers. yosys leaves an inferred RAM as a $mem cell, which
+this audit does not count, and there is exactly one: the instruction cache's
+array (rtl/rd68021_icache.sv). It is gated by 64 valid bits that ARE reset flops,
+and no lookup reads the array for an entry whose valid bit is clear, so nothing
+the RAM powered up holding can be observed -- UM 4.2 clears the cache the same
+way.
+
 Exemptions are named individually in EXEMPT below, with the argument for each, and
 the audit fails if a second one appears. A blanket allowance would defeat the point.
 """
@@ -95,7 +102,7 @@ def scan_source(files):
     return bad
 
 
-def yosys_netlist(files, top, build):
+def yosys_netlist(files, top, build, params=()):
     """Elaborate to bit-level cells and return {cell type: count}.
 
     `proc` turns always blocks into word-level $dff/$adff, `flatten` pulls the whole
@@ -104,9 +111,20 @@ def yosys_netlist(files, top, build):
     they carry a reset. Nothing that deletes cells is run -- see the note above.
     """
     out = os.path.join(build, f'{top}_audit.v')
+    chparam = ''.join(f"chparam -set {k} {v} {top}; "
+                      for k, v in (p.split('=', 1) for p in params))
     script = (f"read_verilog -sv {' '.join(files)}; "
+              f"{chparam}"
               f"hierarchy -check -top {top}; "
-              f"proc; flatten; simplemap; "
+              f"proc; flatten; "
+              # proc_memwr gives a RAM's write port its own clock and then
+              # leaves behind the three registers proc staged the port's
+              # address, data and enable in, driving wires named $memwr$...
+              # that nothing reads. They are not state: delete exactly those
+              # and no other cell -- opt_clean would do it too, but it would
+              # also delete every genuine register nothing reads yet.
+              f"delete w:*$memwr$* %ci1:+$dff[Q] t:$dff %i; "
+              f"simplemap; "
               f"stat; write_verilog {out}")
     proc = subprocess.run(['yosys', '-p', script], capture_output=True, text=True)
     if proc.returncode != 0:
@@ -144,6 +162,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--top', default='rd68021_top')
     ap.add_argument('--build', default='build')
+    ap.add_argument('--param', action='append', default=[],
+                    help='NAME=VALUE, a top-level parameter to audit the design at')
     ap.add_argument('--source-only', action='store_true',
                     help='skip the netlist check, for a fast pass')
     ap.add_argument('files', nargs='+')
@@ -163,7 +183,8 @@ def main():
 
     if not args.source_only:
         os.makedirs(args.build, exist_ok=True)
-        counts, _ = yosys_netlist(args.files, args.top, args.build)
+        counts, _ = yosys_netlist(args.files, args.top, args.build,
+                                  args.param)
 
         reset = sum(n for c, n in counts.items() if c in RESET_FF)
         unreset = {c: n for c, n in counts.items() if c in UNRESET_FF}

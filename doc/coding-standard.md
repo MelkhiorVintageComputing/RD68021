@@ -215,7 +215,11 @@ A function whose result depends only on its arguments is still fine anywhere.
 | yosys | a variable **declared inside an `always_ff`** and assigned with `=` reads like a temporary and is not one: yosys gives it storage, and the flip-flops it makes have no reset because nothing in the reset branch mentions them | declare it outside and drive it with a continuous assignment. Measured here on a four-bit register select inside MOVEM's destination arm: `make lint` passed and `make audit` reported four flip-flops initialising outside reset |
 | Quartus, Vivado, Questa | a signal **used before it is declared** inside a module. iverilog, Verilator and yosys all accept it; Quartus creates an implicit net and builds a netlist that does not match the source, Vivado's `[Synth 8-6901]` says so, and Questa refuses with `Undefined variable` | declare every signal above its first use. Measured here on six signals the datapath's source multiplexers read from units written further down the file: three front-ends green, three refusing |
 
-Two of these have a grep, and the greps are worth running before a vendor run
+Two of these are checked by `tools/src_lint.py`, which is part of `make lint`:
+a signal used above its declaration, and a package-scoped name (or the `` `UF ``
+macro) in a port connection. Both were in this table and both came back anyway
+during M10, found only when M11 ran Quartus and Questa -- twenty signals and one
+port. The greps below are the rest, and are worth running before a vendor run
 rather than after one:
 
 ```sh

@@ -13,7 +13,7 @@ TOP   ?= rd68021_top
 BUILD ?= build
 
 # Overridable build knobs, all documented where they are used.
-ICACHE_ENTRIES ?= 0
+ICACHE_ENTRIES ?= 64
 COPROCESSOR    ?= 0
 
 # Vendor tool locations. Neither is on PATH; the launchers in scripts/ set it up.
@@ -40,6 +40,7 @@ SRCS := rtl/rd68021_sync.sv \
         rtl/rd68021_divider.sv \
         rtl/rd68021_bitfield.sv \
         rtl/rd68021_biu.sv \
+        rtl/rd68021_icache.sv \
         rtl/rd68021_ifu.sv \
         rtl/rd68021_seq.sv \
         rtl/rd68021_top.sv
@@ -47,11 +48,11 @@ SRCS := rtl/rd68021_sync.sv \
 RTL  := $(PKGS) $(GENPKG) $(GENSRC) $(SRCS)
 VLT  := rtl/rd68021.vlt
 
-IVFLAGS := -g2012 -Wall -Wno-timescale
+IVFLAGS := -g2012 -Wall -Wno-timescale -DTB_ICACHE_ENTRIES=$(ICACHE_ENTRIES)
 
-.PHONY: all help dirs lint lint-iverilog lint-verilator lint-yosys \
+.PHONY: all help dirs lint lint-source lint-iverilog lint-verilator lint-yosys \
         lint-quartus lint-questa synth audit ucode ucode-check sim sim-bus \
-        timing timing-verbose ea check clean
+        timing timing-verbose ea cache check clean
 
 all: lint
 
@@ -65,6 +66,7 @@ help:
 	@echo "  make audit     prove no register initialises outside reset"
 	@echo "  make timing    AC-specification feasibility, all four speed grades"
 	@echo "  make ea        every addressing mode against Musashi"
+	@echo "  make cache     the same results with no instruction cache at all"
 	@echo "  make ucode     regenerate rtl/gen/ from tools/ucode/"
 	@echo "  make check     the gate: ucode-check, lint, audit"
 	@echo
@@ -80,7 +82,14 @@ dirs:
 # ---------------------------------------------------------------------------
 # Lint -- the three that need no vendor installation
 # ---------------------------------------------------------------------------
-lint: lint-iverilog lint-verilator lint-yosys
+lint: lint-source lint-iverilog lint-verilator lint-yosys
+
+# The two portability rules the three free front-ends do not enforce and the
+# three vendor ones do -- declaration before use, and no package-scoped name in a
+# port connection. Both are in doc/coding-standard.md and both came back once
+# because nothing cheaper than a vendor run looked.
+lint-source:
+	@python3 tools/src_lint.py $(filter-out $(PKGS) $(GENPKG),$(RTL))
 	@echo "PASS: lint"
 
 # Both of these run the tool into a log and decide from its exit status, rather
@@ -95,13 +104,15 @@ lint: lint-iverilog lint-verilator lint-yosys
 NOTES := ': sorry: .*\(ignored\|all bits will be included\)\.$$'
 
 lint-iverilog: dirs
-	@iverilog $(IVFLAGS) -o $(BUILD)/$(TOP).vvp -s $(TOP) $(RTL) \
+	@iverilog $(IVFLAGS) -P$(TOP).ICACHE_ENTRIES=$(ICACHE_ENTRIES) \
+	    -o $(BUILD)/$(TOP).vvp -s $(TOP) $(RTL) \
 	    > $(BUILD)/iverilog.log 2>&1 \
 	  || { grep -v $(NOTES) $(BUILD)/iverilog.log; exit 1; }
 	@echo "  iverilog: ok"
 
 lint-verilator: dirs
-	@verilator --lint-only -Wall --top-module $(TOP) $(VLT) $(RTL) \
+	@verilator --lint-only -Wall --top-module $(TOP) \
+	    -GICACHE_ENTRIES=$(ICACHE_ENTRIES) $(VLT) $(RTL) \
 	    > $(BUILD)/verilator.log 2>&1 \
 	  || { grep -v '^- V e r i l a t i o n\|^- Verilator:' $(BUILD)/verilator.log; exit 1; }
 	@echo "  verilator: ok"
@@ -115,7 +126,8 @@ lint-verilator: dirs
 # inferred latch. Both are gates here, not the exit code -- measured: op_addr was
 # driven from both the posedge and the negedge block and `make lint` said PASS.
 lint-yosys: dirs
-	@set -o pipefail; yosys -p "read_verilog -sv $(RTL); synth -top $(TOP); \
+	@set -o pipefail; yosys -p "read_verilog -sv $(RTL); \
+	    chparam -set ICACHE_ENTRIES $(ICACHE_ENTRIES) $(TOP); synth -top $(TOP); \
 	    write_verilog $(BUILD)/$(TOP)_yosys.v" > $(BUILD)/yosys.log 2>&1 \
 	  || { tail -40 $(BUILD)/yosys.log; exit 1; }
 	@if grep -q 'multiple conflicting drivers\|Warning: Identifier .* is implicitly declared\|inferring latch' $(BUILD)/yosys.log; then \
@@ -128,7 +140,8 @@ lint-yosys: dirs
 # The reset rule
 # ---------------------------------------------------------------------------
 audit: dirs
-	@python3 tools/reset_audit.py --top $(TOP) --build $(BUILD) $(RTL)
+	@python3 tools/reset_audit.py --top $(TOP) --build $(BUILD) \
+	    --param ICACHE_ENTRIES=$(ICACHE_ENTRIES) $(RTL)
 
 # ---------------------------------------------------------------------------
 # Microcode -- M4
@@ -344,6 +357,45 @@ cosim: dirs $(patsubst %,$(BUILD)/programs/%.hex,$(PROGS)) \
 	  fi; \
 	done; \
 	test $$ok -eq 1 && echo "PASS: cosim"
+
+# ---------------------------------------------------------------------------
+# The instruction cache is architecturally invisible
+#
+# UM 4.1 caches instruction prefetches and nothing else, so a core built with no
+# cache at all must give the same answers. This runs the directed testbenches,
+# the sweep and the effective-address vectors on a core with ICACHE_ENTRIES=0,
+# and then every program on both builds, holding the two to identical data
+# cycles and to no more instruction fetches with the cache than without.
+# ---------------------------------------------------------------------------
+NOCACHE := $(BUILD)/nocache
+
+cache: dirs $(patsubst %,$(BUILD)/programs/%.hex,$(PROGS)) \
+            $(patsubst %,$(BUILD)/programs/%.trc,$(PROGS))
+	@echo "  -- ICACHE_ENTRIES=0: the directed testbenches"
+	@$(MAKE) --no-print-directory sim ICACHE_ENTRIES=0 BUILD=$(NOCACHE)
+	@echo "  -- ICACHE_ENTRIES=0: the sweep and the effective addresses"
+	@$(MAKE) --no-print-directory vectors ea ICACHE_ENTRIES=0 BUILD=$(NOCACHE) \
+	    MBUILD=$(MBUILD)
+	@echo "  -- the programs, both ways"
+	@ok=1; for e in 0 64; do \
+	  iverilog -g2012 -Wall -Wno-timescale -DTB_ICACHE_ENTRIES=$$e -I sim/tb \
+	      -o $(NOCACHE)/cosim$$e.vvp -s core_cosim_tb \
+	      $(RTL) sim/models/*.sv sim/tb/core_cosim_tb.sv \
+	      > $(NOCACHE)/cosim$$e.build.log 2>&1 \
+	    || { grep -v $(NOTES) $(NOCACHE)/cosim$$e.build.log; exit 1; }; \
+	done; \
+	for p in $(PROGS); do \
+	  for e in 0 64; do \
+	    vvp $(NOCACHE)/cosim$$e.vvp +image=$(BUILD)/programs/$$p.hex \
+	        +trace=$(BUILD)/programs/$$p.trc +buslog=$(NOCACHE)/$$p.$$e.bus \
+	        > $(NOCACHE)/cosim-$$p.$$e.log 2>&1; \
+	    grep -q '^PASS' $(NOCACHE)/cosim-$$p.$$e.log \
+	      || { echo "  FAIL: $$p with $$e entries"; tail -3 $(NOCACHE)/cosim-$$p.$$e.log; ok=0; }; \
+	  done; \
+	  r=$$(python3 tools/cache_diff.py $(NOCACHE)/$$p.0.bus $(NOCACHE)/$$p.64.bus) \
+	    && echo "  PASS: $$p -- $$r" || { echo "  $$r"; ok=0; }; \
+	done; \
+	test $$ok -eq 1 && echo "PASS: cache"
 
 cosim-long: dirs
 	@$(MAKE) --no-print-directory cosim STEPS=4000000

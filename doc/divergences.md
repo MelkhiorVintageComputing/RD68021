@@ -163,6 +163,34 @@ something did, it would be observing a byte the manual says is meaningless.
 
 ---
 
+## A cache hit never shows on the bus
+
+UM 5.1.1 and 5.2.5: the part may start the external cycle for an instruction
+fetch *in parallel with* the cache lookup, and abort it before AS when the
+lookup hits. That shows on the pins as ECS (and OCS) asserted with no AS after
+it, which is why the manual tells a system to qualify ECS with AS.
+
+This core looks the cache up first. The array is read asynchronously and the
+lookup is a 25-bit compare on its output, so the fetch unit knows hit or miss in
+the same clock it knows which long word it wants, and asks the bus unit only on
+a miss. A hit therefore makes no cycle at all -- no ECS, no OCS, no address.
+
+**Why this is allowed.** The manual's words are "a bus cycle *may* be aborted
+after ECS has been asserted" and "these aborted cycles due to cache hits *may*
+not be seen externally", and it requires AS qualification of anything ECS
+starts. A system built to the manual cannot tell an aborted cycle from no cycle.
+
+**Why it is done.** An abort is a bus-unit decision inside half a clock -- the
+lookup result from S0's rising edge to AS on S1's falling edge -- and it would
+have put the cache tag compare on the bus unit's critical path. It would also
+spend a clock of bus time on every hit that a DMA master could have had.
+
+**What it costs.** Nothing measurable in cycle counts: a miss is not delayed,
+because the lookup takes no clock. `make cache` measures the fetches the cache
+takes away.
+
+---
+
 ## Musashi calls a program-counter-relative indirection a data reference
 
 Not a divergence in this core: a place where the oracle is wrong and the sweep

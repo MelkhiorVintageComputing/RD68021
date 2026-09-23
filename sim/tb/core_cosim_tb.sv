@@ -29,7 +29,22 @@ module core_cosim_tb;
   bit          ok, bad;
   string       image, trace, why;
 
+  // The bus, cycle by cycle, for `make cache` to hold two builds of the core to
+  // "the same program makes the same data cycles, and the cache only ever takes
+  // instruction fetches away". One line per cycle at the negation of AS: the
+  // requester (F for the instruction pipe, D for everything else), the function
+  // code, the address, the size, the direction, and what a write wrote.
+  integer bus_log;
+  string  bus_file;
+  initial bus_log = 0;
+
+  always @(posedge as_n_o) if (bus_log != 0 && rst_n)
+    $fdisplay(bus_log, "%s %0d %08h %0d %s %08h",
+              dut.u_biu.op_isfetch ? "F" : "D", fc_o, a_o, siz_o,
+              rw_o ? "R" : "W", rw_o ? 32'd0 : d_o);
+
   initial begin
+    if ($value$plusargs("buslog=%s", bus_file)) bus_log = $fopen(bus_file, "w");
     if (!$value$plusargs("image=%s", image)) image = "build/programs/arith.hex";
     if (!$value$plusargs("trace=%s", trace)) trace = "build/programs/arith.trc";
 

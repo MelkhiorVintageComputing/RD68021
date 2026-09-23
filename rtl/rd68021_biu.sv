@@ -176,6 +176,12 @@ module rd68021_biu #(
   logic        op_rmc;
   logic        op_first;     // no bus cycle of this operand has started yet -- OCS
   logic        op_isfetch;   // the request came from the instruction fetch unit
+
+  // Declared here, above the logic that reads them, rather than beside the
+  // logic that drives them: Quartus, Vivado and Questa all refuse a use above
+  // the declaration, and tools/src_lint.py holds `make lint` to that.
+  logic        rst_pend_q;
+  logic       rsto_q;
   logic [39:0] op_data;      // write data, or the read accumulator, right justified
 
   // The result of the last completed operand of each kind, held until the next
@@ -585,7 +591,6 @@ module rd68021_biu #(
   // ==========================================================================
   // Starting a cycle, and starting an operand
   // ==========================================================================
-  logic        rst_pend_q;
   logic        take_rst;
   logic        take_req;
   logic        take_fetch;
@@ -1139,7 +1144,6 @@ module rd68021_biu #(
   // the request is still asserted on the clock the count expires, and must not
   // be allowed to start it again.
   logic [8:0] rsto_cnt;
-  logic       rsto_q;
   logic       rsto_arm_q;
 
   always_ff @(posedge clk or negedge rst_n) begin

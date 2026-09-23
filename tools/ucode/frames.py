@@ -216,6 +216,12 @@ EXEMPT = [
     ('ifu', 'fetch_pend_q', 'a prefetch is outstanding. Derived: RTE re-issues '
                             'whatever the refill needs.'),
     ('ifu', 'fetch_addr_q', 'the address that prefetch was issued at. Likewise.'),
+    ('ifu', 'fetch_fc2_q',  '... and the space, for the cache tag. Likewise.'),
+    ('icache', 'valid_q',   'the instruction cache. UM 4.1 caches instruction '
+                            'prefetches only, so it is architecturally '
+                            'invisible; a fault leaves it alone and RTE has '
+                            'nothing to put back.'),
+    ('icache', 'mem',       '... its tags and data, which the valid bits gate'),
     ('ifu', 'ckpt_busy_q',  'RTE is in the middle of putting this pipe back, '
                             'so it does not fetch. It cannot be live across a '
                             'fault: a fault while RTE reads its own frame is a '
@@ -518,7 +524,7 @@ def check():
 # --------------------------------------------------------------------------
 # The check that reads the RTL
 # --------------------------------------------------------------------------
-_MODULES = ('ifu', 'biu', 'seq', 'divider', 'shifter', 'sync', 'dedge_ff', 'top')
+_MODULES = ('ifu', 'icache', 'biu', 'seq', 'divider', 'shifter', 'sync', 'dedge_ff', 'top')
 
 
 def _unparen(text):

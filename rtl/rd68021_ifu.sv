@@ -1,7 +1,7 @@
 // RD68021 - SystemVerilog MC68020
 //
 // Instruction fetch unit: the cache holding register, the three-stage instruction
-// pipe, and (from M11) the instruction cache.
+// pipe, and the instruction cache.
 //
 // UM 1.6 and figure 1-5: "instruction words (instruction operation words and all
 // extension words) enter the pipe at stage B and proceed to stages C and D. An
@@ -111,6 +111,11 @@ module rd68021_ifu #(
   logic        fetch_pend_q;   // a fetch has been asked for and not yet answered
   logic        discard_q;      // the word in flight is for a stream that is gone
 
+  // ... and the space: the cache tag carries FC2 (UM 4.1), and the fill has to be
+  // tagged with the space the long word was READ from, which a flush that changed
+  // the privilege level while the fetch was in flight has already moved on from.
+  logic        fetch_fc2_q;
+
   // The address that fetch was issued at. It has to be a register: fill_q moves
   // on as the queue drains, and a combinational fetch_addr would label the long
   // word that comes back with wherever the queue had got to by then. The cache
@@ -172,8 +177,80 @@ module rd68021_ifu #(
   assign fetch_fc    = pf_super ? rd68021_pkg::FC_SUPER_PROG
                                 : rd68021_pkg::FC_USER_PROG;
 
-  // M11: a hit in the instruction cache aborts the external cycle before AS.
+  // A hit in the instruction cache never starts an external cycle, so there is
+  // nothing to abort. UM 5.2.5 says the part MAY start the cycle in parallel with
+  // the lookup and abort it before AS, which shows as an ECS with no AS after it;
+  // here the lookup is combinational and decides before the bus unit is asked, so
+  // it never does. doc/divergences.md.
   assign bus_abort = 1'b0;
+
+  // ==========================================================================
+  // The instruction cache -- UM section 4
+  //
+  // Consulted at exactly one point: where the queue wants a long word that the
+  // cache holding register does not have, which is where the bus would otherwise
+  // be asked for it. A hit loads the holding register from the cache, and the
+  // queue then drains it exactly as it drains a long word from the bus -- the
+  // pipe cannot tell the two apart, which is what makes the cache architecturally
+  // invisible (UM 4.1: data accesses are never cached, so nothing but the
+  // instruction stream could see it anyway).
+  //
+  // Enabled by CACR's E bit, and disabled regardless of it while CDIS is asserted
+  // (UM 4.3). Disabled means neither looked up nor filled; it does NOT mean
+  // emptied -- "if the cache is reenabled, the previously valid entries remain
+  // valid and may be used" (UM 4.3.1).
+  // ==========================================================================
+  logic        cache_on;
+  logic        cache_hit;
+  logic [31:0] cache_rdata;
+  logic        cache_fill;
+  logic        inv_all, inv_one;
+
+  assign cache_on = cacr[rd68021_pkg::CACR_E] && cdis_sync_n;
+
+  // UM 4.1: the entry is written "unless the F-bit in the CACR is set". And a
+  // long word whose cycle ended in a bus error is not an instruction at all: the
+  // pipe carries it with its fault bit, and it must not outlive that in the cache.
+  // A word for a stream a flush abandoned is still the right word for its own
+  // address, but it is not taken into the holding register either, and filling
+  // the cache with it would be the only trace it left -- so it is dropped whole.
+  assign cache_fill = fetch_ack && !discard_q && !fetch_fault
+                   && cache_on && !cacr[rd68021_pkg::CACR_F];
+
+  // CACR's C and CE, pulsed by the MOVEC that sets them. CE clears "regardless of
+  // the states of the E and F bits" (UM 4.3.1), and so does C.
+  assign inv_all = (cach_op == 2'b01);
+  assign inv_one = (cach_op == 2'b10);
+
+  generate
+    if (ICACHE_ENTRIES > 0) begin : g_cache
+      logic cache_lhit;
+      rd68021_icache #(.ENTRIES (ICACHE_ENTRIES)) u_icache (
+          .clk     (clk),
+          .rst_n   (rst_n),
+          .la      (fill_q[31:2]),
+          .lfc2    (pf_super),
+          .hit     (cache_lhit),
+          .rdata   (cache_rdata),
+          .fill    (cache_fill),
+          .fa      (fetch_addr_q[31:2]),
+          .ffc2    (fetch_fc2_q),
+          .fdata   (fetch_rdata),
+          .inv_all (inv_all),
+          .inv_one (inv_one),
+          .inv_la  (caar[31:2]));
+      assign cache_hit = cache_on && cache_lhit;
+    end else begin : g_nocache
+      // No cache. CACR and CAAR still exist and read back what was written, and
+      // CDIS is still sampled; with nothing behind them they change nothing,
+      // which is what a disabled cache does anyway.
+      assign cache_hit   = 1'b0;
+      assign cache_rdata = 32'd0;
+      logic unused_nocache;
+      assign unused_nocache = &{1'b1, cache_fill, inv_all, inv_one, caar,
+                                fetch_fc2_q};
+    end
+  endgenerate
 
   // ==========================================================================
   // The pipe
@@ -214,6 +291,7 @@ module rd68021_ifu #(
       chr_f_q      <= 1'b0;
       fetch_pend_q <= 1'b0;
       fetch_addr_q <= '0;
+      fetch_fc2_q  <= 1'b0;
       discard_q    <= 1'b0;
       primed_q     <= 1'b0;
       ckpt_busy_q  <= 1'b0;
@@ -234,9 +312,20 @@ module rd68021_ifu #(
           chr_v_q    <= 1'b1;
           chr_f_q    <= fetch_fault;
         end
+      end else if (room && !chr_hit && cache_hit
+                   && (!fetch_pend_q || discard_q)) begin
+        // A hit. It may be taken while a fetch the pipe has abandoned is still
+        // in flight -- a branch to code the cache holds does not wait for the
+        // answer to a prefetch down the path not taken -- because that answer
+        // is discarded when it lands and so cannot overwrite this.
+        chr_q      <= cache_rdata;
+        chr_addr_q <= fill_q[31:2];
+        chr_v_q    <= 1'b1;
+        chr_f_q    <= 1'b0;
       end else if (!fetch_pend_q && room && !chr_hit) begin
         fetch_pend_q <= 1'b1;
         fetch_addr_q <= {fill_q[31:2], 2'b00};
+        fetch_fc2_q  <= pf_super;
       end
 
       // ------------------------------------------------------------------
@@ -413,8 +502,6 @@ module rd68021_ifu #(
   // ==========================================================================
   logic unused_ifu;
   assign unused_ifu = &{1'b1,
-                        ckpt_save, ckpt_load,
-                        cacr, caar, cach_op, cdis_sync_n,
-                        ICACHE_ENTRIES == 0};
+                        ckpt_save, cacr, caar[1:0]};
 
 endmodule
