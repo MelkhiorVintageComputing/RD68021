@@ -100,13 +100,12 @@ thing a real operating system's code does on its first page.
   floating-point instruction is an F-line trap, as on a Sun-3 with no 68881.
 - **RMC.** The element does not pass the core's read-modify-write lock to TME's bus
   cycles. One CPU and no DMA master in this machine makes that unobservable.
-- **Booting SunOS is not a `make` target yet.** It needs the installation tape's
-  files from `Inputs/ref/Run-Sun3-SunOS-4.1.1` and about three minutes; see below.
-
 ## SunOS 4.1.1
 
-With the SCSI controller (TME's `si` board; the input's `sun-sc` is not found by
-this PROM) and the first five files of the installation tape, the PROM boots
+`make sunos` runs the same machine with a SCSI controller (TME's `si` board; the
+input's `sun-sc` is not found by this PROM), described in `sim/tme/SUNOS.in`, and
+the first five files of the installation tape, with the EEPROM's boot device set
+to the tape. The PROM boots
 SunOS 4.1.1's install kernel (MUNIX) on the core -- kernel loaded, devices
 probed, RAM disk read, root mounted -- to its install menu and a working
 single-user shell, as on TME's m68020:
@@ -125,8 +124,9 @@ hello from the rd68021
 #
 ```
 
-About 172 seconds of simulation, `PROMPT='1 or 2: *|# *' drive.sh SUNOS 3000 2
-"ls /" ...`. It found two more bugs, both in the bus-fault frames, and both in
+`sim/tme/drive.sh` answers the menu and types the two commands, on both CPUs,
+and the target requires the two consoles to be identical byte for byte, ending at
+the shell's prompt -- about three minutes on the core. It found two more bugs, both in the bus-fault frames, and both in
 `doc/bugs-found.md`:
 
 4. **A bus fault taken in user mode stacked its status register in user space** --

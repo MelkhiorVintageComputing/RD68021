@@ -1,0 +1,35 @@
+# RD68021 -- the Sun-3/160 `make sunos` boots SunOS 4.1.1 on, as a TME machine
+# description.
+#
+# SUN3.in with a SCSI bus: TME's `si` VME board -- the Carrera PROM does not find
+# the input's `sun-sc` -- an NCR 5380, a disk and a tape drive. The tape holds
+# the first five files of the SunOS 4.1.1 installation tape, which is as far as
+# the install kernel (MUNIX) reads: the boot block, the table of contents, the
+# kernel, its RAM-disk root, and the miniroot. The disk is empty; the kernel only
+# probes it. @CPU@ is `tme/ic/m68020` or `tme/ic/rd68021`, @ROM@ the patched
+# PROM, @TAPE@ the tape files' directory.
+mainbus0: tme/machine/sun3 sun3-idprom.bin
+cpu0 at mainbus0: @CPU@
+obio0 at mainbus0 obio: tme/generic/bus size 16MB
+obmem0 at mainbus0 obmem: tme/generic/bus size 4GB
+ram0 at obmem0 addr 0x0: tme/host/posix/memory ram 4MB
+rom0 at obmem0 addr 0x0fef0000: tme/host/posix/memory rom @ROM@
+zs0 at obio0 addr 0x020000 ipl 6: tme/machine/sun3/zs
+zs1 at obio0 addr 0x000000 ipl 6: tme/machine/sun3/zs
+eeprom0 at obio0 addr 0x040000: tme/host/posix/memory persistent sun3-eeprom.bin
+clock0 at obio0 addr 0x060000: tme/machine/sun3/clock
+mainbus0 memerr at obio0 addr 0x080000 ipl 7
+mainbus0 intreg at obio0 addr 0x0A0000
+vme0: tme/generic/bus size 4GB
+mainbus0 vme at vme0 addr 0x00000
+si0: tme/machine/sun3/si type vme
+si0 csr at vme0 addr 0xff200000 ipl 2
+ncr0 at si0: tme/ic/ncr5380
+scsibus0 at ncr0: tme/scsi/bus
+sd0 at scsibus0: tme/scsi/disk id 0 type tme-scsi-1
+disk0 at sd0: tme/host/posix/disk file disk.img
+st0 at scsibus0: tme/scsi/tape id 4 type emulex-mt02 vendor EMULEX product "MT-02 QIC"
+tape0 at st0: tme/host/posix/tape
+console0 at zs0 channel A: tme/host/posix/serial device-input console.in device-output console.out
+command tape0 load @TAPE@/tpboot.sun3 @TAPE@/SunOS411.sun3.QIC-24a.xdrtoc @TAPE@/munix_sun3 @TAPE@/munixfs_sun3 @TAPE@/miniroot_sun3
+command mainbus0 power up

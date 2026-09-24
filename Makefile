@@ -52,7 +52,7 @@ IVFLAGS := -g2012 -Wall -Wno-timescale -DTB_ICACHE_ENTRIES=$(ICACHE_ENTRIES)
 
 .PHONY: all help dirs lint lint-source lint-iverilog lint-verilator lint-yosys \
         lint-quartus lint-questa quartus synth impl paths audit ucode ucode-check sim sim-bus \
-        timing timing-verbose ea cache cycles suska sun3 check clean
+        timing timing-verbose ea cache cycles suska sun3 sunos check clean
 
 all: lint
 
@@ -70,6 +70,7 @@ help:
 	@echo "  make cycles    instruction clock counts against UM section 8"
 	@echo "  make suska     the bus against a second core, the Suska WF68K30L"
 	@echo "  make sun3      a Sun-3/160 boot PROM on the core, inside TME"
+	@echo "  make sunos     SunOS 4.1.1 on that machine, to a single-user shell"
 	@echo "  make ucode     regenerate rtl/gen/ from tools/ucode/"
 	@echo "  make check     the gate: ucode-check, lint, audit"
 	@echo
@@ -511,6 +512,44 @@ sun3: dirs
 	  echo "FAIL: sun3 -- the console output differs"; \
 	  diff <(tr -d '\r\000' < $(SUN3DIR)/m68020/console.out) \
 	       <(tr -d '\r\000' < $(SUN3DIR)/rd68021/console.out) | head -20; exit 1; \
+	fi
+
+# ---------------------------------------------------------------------------
+# SunOS 4.1.1 on the same machine -- doc/sun3.md
+#
+# `make sun3`'s machine with a SCSI tape holding the installation tape's first
+# five files, and the EEPROM's boot device pointed at it: st(0,32,0), SCSI target
+# 4 as the PROM counts. The PROM boots the install kernel, MUNIX, which asks what
+# to do; sim/tme/drive.sh answers 2, for a single-user shell, and types two
+# commands at it. The console must be byte for byte what TME's m68020 prints,
+# ending at the shell's prompt. The core takes about three minutes.
+# ---------------------------------------------------------------------------
+SUNOSDIR := $(BUILD)/sunos-boot
+SUNOSCMD := 2 "ls /" "echo hello from the shell"
+
+sunos: sun3
+	@sed 's/^boot-device .*/boot-device st(0,32,0)/' $(SUN3DIR)/eeprom.txt > $(SUN3DIR)/eeprom-st.txt
+	@$(TMEENV) $(TMEINST)/bin/tme-sun-eeprom < $(SUN3DIR)/eeprom-st.txt > $(SUN3DIR)/eeprom-st.bin 2>/dev/null
+	@for cpu in m68020 rd68021; do \
+	  d=$(SUNOSDIR)/$$cpu; rm -rf $$d; mkdir -p $$d; \
+	  cp $(SUN3DIR)/prom.bin $(SUN3DIR)/sun3-idprom.bin $$d/; \
+	  cp $(SUN3DIR)/eeprom-st.bin $$d/sun3-eeprom.bin; \
+	  truncate -s 300000000 $$d/disk.img; \
+	  arg=tme/ic/$$cpu; [ $$cpu = rd68021 ] && arg="tme/ic/rd68021 log rd68021.log"; \
+	  sed "s|@CPU@|$$arg|; s|@ROM@|prom.bin|; s|@TAPE@|$(CURDIR)/$(SUN3SRC)/sunos411|g" \
+	      sim/tme/SUNOS.in > $$d/SUNOS; \
+	  (cd $$d && PROMPT='1 or 2: *|# *' T=$(CURDIR)/$(TMEINST) \
+	      $(CURDIR)/sim/tme/drive.sh SUNOS 3000 $(SUNOSCMD) > /dev/null 2>&1); \
+	done
+	@if cmp -s $(SUNOSDIR)/m68020/console.out $(SUNOSDIR)/rd68021/console.out \
+	    && tr -d '\r\000' < $(SUNOSDIR)/rd68021/console.out | tail -c 2 | grep -q '^# $$'; then \
+	  tr -d '\r\000' < $(SUNOSDIR)/rd68021/console.out | tail -6 | sed 's/^/    /'; echo; \
+	  echo "  sunos: $$(wc -c < $(SUNOSDIR)/rd68021/console.out) bytes of console output identical to TME's m68020, ending at SunOS's shell prompt"; \
+	  echo "PASS: sunos"; \
+	else \
+	  echo "FAIL: sunos -- the console output differs"; \
+	  diff <(tr -d '\r\000' < $(SUNOSDIR)/m68020/console.out) \
+	       <(tr -d '\r\000' < $(SUNOSDIR)/rd68021/console.out) | head -20; exit 1; \
 	fi
 
 cosim-long: dirs
