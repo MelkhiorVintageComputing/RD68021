@@ -231,6 +231,12 @@ compiled program uses none of it.
   restarts from the operation word's address, which holds the BKPT, so the
   acknowledge is run again every time. Not tested.
 
+## Area and clock
+
+`make impl`, Artix-7: the interface costs 493 Slice LUTs (7 %) and takes the clock from
+22.72 to 22.28 MHz. `COPROCESSOR = 0` does not give either back -- it only makes F-line
+words F-line exceptions. `doc/implementation.md`.
+
 ## Cycle counts
 
 UM section 8 gives no counts for coprocessor instructions, which depend on the

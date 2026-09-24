@@ -80,6 +80,48 @@ It fits in 28 % of the part and makes 21 MHz as it is, so it is recorded here
 rather than fixed. The known way round it -- an array initialised from a file --
 needs an `initial` block, which `rtl/` does not allow.
 
+## The coprocessor interface (M13)
+
+`make impl` on the M13 tree, both settings of `COPROCESSOR`, Artix-7 xc7a100t-1:
+
+| | M12 | M13, `COPROCESSOR = 1` | M13, `COPROCESSOR = 0` |
+|---|--:|--:|--:|
+| Slice LUTs | 6,824 | **7,317** (+493, +7.2 %) | 7,321 |
+| registers | 1,862 | 1,881 | 1,881 |
+| block memory | 11 RAMB36 | 11 RAMB36 + 1 RAMB18 | 11 RAMB36 + 1 RAMB18 |
+| DSP | 4 | 4 | 4 |
+| **frequency, static** | 22.72 MHz | **22.28 MHz** (44.88 ns) | 22.36 MHz (44.73 ns) |
+
+Where the 493 LUTs went:
+
+| | M12 | M13 | |
+|---|--:|--:|--:|
+| sequencer, excluding its units | 3,436 | 3,849 | +413 |
+| opcode decoder | 237 | 288 | +51 |
+| fetch unit and instruction cache | 477 | 511 | +34 |
+| bus unit | 598 | 595 | −3 |
+
+The sequencer's share is the primitive decoder, the new conditions -- the
+effective-address classes of UM table 7-4, the format words, the byte counter --
+the new sources and destinations, and the register the primitive is held in. The
+microword grew from 100 to 102 bits (`cond` and `bsrc` a bit each), which is the
+extra RAMB18, and the store from 1,529 to 2,043 words, which is free: it was built at
+4,096 already.
+
+**`COPROCESSOR = 0` does not take the interface out.** The parameter only decides
+what the opcode decoder hands the sequencer for an F-line word; the primitive
+decoder, the conditions and the microcode are still there and still reachable from
+the rest of the program, so nothing prunes them. The two settings are within four
+LUTs and a tenth of a megahertz of each other. A build that needed the area back
+would have to put the sequencer's coprocessor datapath behind the parameter as
+well; at 7 % of the design and 2 % of the clock it has not been worth it.
+
+**The clock** is 2 % slower, and still clears the 16.67 and 20 MHz speed grades on
+static timing alone. The limiting path is the same family as M12's -- a register
+through the condition multiplexer into the microcode store's address, 45 levels --
+now starting at `xw_q`, which the transfer-main-processor-control-register
+primitive's and MOVEC's control-register tests read.
+
 ## The reset audit
 
 `make audit` proves that every register takes its value from a reset branch, in
