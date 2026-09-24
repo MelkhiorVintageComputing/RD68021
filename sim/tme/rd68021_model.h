@@ -27,6 +27,11 @@ unsigned rdm_dout(const struct rdm *);
 int rdm_reset_out(const struct rdm *);
 int rdm_halt_out(const struct rdm *);
 unsigned rdm_pc(const struct rdm *);
+unsigned rdm_d0(const struct rdm *);
+unsigned rdm_vbr(const struct rdm *);
+unsigned rdm_usp(const struct rdm *);
+unsigned rdm_sr(const struct rdm *);
+unsigned rdm_d1(const struct rdm *);
 #ifdef __cplusplus
 }
 #endif

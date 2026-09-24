@@ -3,3 +3,9 @@
 // read by sim/tme/rd68021_model.cpp for the bus log. Nothing in the RTL
 // depends on this.
 public_flat_rd -module "rd68021_ifu" -var "pc_d_q"
+// ... and the register file, for the system-call trace (SunOS puts the call
+// number in D0 before TRAP #0).
+public_flat_rd -module "rd68021_seq" -var "dreg"
+public_flat_rd -module "rd68021_seq" -var "vbr_q"
+public_flat_rd -module "rd68021_seq" -var "sr_q"
+public_flat_rd -module "rd68021_seq" -var "usp_q"

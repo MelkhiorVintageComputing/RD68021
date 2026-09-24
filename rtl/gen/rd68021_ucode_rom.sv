@@ -1507,7 +1507,7 @@ module rd68021_ucode_rom (
         12'd1453 : rom_q <= 100'h000000000040000128BCB5C00;   // ... written there
         12'd1454 : rom_q <= 100'h0000000000440000608096200;   // and the interrupt stack pointer is where the throwaway begins
         12'd1455 : rom_q <= 100'h00000000004586F74080B6000;   // the frame base: the active supervisor stack, less the frame
-        12'd1456 : rom_q <= 100'h0000000000400001E8C4B6200;   // +$00: the status register, written BEFORE anything sets S
+        12'd1456 : rom_q <= 100'h0000000000400001EB44B6200;   // +$00: the status register, written BEFORE anything sets S -- and so to supervisor data by name, since DATA would still be the user's space
         12'd1457 : rom_q <= 100'h0000000000249C01E080B6400;   // supervisor, and no tracing of the handler -- UM 6.1 step one
         12'd1458 : rom_q <= 100'h00000000004400074080B6600;   // and the stack pointer is the frame base, which is now a supervisor one
         12'd1459 : rom_q <= 100'h00000000004584874080B6800;   // ... to +$02
@@ -1568,7 +1568,7 @@ module rd68021_ucode_rom (
         12'd1514 : rom_q <= 100'h000000000040000008C4BD600;   // +$5A: zero
         12'd1515 : rom_q <= 100'h0000000000408005E08096200;   // the vector offset, now that T0 has been written out
         12'd1516 : rom_q <= 100'h00000000004586E74080BDA00;   // the frame base: the active supervisor stack, less the frame
-        12'd1517 : rom_q <= 100'h0000000000400001E8C4BDC00;   // +$00: the status register, written BEFORE anything sets S
+        12'd1517 : rom_q <= 100'h0000000000400001EB44BDC00;   // +$00: the status register, written BEFORE anything sets S -- and so to supervisor data by name, since DATA would still be the user's space
         12'd1518 : rom_q <= 100'h0000000000249C01E080BDE00;   // supervisor, and no tracing of the handler -- UM 6.1 step one
         12'd1519 : rom_q <= 100'h00000000004400074080BE000;   // and the stack pointer is the frame base, which is now a supervisor one
         12'd1520 : rom_q <= 100'h00000000004584874080BE200;   // ... to +$02

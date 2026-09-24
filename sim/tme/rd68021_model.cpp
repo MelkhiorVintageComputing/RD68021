@@ -65,6 +65,21 @@ unsigned rdm_siz(const struct rdm *m)    { return m->top->siz_o; }
 unsigned rdm_dout(const struct rdm *m)   { return m->top->d_o; }
 int      rdm_reset_out(const struct rdm *m) { return m->top->reset_n_oe; }
 int      rdm_halt_out(const struct rdm *m)  { return m->top->halt_n_oe; }
+unsigned rdm_d0(const struct rdm *m) {
+  return m->top->rootp->rd68021_top__DOT__u_seq__DOT__dreg[0];
+}
+unsigned rdm_sr(const struct rdm *m) {
+  return m->top->rootp->rd68021_top__DOT__u_seq__DOT__sr_q;
+}
+unsigned rdm_d1(const struct rdm *m) {
+  return m->top->rootp->rd68021_top__DOT__u_seq__DOT__dreg[1];
+}
+unsigned rdm_usp(const struct rdm *m) {
+  return m->top->rootp->rd68021_top__DOT__u_seq__DOT__usp_q;
+}
+unsigned rdm_vbr(const struct rdm *m) {
+  return m->top->rootp->rd68021_top__DOT__u_seq__DOT__vbr_q;
+}
 unsigned rdm_pc(const struct rdm *m) {
   return m->top->rootp->rd68021_top__DOT__u_ifu__DOT__pc_d_q;
 }

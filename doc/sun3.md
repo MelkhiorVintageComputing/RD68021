@@ -100,9 +100,41 @@ thing a real operating system's code does on its first page.
   floating-point instruction is an F-line trap, as on a Sun-3 with no 68881.
 - **RMC.** The element does not pass the core's read-modify-write lock to TME's bus
   cycles. One CPU and no DMA master in this machine makes that unobservable.
-- **Booting SunOS.** The PROM stops at "Device not found" because the machine has no
-  disk. `Inputs/ref/Run-Sun3-SunOS-4.1.1` has the installation tapes; that is the
-  next step, and it will need the SCSI controller back in the machine description.
+- **Booting SunOS -- in progress.** With the SCSI controller (TME's `si` board; the
+  input's `sun-sc` is not found by this PROM) and the first five files of the
+  installation tape, the PROM boots SunOS 4.1.1's install kernel (MUNIX). On TME's
+  m68020 it reaches its install menu and a working single-user shell. On the core
+  it boots to the same point -- kernel loaded, devices probed, RAM disk read, root
+  mounted, a thousand page faults taken and resumed -- and then its processes stop
+  making progress before the menu is printed. That stall is not yet understood.
+
+## Time
+
+TME's scheduler and the Sun-3's clock chip ran on host time, and the core runs
+several times slower than a real 16.67 MHz MC68020, so every clock tick arrived after
+a fraction of the instructions it should have. `sim/tme/build.sh` adds a hook to the
+copy of TME -- `tme_gettimeofday` asks it, and the Intersil 7170 reads its time of day
+through `tme_gettimeofday` -- and the element installs it: the time the machine was
+made at, rounded to a second, plus 60 ns per clock. A clock tick then comes after as
+many instructions as on the real machine, and a run is reproducible. With no hook,
+TME's own CPUs are unchanged.
+
+## Instruments
+
+All in `tme/ic/rd68021`, controlled by environment variables so that a normal run
+pays nothing for them:
+
+| | |
+|---|---|
+| `RD68021_STOP_AT`, `RD68021_STOP_PC` | stop at a clock, or once the PC has sat in a sixteen-byte line a thousand samples |
+| `RD68021_LOG_FROM`/`_TO`, `RD68021_LOG_ADDR`, `RD68021_LOG_DEV_FROM` | every bus cycle in a clock window, in an address range, or to a device |
+| `RD68021_DUMP_AT` | the last 4096 bus cycles at a clock -- also dumped automatically on a halt |
+| `RD68021_SYSCALLS`, `RD68021_UTRACE=from:to` | SunOS system calls (D0 at every TRAP #0), and every user-mode instruction between two of them; TME's own m68k prints the same, so the two can be compared |
+
+The log's periodic report also gives the hottest program-counter lines over the whole
+address space and, for each interrupt level, how often it was raised and how the
+acknowledges were answered. `sim/tme/drive.sh` types commands at the console's
+prompts.
 
 ## The PROM patch
 

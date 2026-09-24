@@ -1634,3 +1634,25 @@ exactly the three forms only TST takes.
 **Fixed by:** their own patterns, ahead of the generic ones, and the sweep now
 runs TST over an address register, an immediate of each size and the
 program-counter-relative modes.
+
+## M12 · A bus fault taken in user mode stacked its first word in user space
+
+**What:** the bus-fault frame builders write the old status register first,
+before S is set, so that the frame holds the SR as it was. They wrote it with the
+current data space -- which, for a fault taken in user mode, is still user data.
+The rest of the frame went to supervisor space, after S was set.
+
+**Found by:** SunOS 4.1.1 booting on the core inside TME. Its first user process
+touched a data page that was not yet mapped; the page fault's frame write went to
+the kernel stack's address in USER space, which the Sun-3 MMU refuses, and the
+second bus error was a double bus fault that halted the processor. A bus-cycle
+ring buffer in the TME element, dumped on the halt, showed it.
+
+**Why nothing found it sooner:** every memory model in the testbenches ignores
+the function code (except for CPU space), and every fault test ran in supervisor
+mode, where the two spaces coincide.
+
+**Fixed by:** `SDATA`, a function-code selector meaning supervisor data whatever S
+says, for that one word. `core_fault_tb` now takes a data fault and a prefetch
+fault from user mode, and counts every user-space cycle to the supervisor stack,
+which must be none -- both fail on the old microcode.

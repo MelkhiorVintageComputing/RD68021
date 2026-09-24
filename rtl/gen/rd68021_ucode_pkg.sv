@@ -146,6 +146,7 @@ package rd68021_ucode_pkg;
   localparam logic [2:0] U_FC_SFC = 3'd3;
   localparam logic [2:0] U_FC_DFC = 3'd4;
   localparam logic [2:0] U_FC_EASP = 3'd5;
+  localparam logic [2:0] U_FC_SDATA = 3'd6;
 
   localparam logic [6:0] U_ASRC_ZERO = 7'd0;
   localparam logic [6:0] U_ASRC_STG_C_HI = 7'd1;

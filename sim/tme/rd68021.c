@@ -44,6 +44,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
+#include <sys/time.h>
 #include "rd68021_model.h"
 
 /* clocks run per dispatch before yielding to TME's other threads: */
@@ -82,8 +84,42 @@ struct rd68021 {
   unsigned long long cycles, faults, next_report;
   unsigned long long log_full;
   unsigned long fc3_logged, ipl_logged;
+  /* per interrupt level: how often the board raised it, and how the core's
+     acknowledges were answered. */
+  unsigned long ipl_raised[8], iack_vec[8], iack_avec[8], iack_spur[8];
   /* RD68021_LOG_FROM / RD68021_LOG_TO: every cycle in that clock window. */
   unsigned long long win_from, win_to, stop_at;
+  /* RD68021_LOG_ADDR=lo:hi -- every cycle to that range, the first 20000. */
+  tme_uint32_t addr_lo, addr_hi;
+  unsigned long addr_logged;
+  /* RD68021_LOG_DEV_FROM: every device (non-memory) cycle from this clock. */
+  unsigned long long dev_from;
+  int syscalls;
+  unsigned long syscall_n;
+  long ut_from, ut_to;          /* RD68021_UTRACE=from:to */
+  tme_uint32_t ut_pc;
+  unsigned long dev_logged;
+
+  /* the last RD_RING bus cycles, dumped to the log when the core halts: what
+     led to a double bus fault is otherwise gone by the time anyone looks, and
+     TME's clock runs on host time, so no two runs halt at the same clock. */
+#define RD_RING (4096)
+  struct {
+    unsigned long long clock;
+    tme_uint32_t pc, addr, data;
+    unsigned char fc, siz, rw;
+    const char *what;
+    unsigned int port;
+  } ring[RD_RING];
+  unsigned int ring_at;
+  /* RD68021_DUMP_AT: dump the ring at this clock and carry on. */
+  unsigned long long dump_at;
+
+  /* the program counter over the whole address space, by 16-byte line, in an
+     open-addressed table: where a kernel or a user program spends its time. */
+#define RD_PCH (1 << 16)
+  tme_uint32_t pch_line[RD_PCH];
+  unsigned long pch_count[RD_PCH];
   /* RD68021_STOP_PC: stop once the program counter has been here this many
      times -- the monitor's character input at its prompt, for `make sun3`. */
   unsigned long stop_pc, stop_pc_hits;
@@ -135,6 +171,7 @@ _rd_bus_interrupt(struct tme_m68k_bus_connection *conn_m68k, unsigned int ipl)
   if (rd->log && ipl != rd->ipl && rd->ipl_logged++ < 200) {
     fprintf(rd->log, "%10llu ipl %u -> %u\n", rdm_clocks(rd->m), rd->ipl, ipl);
   }
+  if (ipl > rd->ipl) rd->ipl_raised[ipl & 7]++;
   rd->ipl = ipl;
   tme_mutex_unlock(&rd->mutex);
   tme_cond_notify(&rd->cond, TRUE);
@@ -250,6 +287,31 @@ _rd_answer(struct rd68021 *rd)
   rw = rdm_rw(m);
   rd->cycles++;
 
+  /* RD68021_SYSCALLS: a line for every TRAP #0 -- the read of its vector,
+     VBR + $80 -- with the call number SunOS puts in D0. */
+  if (fc == 5 && rw && addr == rdm_vbr(m) + 0x80) {
+    rd->syscall_n++;
+  }
+  if (rd->syscalls && fc == 5 && rw && addr == rdm_vbr(m) + 0x80 && rd->log) {
+    tme_uint32_t sp = rdm_usp(m), w[3] = {0, 0, 0};
+    unsigned int k, j;
+    /* the top of the user stack, through the board's TLB: an indirect call
+       has its number there. */
+    for (k = 0; k < 3; k++) {
+      struct tme_m68k_tlb *t = _rd_tlb_for(rd, 1, sp + 4 * k);
+      tme_mutex_unlock(&rd->mutex);
+      if (_rd_tlb_fill(rd, t, 1, sp + 4 * k, TME_BUS_CYCLE_READ)
+          && t->tme_m68k_tlb_emulator_off_read != TME_EMULATOR_OFF_UNDEF) {
+        const tme_shared tme_uint8_t *p = t->tme_m68k_tlb_emulator_off_read + sp + 4 * k;
+        for (j = 0; j < 4; j++) w[k] = (w[k] << 8) | p[j];
+      }
+      tme_mutex_lock(&rd->mutex);
+    }
+    fprintf(rd->log, "SYSCALL %10llu d0 %lu pc %08lx usp %08lx: %08lx %08lx %08lx\n",
+            rdm_clocks(m), (unsigned long) rdm_d0(m), (unsigned long) rdm_pc(m),
+            (unsigned long) sp, (unsigned long) w[0], (unsigned long) w[1], (unsigned long) w[2]);
+  }
+
   /* CPU space: UM figure 5-31. */
   if (fc == 7) {
     type = (addr >> 16) & 0xf;
@@ -261,13 +323,16 @@ _rd_answer(struct rd68021 *rd)
       tme_mutex_lock(&rd->mutex);
       if (rc == ENOENT) {
         rdm_set_berr_n(m, 0);                  /* spurious */
+        rd->iack_spur[level]++;
         _rd_log_cycle(rd, "IACK-SPURIOUS", level, 0);
       } else if (vector == TME_BUS_INTERRUPT_VECTOR_UNDEF) {
         rdm_set_avec_n(m, 0);                  /* autovector */
+        rd->iack_avec[level]++;
         _rd_log_cycle(rd, "IACK-AVEC", level, 0);
       } else {
         rdm_set_d(m, ((tme_uint32_t) (vector & 0xff)) << 24);
         rdm_set_dsack_n(m, _rd_dsack(1));      /* an eight-bit port */
+        rd->iack_vec[level]++;
         _rd_log_cycle(rd, "IACK-VECTOR", level, vector);
       }
     } else {
@@ -404,18 +469,57 @@ static void
 _rd_log_cycle(struct rd68021 *rd, const char *what, unsigned int port,
               tme_uint32_t data)
 {
+  {
+    unsigned int k = rd->ring_at++ % RD_RING;
+    rd->ring[k].clock = rdm_clocks(rd->m);
+    rd->ring[k].pc = rdm_pc(rd->m);
+    rd->ring[k].fc = rdm_fc(rd->m);
+    rd->ring[k].addr = rdm_addr(rd->m);
+    rd->ring[k].siz = rdm_siz(rd->m);
+    rd->ring[k].rw = rdm_rw(rd->m);
+    rd->ring[k].data = data;
+    rd->ring[k].what = what;
+    rd->ring[k].port = port;
+  }
   if (rd->log == NULL) {
     return;
   }
   if (rd->cycles <= rd->log_full
       || (strncmp(what, "MEM", 3) && strncmp(what, "DEV", 3) && rd->fc3_logged++ < 400)
-      || (rdm_clocks(rd->m) >= rd->win_from && rdm_clocks(rd->m) < rd->win_to)) {
+      || (rdm_clocks(rd->m) >= rd->win_from && rdm_clocks(rd->m) < rd->win_to)
+      || (rd->dev_from && rdm_clocks(rd->m) >= rd->dev_from && strncmp(what, "MEM", 3)
+          && (rdm_pc(rd->m) & 0xffff0000) != 0x0fef0000
+          && rd->dev_logged++ < 50000)
+      || (rd->addr_hi && rdm_addr(rd->m) >= rd->addr_lo && rdm_addr(rd->m) <= rd->addr_hi
+          && rd->addr_logged++ < 20000)) {
     fprintf(rd->log, "%10llu pc %08lx fc%u %08lx siz%u %c %08lx %s%u\n",
             rdm_clocks(rd->m), (unsigned long) rdm_pc(rd->m),
             rdm_fc(rd->m), (unsigned long) rdm_addr(rd->m),
             rdm_siz(rd->m), rdm_rw(rd->m) ? 'R' : 'W', (unsigned long) data,
             what, port);
   }
+}
+
+static void
+_rd_dump_ring(struct rd68021 *rd, const char *why)
+{
+  unsigned int k, n;
+
+  if (rd->log == NULL) {
+    return;
+  }
+  fprintf(rd->log, "rd68021: %s -- the last %u bus cycles:\n", why, RD_RING);
+  for (n = 0; n < RD_RING; n++) {
+    k = (rd->ring_at + n) % RD_RING;
+    if (rd->ring[k].what == NULL) continue;
+    fprintf(rd->log, "R %10llu pc %08lx fc%u %08lx siz%u %c %08lx %s%u\n",
+            rd->ring[k].clock, (unsigned long) rd->ring[k].pc,
+            rd->ring[k].fc, (unsigned long) rd->ring[k].addr,
+            rd->ring[k].siz, rd->ring[k].rw ? 'R' : 'W',
+            (unsigned long) rd->ring[k].data, rd->ring[k].what,
+            rd->ring[k].port);
+  }
+  fflush(rd->log);
 }
 
 /* let go of everything the last answer drove: */
@@ -445,6 +549,18 @@ _rd_clock(struct rd68021 *rd)
     if ((pc & 0xffff0000) == 0x0fef0000) {
       rd->prom_hist[(pc & 0xffff) >> 4]++;
     }
+    {
+      tme_uint32_t line = (pc >> 4) | 1;       /* never zero: zero is empty */
+      unsigned int h = (line * 2654435761u) >> 16, probe;
+      for (probe = 0; probe < 64; probe++, h = (h + 1) & (RD_PCH - 1)) {
+        if (rd->pch_line[h] == line) { rd->pch_count[h]++; break; }
+        if (rd->pch_line[h] == 0) { rd->pch_line[h] = line; rd->pch_count[h] = 1; break; }
+      }
+    }
+    if (rd->dump_at && rdm_clocks(m) >= rd->dump_at) {
+      rd->dump_at = 0;
+      _rd_dump_ring(rd, "RD68021_DUMP_AT");
+    }
   }
 
   /* the interrupt level, sampled by the core's own synchronisers: */
@@ -462,6 +578,15 @@ _rd_clock(struct rd68021 *rd)
   }
 
   rdm_falling(m);
+  /* RD68021_UTRACE: every user-mode instruction between two system calls, as
+     TME's own m68k prints them -- the program counter as stage D moves on. */
+  if (rd->ut_from >= 0 && (long) rd->syscall_n >= rd->ut_from
+      && (long) rd->syscall_n < rd->ut_to && !(rdm_sr(m) & 0x2000)
+      && rdm_pc(m) != rd->ut_pc && rd->log) {
+    rd->ut_pc = rdm_pc(m);
+    fprintf(rd->log, "U %08lx d0 %08lx d1 %08lx sr %04x\n", (unsigned long) rd->ut_pc,
+            (unsigned long) rdm_d0(m), (unsigned long) rdm_d1(m), rdm_sr(m));
+  }
   if (rdm_as_n(m) && rd->answered) {
     rd->answered = FALSE;
     _rd_release(rd);
@@ -535,6 +660,7 @@ _rd_thread(struct rd68021 *rd)
       rd->halted = TRUE;
       fprintf(stderr, "rd68021: double bus fault, the processor is halted "
               "(%llu clocks, %llu bus cycles)\n", rdm_clocks(rd->m), rd->cycles);
+      _rd_dump_ring(rd, "halted");
       break;
     }
   }
@@ -543,7 +669,7 @@ _rd_thread(struct rd68021 *rd)
     rd->next_report = 0;
   }
   if (rd->log && rdm_clocks(rd->m) >= rd->next_report) {
-    rd->next_report = rdm_clocks(rd->m) + 20000000;
+    rd->next_report = rdm_clocks(rd->m) + 200000000;
     fprintf(rd->log, "rd68021: %llu clocks, %llu bus cycles, %llu faults, "
             "last fc%u %08lx\n", rdm_clocks(rd->m), rd->cycles, rd->faults,
             rdm_fc(rd->m), (unsigned long) rdm_addr(rd->m));
@@ -559,6 +685,29 @@ _rd_thread(struct rd68021 *rd)
         }
         seen[j] = best;
         fprintf(rd->log, "  hot %08lx %lu\n", 0x0fef0000UL + best * 16, rd->prom_hist[best]);
+      }
+    }
+    {
+      unsigned int l;
+      for (l = 1; l < 8; l++)
+        if (rd->ipl_raised[l] || rd->iack_vec[l] || rd->iack_avec[l] || rd->iack_spur[l])
+          fprintf(rd->log, "  ipl %u: raised %lu, vectored %lu, autovectored %lu, spurious %lu\n",
+                  l, rd->ipl_raised[l], rd->iack_vec[l], rd->iack_avec[l], rd->iack_spur[l]);
+    }
+    {
+      unsigned int b, j, best, q, taken;
+      unsigned int seen[16];
+      for (j = 0; j < 16; j++) {
+        best = RD_PCH;
+        for (b = 0; b < RD_PCH; b++) {
+          if (rd->pch_line[b] == 0) continue;
+          for (taken = 0, q = 0; q < j; q++) if (seen[q] == b) taken = 1;
+          if (!taken && (best == RD_PCH || rd->pch_count[b] > rd->pch_count[best])) best = b;
+        }
+        if (best == RD_PCH) break;
+        seen[j] = best;
+        fprintf(rd->log, "  pc %08lx %lu\n",
+                (unsigned long) ((rd->pch_line[best] & ~1u) << 4), rd->pch_count[best]);
       }
     }
     fflush(rd->log);
@@ -661,6 +810,26 @@ _rd_connections_new(struct tme_element *element, const char * const *args,
   return (TME_OK);
 }
 
+/* Simulated time: the host time the machine was made at, rounded down to a
+   second so that every run sees the same sub-second phase, plus 60 ns for
+   every clock the core has run -- a 16.67 MHz MC68020, the slowest grade in the
+   manual. TME's scheduler and the Sun-3 clock chip read it through
+   tme_rd_time_hook (sim/tme/build.sh), so a clock tick comes after as many
+   instructions as it would on the real machine, and a run is reproducible. */
+#define RD_NS_PER_CLOCK (60)
+static struct rd68021 *_rd_time_cpu;
+static time_t _rd_time_base;
+
+static void
+_rd_time(struct timeval *now)
+{
+  unsigned long long usec;
+
+  usec = (rdm_clocks(_rd_time_cpu->m) * RD_NS_PER_CLOCK) / 1000;
+  now->tv_sec = _rd_time_base + (time_t) (usec / 1000000);
+  now->tv_usec = (long) (usec % 1000000);
+}
+
 /* `cpu0 at mainbus0: tme/ic/rd68021 [log FILE]` */
 TME_ELEMENT_X_NEW_DECL(tme_ic_,m68k,rd68021) {
   struct rd68021 *rd;
@@ -672,6 +841,20 @@ TME_ELEMENT_X_NEW_DECL(tme_ic_,m68k,rd68021) {
   rd->win_from = getenv("RD68021_LOG_FROM") ? strtoull(getenv("RD68021_LOG_FROM"), NULL, 0) : 0;
   rd->win_to   = getenv("RD68021_LOG_TO")   ? strtoull(getenv("RD68021_LOG_TO"), NULL, 0) : 0;
   rd->stop_at  = getenv("RD68021_STOP_AT")  ? strtoull(getenv("RD68021_STOP_AT"), NULL, 0) : 0;
+  if (getenv("RD68021_LOG_ADDR")) {
+    char *colon;
+    rd->addr_lo = strtoul(getenv("RD68021_LOG_ADDR"), &colon, 0);
+    rd->addr_hi = (*colon == ':') ? strtoul(colon + 1, NULL, 0) : rd->addr_lo;
+  }
+  rd->dev_from = getenv("RD68021_LOG_DEV_FROM") ? strtoull(getenv("RD68021_LOG_DEV_FROM"), NULL, 0) : 0;
+  rd->syscalls = getenv("RD68021_SYSCALLS") != NULL;
+  rd->ut_from = -1;
+  if (getenv("RD68021_UTRACE")) {
+    char *c;
+    rd->ut_from = strtol(getenv("RD68021_UTRACE"), &c, 0);
+    rd->ut_to = strtol(c + 1, NULL, 0);
+  }
+  rd->dump_at  = getenv("RD68021_DUMP_AT")  ? strtoull(getenv("RD68021_DUMP_AT"), NULL, 0) : 0;
   rd->stop_pc  = getenv("RD68021_STOP_PC")  ? strtoul(getenv("RD68021_STOP_PC"), NULL, 0) : 0;
   for (arg_i = 1; args[arg_i] != NULL; arg_i += 2) {
     if (TME_ARG_IS(args[arg_i], "log") && args[arg_i + 1] != NULL) {
@@ -686,6 +869,9 @@ TME_ELEMENT_X_NEW_DECL(tme_ic_,m68k,rd68021) {
   tme_mutex_init(&rd->mutex);
   tme_cond_init(&rd->cond);
   rd->m = rdm_new();
+  _rd_time_cpu = rd;
+  _rd_time_base = time(NULL);
+  tme_rd_time_hook = _rd_time;
   element->tme_element_private = rd;
   element->tme_element_connections_new = _rd_connections_new;
   tme_thread_create((tme_thread_t) _rd_thread, rd);

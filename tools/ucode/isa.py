@@ -182,6 +182,14 @@ FC = enc(
     # so the space cannot be written into the microword and has to follow the
     # same latched bit the base does.
     'EASP',
+    # Supervisor data, whatever the S bit says. An exception frame is always on
+    # the supervisor stack, and the bus-fault frames write the old status
+    # register BEFORE S is set, so that the frame holds what it was: at that
+    # moment DATA still means user data if the fault came from user code. On a
+    # machine whose MMU keeps the two spaces apart -- a Sun-3 -- the frame then
+    # went to the user's page, faulted, and halted the processor with a double
+    # bus fault. Found by SunOS 4.1.1's first user process (doc/bugs-found.md).
+    'SDATA',
 )
 
 # --------------------------------------------------------------------------

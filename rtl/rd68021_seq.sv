@@ -1601,6 +1601,9 @@ module rd68021_seq #(
                                                        : rd68021_pkg::FC_SUPER_DATA)
                                              : (eapc_q ? rd68021_pkg::FC_USER_PROG
                                                        : rd68021_pkg::FC_USER_DATA);
+      // An exception frame is on the supervisor stack whatever mode the
+      // exception came from -- isa.py's SDATA.
+      rd68021_ucode_pkg::U_FC_SDATA: req_fc = rd68021_pkg::FC_SUPER_DATA;
       default:                      req_fc = super_mode
                                              ? rd68021_pkg::FC_SUPER_DATA
                                              : rd68021_pkg::FC_USER_DATA;

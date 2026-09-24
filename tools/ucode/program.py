@@ -3403,8 +3403,9 @@ def fault_frame(stem, long_frame):
       asrc='EA_SAVE',
       bsrc='FRAME_B_BYTES' if long_frame else 'FRAME_A_BYTES',
       alu='SUB', dst='EA_SAVE', size='LONG')
-    u('+$00: the status register, written BEFORE anything sets S',
-      bus='WRITE', fc='DATA', asel='EA_SAVE', asrc='SR', alu='A', bytes=2)
+    u('+$00: the status register, written BEFORE anything sets S -- and so '
+      'to supervisor data by name, since DATA would still be the user\'s space',
+      bus='WRITE', fc='SDATA', asel='EA_SAVE', asrc='SR', alu='A', bytes=2)
     u('supervisor, and no tracing of the handler -- UM 6.1 step one',
       asrc='SR', alu='EXCSR', dst='SR', size='WORD')
     u('and the stack pointer is the frame base, which is now a supervisor one',

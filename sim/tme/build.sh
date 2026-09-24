@@ -51,6 +51,79 @@ rm -f $V/librd68021.a
 ar rcs $V/librd68021.a $V/rd68021_lib.o
 MODEL_LIBS="$V/librd68021.a -lstdc++ -lpthread"
 
+# Time. TME's scheduler and the Sun-3's clock chip run on host time, and the
+# core runs several times slower than a real 16.67 MHz MC68020, so every clock
+# tick arrived after a fraction of the instructions it should have and a kernel
+# spent most of its time in its clock interrupt. With these, a CPU element can
+# install a hook that makes time simulated: tme_gettimeofday asks the hook, and
+# the Intersil 7170 reads its time of day through tme_gettimeofday rather than
+# gettimeofday. With no hook installed -- TME's own CPUs -- nothing changes.
+python3 - "$SRC" <<'PYEOF'
+import sys
+src = sys.argv[1]
+def patch(path, old, new):
+    s = open(path).read()
+    if new in s:
+        return
+    assert old in s, (path, old[:40])
+    open(path, 'w').write(s.replace(old, new, 1))
+patch(src + '/libtme/threads-sjlj.c',
+      '/* this returns a reasonably current time: */\nvoid\ntme_sjlj_gettimeofday(struct timeval *now)\n{\n',
+      '/* RD68021: a CPU element may make time simulated. */\n'
+      'void (*tme_rd_time_hook) _TME_P((struct timeval *));\n\n'
+      '/* this returns a reasonably current time: */\nvoid\ntme_sjlj_gettimeofday(struct timeval *now)\n{\n'
+      '  if (tme_rd_time_hook != NULL) {\n    (*tme_rd_time_hook)(now);\n    return;\n  }\n')
+patch(src + '/tme/threads.h',
+      'void tme_sjlj_gettimeofday _TME_P((struct timeval *));',
+      'void tme_sjlj_gettimeofday _TME_P((struct timeval *));\n'
+      'extern void (*tme_rd_time_hook) _TME_P((struct timeval *));')
+# ... and, for comparison with the core, TME's own m68k can trace SunOS system
+# calls: RD68021_SYSCALLS set prints D0 at every TRAP #0, as tme/ic/rd68021 does.
+patch(src + '/ic/m68k/m68k-misc.c',
+      '  /* stack the frame format and vector offset, unless this is a 68000: */\n'
+      '  vector_offset = ((tme_uint16_t) vector) << 2;\n',
+      '  /* stack the frame format and vector offset, unless this is a 68000: */\n'
+      '  vector_offset = ((tme_uint16_t) vector) << 2;\n'
+      '  if (vector == 32 && !TME_M68K_SEQUENCE_RESTARTING && getenv("RD68021_SYSCALLS"))\n'
+      '    fprintf(stderr, "SYSCALL d0 %lu pc %08lx\\n", (unsigned long) ic->tme_m68k_ireg_d0, (unsigned long) ic->tme_m68k_ireg_pc);\n')
+patch(src + '/ic/m68k/m68k-misc.c',
+      '#include "m68k-impl.h"\n',
+      '#include "m68k-impl.h"\n#include <stdio.h>\n#include <stdlib.h>\n')
+# ... and an instruction trace, in user mode, between two system-call numbers:
+# RD68021_UTRACE=from:to, counted the same way on both CPUs.
+patch(src + '/ic/m68k/m68k-misc.c',
+      '#include <stdio.h>\n#include <stdlib.h>\n',
+      '#include <stdio.h>\n#include <stdlib.h>\nunsigned long rd68021_syscall_n;\n')
+patch(src + '/ic/m68k/m68k-misc.c',
+      '  if (vector == 32 && !TME_M68K_SEQUENCE_RESTARTING && getenv("RD68021_SYSCALLS"))\n',
+      '  if (vector == 32 && !TME_M68K_SEQUENCE_RESTARTING) rd68021_syscall_n++;\n'
+      '  if (vector == 32 && !TME_M68K_SEQUENCE_RESTARTING && getenv("RD68021_SYSCALLS"))\n')
+patch(src + '/ic/m68k/m68k-misc.c',
+      'unsigned long rd68021_syscall_n;\n',
+      'unsigned long rd68021_syscall_n;\n'
+      'void rd68021_utrace(unsigned long pc, unsigned long d0, unsigned long d1, unsigned sr)\n'
+      '{\n'
+      '  static long from = -2, to;\n'
+      '  char *e, *c;\n'
+      '  if (from == -2) {\n'
+      '    from = -1;\n'
+      '    if ((e = getenv("RD68021_UTRACE")) != NULL) { from = strtol(e, &c, 0); to = strtol(c + 1, NULL, 0); }\n'
+      '  }\n'
+      '  if (from >= 0 && (long) rd68021_syscall_n >= from && (long) rd68021_syscall_n < to && !(sr & 0x2000))\n'
+      '    fprintf(stderr, "U %08lx d0 %08lx d1 %08lx sr %04x\\n", pc, d0, d1, sr);\n'
+      '}\n')
+patch(src + '/ic/m68k/m68k-execute.c',
+      '    /* an instruction has ended: */\n    tme_m68k_verify_end(ic, func);\n',
+      '    /* an instruction has ended: */\n    tme_m68k_verify_end(ic, func);\n'
+      '    { extern void rd68021_utrace(unsigned long, unsigned long, unsigned long, unsigned);\n'
+      '      rd68021_utrace(ic->tme_m68k_ireg_pc, ic->tme_m68k_ireg_d0, ic->tme_m68k_ireg_d1,\n'
+      '                     ic->tme_m68k_ireg_sr); }\n')
+p = src + '/ic/isil7170.c'
+s = open(p).read()
+s = s.replace('gettimeofday(&now, NULL);', 'tme_gettimeofday(&now);')
+open(p, 'w').write(s)
+PYEOF
+
 # The element, into the m68k module.
 cp $ROOT/sim/tme/rd68021.c $ROOT/sim/tme/rd68021_model.h $SRC/ic/m68k/
 grep -q 'rd68021.lo' $SRC/ic/m68k/Makefile \

@@ -27,6 +27,19 @@ module core_fault_tb;
   logic [31:0] base;
   int unsigned i;
 
+  // Every cycle to the supervisor stack must be in supervisor space. The
+  // memory models ignore the function code, so nothing else would notice a
+  // frame written through user data -- which is what the bus-fault frames did
+  // for a fault taken in user mode, until SunOS on a Sun-3 found it: that MMU
+  // keeps the spaces apart, and the frame write faulted into a double bus
+  // fault. UM table 2-1: FC 1 and 2 are the user's.
+  int unsigned user_on_sstack;
+  initial user_on_sstack = 0;
+  always @(negedge as_n_o)
+    if (rst_n && as_oe && (fc_o == 3'd1 || fc_o == 3'd2)
+        && a_o >= ISP0 - 32'h200 && a_o < ISP0)
+      user_on_sstack++;
+
   task automatic base_setup();
     int unsigned v;
     for (v = 0; v < 256; v = v + 1)
@@ -477,6 +490,59 @@ module core_fault_tb;
     run_cycles(600);
     check(halt_n_oe === 1'b1, "double fault: HALT is asserted");
     check(dut.u_seq.dbf_q === 1'b1, "double fault: and it is latched");
+
+    // ======================================================================
+    // The same faults, taken in USER mode -- SunOS's first user process
+    // touching its data page. The frame goes on the supervisor stack, in
+    // supervisor space, and holds the user's status register.
+    // ======================================================================
+    base_setup();
+    user_on_sstack = 0;
+    poke_w(CODE + 0,  16'h227C);           // MOVEA.L #$1800,A1
+    poke_l(CODE + 2,  32'h0000_1800);
+    poke_w(CODE + 6,  16'h4E61);           // MOVE A1,USP
+    poke_w(CODE + 8,  16'h207C);           // MOVEA.L #GONE,A0
+    poke_l(CODE + 10, GONE);
+    poke_w(CODE + 14, 16'h46FC);           // MOVE #$0000,SR -- to user mode
+    poke_w(CODE + 16, 16'h0000);
+    poke_w(CODE + 18, 16'h2080);           // MOVE.L D0,(A0) -- faults
+    poke_w(CODE + 20, 16'h60FE);
+    poke_w(HAND + 0,  16'h7433);           // MOVEQ #$33,D2
+    poke_w(HAND + 2,  16'h60FE);
+    reset_dut();
+    run_until(HAND + 2, 3000, reached);
+    base = ISP0 - 32'h5C;
+    check(reached, "user-mode write fault: the bus error handler runs");
+    check(dut.u_seq.isp_q === base, "user-mode write fault: a long frame on the ISP");
+    // The SYSTEM byte: S and T clear, mask 0. The condition codes are the
+    // instruction's own business mid-way -- MOVE has already set Z for the zero
+    // it is moving -- and the long frame's continuation finishes them.
+    check(peek_w(base + 32'h00) >> 8 === 8'h00,
+          "user-mode write fault: +$00 is the USER's status register");
+    check(peek_l(base + 32'h02) === CODE + 18,
+          "user-mode write fault: +$02 is the faulted instruction");
+    check(user_on_sstack == 0,
+          "user-mode write fault: no user-space cycle touched the supervisor stack");
+
+    base_setup();
+    user_on_sstack = 0;
+    poke_w(CODE + 0,  16'h227C);           // MOVEA.L #$1800,A1
+    poke_l(CODE + 2,  32'h0000_1800);
+    poke_w(CODE + 6,  16'h4E61);           // MOVE A1,USP
+    poke_w(CODE + 8,  16'h207C);           // MOVEA.L #GONE,A0
+    poke_l(CODE + 10, GONE);
+    poke_w(CODE + 14, 16'h46FC);           // MOVE #$0000,SR -- to user mode
+    poke_w(CODE + 16, 16'h0000);
+    poke_w(CODE + 18, 16'h4ED0);           // JMP (A0) -- the prefetch faults
+    poke_w(HAND + 0,  16'h7433);
+    poke_w(HAND + 2,  16'h60FE);
+    reset_dut();
+    run_until(HAND + 2, 3000, reached);
+    check(reached, "user-mode prefetch fault: the bus error handler runs");
+    check(peek_w(dut.u_seq.isp_q) >> 8 === 8'h00,
+          "user-mode prefetch fault: +$00 is the USER's status register");
+    check(user_on_sstack == 0,
+          "user-mode prefetch fault: no user-space cycle touched the supervisor stack");
 
     if (pipe_fails != 0)
       $display("  FAIL: the pipe invariant broke %0d times", pipe_fails);
