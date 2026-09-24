@@ -1571,3 +1571,66 @@ lane.
 
 **Fixed by:** `op_above`, the byte just above the ones still to send, on that one
 table entry.
+
+## M12 · Every memory destination through an absolute-long or indexed address wrote the wrong thing
+
+**What:** the effective-address routines used T0 and T1 as scratch -- absolute
+long assembled its address in T0, the brief indexed mode summed in T0, and the
+full-format and memory-indirect modes used T0 and T1 for the base, the pointer
+and the displacements. And the instructions that call them held their operands in
+T0 across the call: MOVE its source, the immediate instructions (ORI, ANDI, SUBI,
+ADDI, EORI, CMPI) their immediate, MOVEM its mask, MOVES and CAS their extension
+word, CMP2 and CHK2 and the eight bit-field instructions likewise. The long
+multiply and divide held their extension word in XW, which the indexed modes
+decode their own extension word into; CALLM its argument count in T3.
+
+So `MOVE.L D1,($2000).L` wrote the high half of its own address. `ORI.L
+#$F0,(0,A0,D2.L)` wrote the address. `MOVES.B D1,($30000000).L` became a read
+through SFC. Any instruction with a memory destination, or a source it read after
+the address, in the absolute-long, indexed or memory-indirect modes.
+
+**Found by:** booting the Sun-3/160 PROM on the core inside TME (`make sun3`). Its
+context-register test writes the context register with `MOVES.B D1,$30000000`
+and reads it back; every readback mismatched and the PROM retried forever.
+
+**Why nothing found it sooner:** each oracle covered half.
+- `make ea` sweeps all eighteen modes and every extension-word shape, but only
+  as a SOURCE -- the address and the read.
+- The vector sweep's destination modes were (An), (An)+, -(An), (d16,An) and
+  (xxx).W. The indexed modes were left out on purpose, because a randomised index
+  register leaves the memory block, and absolute long was never added.
+- Compiled programs address globals through registers or short absolutes at the
+  addresses they were linked at.
+Nothing combined an instruction holding a value with an address routine using the
+same register.
+
+**Fixed by:**
+- the address routines use T2, T3 and XW and nothing else, and every caller keeps
+  its operand in T0 or T1 -- the long multiply and divide park their extension
+  word in T1 and put it back in XW after the address;
+- `check_ea_live` in `tools/ucode/assemble.py`: a forward scan from every
+  address call's return point, failing the build on any read of T2, T3 or XW
+  before a write, on any path to the end of the instruction;
+- the vector sweep gained absolute long and the full-format (bd,An) as source and
+  destination in every mode list -- the second goes through the extension-word
+  decoder, XW and the T2/T3 routines exactly as the indexed and memory-indirect
+  modes do, without leaving the memory block.
+
+## M12 · TST of an address register or an immediate was an illegal instruction
+
+**What:** the MC68020 widened TST to an address register (word and long) and to
+an immediate -- PRM 4, footnoted "MC68020, MC68030, MC68040 and CPU32" -- which
+the MC68000 and MC68010 did not allow. The decoder sent both to the one-operand
+group's memory path, which has no routine for either mode, and so to illegal
+instruction.
+
+**Found by:** the Sun-3/160 PROM, on the core inside TME: "Illegal Instruction =
+0x4A8A6708 at 0x0FEF56BC", which is TST.L A2.
+
+**Why nothing found it sooner:** the vector sweep ran the one-operand group over
+the data-alterable modes, which is right for CLR, NEG, NEGX and NOT and leaves out
+exactly the three forms only TST takes.
+
+**Fixed by:** their own patterns, ahead of the generic ones, and the sweep now
+runs TST over an address register, an immediate of each size and the
+program-counter-relative modes.

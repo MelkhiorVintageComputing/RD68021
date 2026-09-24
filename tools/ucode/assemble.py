@@ -744,6 +744,106 @@ def check_shift_src():
             and f.get('asrc', 'ZERO') not in SHIFT_SOURCES]
 
 
+# The effective-address routines are free to use T2, T3 and XW: absolute long
+# assembles its address in T2, the memory-indirect modes need T2 and T3 for the
+# base and the intermediate pointer, and the indexed modes decode their
+# extension word in XW. So nothing may be held in any of the three across an
+# EAMODE call. Until M12 the routines used T0 and T1, while MOVE, the immediate
+# instructions, MOVEM, MOVES, CAS, CMP2 and the bit fields held operands in T0
+# across the call -- so a memory destination with an absolute long or indexed
+# address wrote the wrong thing. Found by booting a Sun-3 PROM on the core,
+# which ran MOVES to (xxx).L as a read (doc/bugs-found.md).
+#
+# A forward scan from every return point: a read of one of the three before a
+# write to it, on any path to the end of the instruction, is the bug.
+EA_SCRATCH = ('T2', 'T3', 'XW')
+XW_SOURCES = ('XW', 'XW_HI', 'DREG_XQ', 'DREG_XR', 'DREG_XU', 'RTM_XW', 'XREG',
+              'XWDISP8', 'INDEX')
+XW_DESTS = ('XREG', 'XREG_SZ', 'DREG_XR', 'DREG_XQ', 'DREG_XU')
+
+
+def _ea_reads(f):
+    """The EA-scratch registers a microword reads."""
+    r = set()
+    for fld in ('asrc', 'bsrc'):
+        v = f.get(fld, '')
+        if v in ('T2', 'T3'):
+            r.add(v)
+        if v in XW_SOURCES or v.startswith('BF_'):
+            r.add('XW')
+    if f.get('dst', '') in XW_DESTS:
+        r.add('XW')
+    if f.get('seq') == 'COND':
+        c = COND_READS.get(f.get('cond'))
+        if c in EA_SCRATCH:
+            r.add(c)
+    # The implicit readers, from every use of xw_q and t_q[2], t_q[3] in
+    # rtl/rd68021_seq.sv that no source or destination field names: the long
+    # multiply and divide take their signedness from the extension word
+    # (mdext), the bit fields their offset and width, the static bit
+    # instructions their bit number (bitimm), MOVEC its control register; the
+    # divider its dividend from T3:T2, and the bit-field unit what it inserts
+    # from T3.
+    if f.get('mdext') or f.get('bitimm') or f.get('ccr', '') in ('BF', 'BFINS') \
+            or f.get('szsel', '') in ('BFREG', 'BFMEM') \
+            or 'CREG' in (f.get('asrc', ''), f.get('dst', '')):
+        r.add('XW')
+    if f.get('mdop', 'NONE') == 'DIV':
+        r.update(('T2', 'T3'))
+    if f.get('ccr', '') == 'BFINS' or any(
+            f.get(k, '').startswith('BF_MERGED') for k in ('asrc', 'bsrc')):
+        r.add('T3')
+    if f.get('asel', '') in ('T2', 'T3'):
+        r.add(f['asel'])
+    return r
+
+
+def check_ea_live():
+    W = program.WORDS
+    bad = []
+
+    def succ(i):
+        f = W[i][0]
+        seq = f.get('seq', 'NEXT')
+        if seq in ('DECODE', 'RESUME', 'RET', 'EADEC'):
+            return []
+        nxt = f.get('next')
+        tgt = program.entry(nxt) if isinstance(nxt, str) else \
+            (nxt if nxt is not None else i + 1)
+        if seq == 'COND':
+            return [i + 1, tgt]
+        if seq == 'EAMODE' or f.get('call'):
+            return [i + 1]           # the callee returns here
+        return [tgt]
+
+    for i, (f, c) in enumerate(W):
+        if f.get('seq') != 'EAMODE':
+            continue
+        # (word, still-live set) pairs; a register is live until written.
+        stack = [(i + 1, frozenset(EA_SCRATCH))]
+        seen = set()
+        while stack:
+            j, live = stack.pop()
+            if (j, live) in seen or j >= len(W) or not live:
+                continue
+            seen.add((j, live))
+            g = W[j][0]
+            hit = _ea_reads(g) & live
+            if hit:
+                bad.append('microword %d reads %s, which the effective-address '
+                           'routine called at microword %d may have overwritten '
+                           '-- %s' % (j, '/'.join(sorted(hit)), i, W[j][1]))
+                continue
+            d = g.get('dst', '')
+            if d in EA_SCRATCH:
+                live = live - {d}
+            if g.get('seq') == 'EAMODE':
+                continue             # a second call: scanned from its own return
+            for k in succ(j):
+                stack.append((k, live))
+    return bad
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--check', action='store_true',
@@ -751,6 +851,7 @@ def main():
     args = ap.parse_args()
 
     bad = (frames.check() + isa.check() + check_cond_dst() + check_live_cond() + check_shift_src()
+           + check_ea_live()
            + check_boundary()
            + check_areg_size() + check_restore_order())
     if bad:

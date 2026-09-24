@@ -100,7 +100,10 @@ ROWS = [
     ('BSET D1,D4',             [], [0x03C4],                 4,  '4', 2),
     ('BTST D1,(A0)',           [], [0x0310],                 8,  '4 + (An) 4', 11),
     ('BSET D1,(A0)',           [], [0x03D0],                 8,  '4 + (An) 4', 16),
-    ('BTST #3,(A0)',           [], [0x0810, 0x0003],         8,  '4 + #.W,(An) 4', 12),
+    # 13, was 12: the bit number is kept in T0 across the effective address
+    # and put back, since an indexed address decodes its own extension word in
+    # XW where the number was -- doc/bugs-found.md, M12.
+    ('BTST #3,(A0)',           [], [0x0810, 0x0003],         8,  '4 + #.W,(An) 4', 13),
     # --- 8.2.14, with the calculate-immediate time for the mode
     ('BFTST D4{0:8}',          [], [0xE8C4, 0x0008],         6,  '6', 3),
     ('BFEXTU D4{0:8},D5',      [], [0xE9C4, 0x5008],         8,  '8', 4),

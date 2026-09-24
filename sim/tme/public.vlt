@@ -1,0 +1,5 @@
+`verilator_config
+// For the TME bridge only: the program counter of the instruction in stage D,
+// read by sim/tme/rd68021_model.cpp for the bus log. Nothing in the RTL
+// depends on this.
+public_flat_rd -module "rd68021_ifu" -var "pc_d_q"

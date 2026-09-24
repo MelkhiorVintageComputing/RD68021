@@ -285,9 +285,14 @@ static void emitn(int n, int nw, const unsigned int *w, int pcrel, int flow)
 /* operand, a misaligned one, the two with a side effect on an address  */
 /* register, an absolute address and a program-space one.               */
 /*                                                                     */
-/* The indexed modes are deliberately absent: their index register is   */
-/* one of the randomised data registers, so the address would leave the */
-/* block. They are `make ea`'s business.                                */
+/* The indexed modes are absent: their index register is one of the    */
+/* randomised data registers, so the address would leave the block.     */
+/* But two modes stand in for everything the extension-word decoder     */
+/* reaches -- absolute long, and the full-format (bd,An) with the index */
+/* suppressed -- because `make ea` sweeps the modes only as a SOURCE,   */
+/* and a destination through them is where the address routines' own   */
+/* scratch registers met the operand an instruction was holding. Until  */
+/* M12 that was every one of them (doc/bugs-found.md).                  */
 /* ------------------------------------------------------------------ */
 
 struct eamode {
@@ -302,6 +307,7 @@ struct eamode {
  * address lands inside the filled block. */
 #define D16AN  0x0008
 #define ABSW   0x2100
+#define FULLBD 0x0160   /* full format: BS=0, IS=1, word bd, no indirection */
 
 static const struct eamode EA_ALL[] = {      /* data source: anything readable */
     { 0, 0, 0, { 0, 0 }, 0 },                /* Dn      */
@@ -312,6 +318,8 @@ static const struct eamode EA_ALL[] = {      /* data source: anything readable *
     { 4, 3, 0, { 0, 0 }, 0 },                /* -(An)   */
     { 5, 6, 1, { D16AN, 0 }, 0 },            /* (d16,An)*/
     { 7, 0, 1, { ABSW, 0 }, 0 },             /* (xxx).W */
+    { 7, 1, 2, { 0x0000, ABSW }, 0 },        /* (xxx).L */
+    { 6, 6, 2, { FULLBD, D16AN }, 0 },       /* (bd,An), full format */
 };
 #define N_EA_ALL ((int)(sizeof EA_ALL / sizeof EA_ALL[0]))
 
@@ -322,6 +330,8 @@ static const struct eamode EA_ALT[] = {      /* data alterable: no PC, no imm */
     { 4, 3, 0, { 0, 0 }, 0 },
     { 5, 6, 1, { D16AN, 0 }, 0 },
     { 7, 0, 1, { ABSW, 0 }, 0 },
+    { 7, 1, 2, { 0x0000, ABSW }, 0 },        /* (xxx).L */
+    { 6, 6, 2, { FULLBD, D16AN }, 0 },       /* (bd,An), full format */
 };
 #define N_EA_ALT ((int)(sizeof EA_ALT / sizeof EA_ALT[0]))
 
@@ -331,6 +341,8 @@ static const struct eamode EA_MEM[] = {      /* memory alterable: no Dn */
     { 4, 3, 0, { 0, 0 }, 0 },
     { 5, 6, 1, { D16AN, 0 }, 0 },
     { 7, 0, 1, { ABSW, 0 }, 0 },
+    { 7, 1, 2, { 0x0000, ABSW }, 0 },        /* (xxx).L */
+    { 6, 6, 2, { FULLBD, D16AN }, 0 },       /* (bd,An), full format */
 };
 #define N_EA_MEM ((int)(sizeof EA_MEM / sizeof EA_MEM[0]))
 
@@ -338,6 +350,8 @@ static const struct eamode EA_CTL[] = {      /* control: an address, not a value
     { 2, 1, 0, { 0, 0 }, 0 },
     { 5, 6, 1, { D16AN, 0 }, 0 },
     { 7, 0, 1, { ABSW, 0 }, 0 },
+    { 7, 1, 2, { 0x0000, ABSW }, 0 },        /* (xxx).L */
+    { 6, 6, 2, { FULLBD, D16AN }, 0 },       /* (bd,An), full format */
 };
 #define N_EA_CTL ((int)(sizeof EA_CTL / sizeof EA_CTL[0]))
 
@@ -485,6 +499,25 @@ static void g_unary(void)
     for (o = 0; o < 5; o++)
         for (s = 0; s < 3; s++)
             sweep(op[o] | (unsigned)(s << 6), EA_ALT, N_EA_ALT, 0, NULL, NPER, 0);
+
+    /* TST's MC68020-only operands, PRM 4: an address register at word and long
+     * size, an immediate, and the program-counter-relative modes. None of them
+     * is alterable, so EA_ALT has none of them -- and the MC68020 decoder once
+     * sent all three to illegal instruction, found by a Sun-3 PROM that says
+     * TST.L A2. */
+    {
+        static const struct eamode IMMB[] = {
+            { 7, 4, 1, { 0x0080, 0 }, 0 } };
+        static const struct eamode AN_IMMW[] = {
+            { 1, 3, 0, { 0, 0 }, 0 }, { 7, 4, 1, { 0x8000, 0 }, 0 } };
+        static const struct eamode AN_IMML[] = {
+            { 1, 3, 0, { 0, 0 }, 0 }, { 7, 4, 2, { 0x8000, 0x0001 }, 0 } };
+        sweep(0x4A00, IMMB,    1, 0, NULL, NPER, 0);
+        sweep(0x4A40, AN_IMMW, 2, 0, NULL, NPER, 0);
+        sweep(0x4A80, AN_IMML, 2, 0, NULL, NPER, 0);
+        for (s = 0; s < 3; s++)
+            sweep_pc(0x4A00 | (unsigned)(s << 6), 0, NULL, NPER, 0);
+    }
 }
 
 static void g_misc(void)

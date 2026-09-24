@@ -26,10 +26,13 @@ harness to `build/qemu-sun3/` and runs it there.
 
 ### A reference implementation is never a source for RTL
 
-`Inputs/ref/Musashi/`, `Inputs/ref/Suska_Configware/` and `Inputs/ref/qemu-sun3/` exist
-here **only** to be run and compared against. You may **not** read them to work out how to
+`Inputs/ref/Musashi/`, `Inputs/ref/Suska_Configware/`, `Inputs/ref/qemu-sun3/` and the
+TME in `Inputs/ref/Run-Sun3-SunOS-4.1.1/` exist here **only** to be run and compared
+against. You may **not** read them to work out how to
 write our RTL. Anyone (human or agent) writing code in `rtl/` must not open a file in
-those directories.
+those directories. (`sim/tme/` is written against TME's element and bus-connection
+interfaces, which is what running it inside TME needs; nothing there, and nothing in
+`rtl/`, comes from its CPU emulation.)
 
 The golden reference is the documentation in `Inputs/doc/`. When an oracle disagrees with
 this core, the manual is the arbiter and the disagreement is an investigation, not a bug
@@ -77,6 +80,7 @@ three, and they are not in `make check` for that reason.
 | `sim/models/` | bus-slave and coprocessor models |
 | `sim/programs/` | real code, built by the cross-compiler and run on the core |
 | `sim/suska/` | harnesses that run the same code on the Suska VHDL core |
+| `sim/tme/` | the core as a CPU element of TME, for `make sun3` -- doc/sun3.md |
 | `scripts/` | Vivado and Quartus synthesis, implementation and timing scripts |
 | `doc/` | pinout, coding standard, checkpoint, compliance, divergence and implementation reports |
 | `Inputs/doc/` | Motorola manuals, split by section, with machine-readable AC specs |
@@ -136,6 +140,7 @@ make cache            # the same results with no instruction cache, and only fet
 make timing-verbose   # the AC solver, with the binding constraint named
 make cycles           # instruction clock counts against UM section 8, each a regression check
 make suska            # the data cycles against a second core, the Suska WF68K30L under ghdl
+make sun3             # a Sun-3/160 boot PROM on the core, inside TME, to the monitor prompt
 ```
 
 Implementation, each a vendor run of tens of minutes:

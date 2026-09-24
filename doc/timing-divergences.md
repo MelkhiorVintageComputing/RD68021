@@ -145,7 +145,7 @@ overlap with the prefetch of the next instruction, but it is close.
 | `BSET D1,D4` | 4 | 4 | 2 | -2 | 7 |
 | `BTST D1,(A0)` | 8 | 4 + (An) 4 | 11 | **+3** | 16 |
 | `BSET D1,(A0)` | 8 | 4 + (An) 4 | 16 | **+8** | 21 |
-| `BTST #3,(A0)` | 8 | 4 + #.W,(An) 4 | 12 | **+4** | 19 |
+| `BTST #3,(A0)` | 8 | 4 + #.W,(An) 4 | 13 | **+5** | 19 |
 | `BFTST D4{0:8}` | 6 | 6 | 3 | -3 | 8 |
 | `BFEXTU D4{0:8},D5` | 8 | 8 | 4 | -4 | 9 |
 | `BFINS D5,D4{0:8}` | 10 | 10 | 5 | -5 | 10 |

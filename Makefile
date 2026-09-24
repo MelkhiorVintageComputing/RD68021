@@ -52,7 +52,7 @@ IVFLAGS := -g2012 -Wall -Wno-timescale -DTB_ICACHE_ENTRIES=$(ICACHE_ENTRIES)
 
 .PHONY: all help dirs lint lint-source lint-iverilog lint-verilator lint-yosys \
         lint-quartus lint-questa quartus synth impl paths audit ucode ucode-check sim sim-bus \
-        timing timing-verbose ea cache cycles suska check clean
+        timing timing-verbose ea cache cycles suska sun3 check clean
 
 all: lint
 
@@ -69,6 +69,7 @@ help:
 	@echo "  make cache     the same results with no instruction cache at all"
 	@echo "  make cycles    instruction clock counts against UM section 8"
 	@echo "  make suska     the bus against a second core, the Suska WF68K30L"
+	@echo "  make sun3      a Sun-3/160 boot PROM on the core, inside TME"
 	@echo "  make ucode     regenerate rtl/gen/ from tools/ucode/"
 	@echo "  make check     the gate: ucode-check, lint, audit"
 	@echo
@@ -454,6 +455,63 @@ suska: dirs
 	  || { grep -v $(NOTES) $(SUSKADIR)/rd68021_bus_tb.build.log; exit 1; }
 	@vvp $(SUSKADIR)/rd68021_bus_tb.vvp +image=$(SUSKADIR)/bus_probe.hex > $(SUSKADIR)/rd68021.bus
 	@python3 tools/suska_diff.py $(SUSKADIR)/suska.bus $(SUSKADIR)/rd68021.bus
+
+# ---------------------------------------------------------------------------
+# A whole machine: the Sun-3/160 boot PROM, on the RTL core, inside TME
+#
+# TME (Inputs/ref/Run-Sun3-SunOS-4.1.1/tme-0.8_up) is copied into build/tme and
+# built with one more CPU element, tme/ic/rd68021, whose CPU is the Verilator
+# model of the core (sim/tme/). The Sun-3's MMU, control space, interrupt logic,
+# memory and devices are TME's; the bus cycles are the core's, answered through
+# TME's own MC68020 byte-lane router. The same machine is then booted twice --
+# on TME's m68020 and on the core -- and the console output must be identical
+# and end at the monitor's prompt.
+#
+# The PROM is a copy, patched by tools/sun3_rom.py to skip a display wait, and
+# the EEPROM says 4 MB so that memory initialisation takes half as long; neither
+# changes what the PROM prints. The run stops once the monitor has sat in its
+# character input (0x0FEF0F56) a thousand samples running.
+# ---------------------------------------------------------------------------
+SUN3DIR  := $(BUILD)/sun3
+SUN3SRC  := Inputs/ref/Run-Sun3-SunOS-4.1.1
+TMEINST  := $(BUILD)/tme/inst
+TMEENV   := LTDL_LIBRARY_PATH=$(CURDIR)/$(TMEINST)/lib
+
+sun3: dirs
+	@sim/tme/build.sh $(CURDIR) $(RTL)
+	@mkdir -p $(SUN3DIR)
+	@python3 tools/sun3_rom.py $(SUN3SRC)/sun3-carrera-rev-3.0.bin $(SUN3DIR)/prom.bin
+	@sed 's/^console-device .*/console-device ttya/; s/^installed-#megs .*/installed-#megs 4/' \
+	    $(SUN3SRC)/sun3-carrera-eeprom.txt > $(SUN3DIR)/eeprom.txt
+	@$(TMEENV) $(TMEINST)/bin/tme-sun-eeprom < $(SUN3DIR)/eeprom.txt > $(SUN3DIR)/eeprom.bin 2>/dev/null
+	@# tme-sun-idprom makes an IDPROM only when its input is a terminal.
+	@cd $(SUN3DIR) && script -qc "$(CURDIR)/$(TMEINST)/bin/tme-sun-idprom 3/150 \
+	    8:0:20:11:22:33 > sun3-idprom.bin" /dev/null
+	@for cpu in m68020 rd68021; do \
+	  d=$(SUN3DIR)/$$cpu; mkdir -p $$d; \
+	  cp $(SUN3DIR)/prom.bin $(SUN3DIR)/sun3-idprom.bin $$d/; \
+	  cp $(SUN3DIR)/eeprom.bin $$d/sun3-eeprom.bin; \
+	  arg=tme/ic/$$cpu; [ $$cpu = rd68021 ] && arg="tme/ic/rd68021 log rd68021.log"; \
+	  sed "s|@CPU@|$$arg|; s|@ROM@|prom.bin|" sim/tme/SUN3.in > $$d/SUN3; \
+	  : > $$d/console.in; : > $$d/console.out; \
+	done
+	@# TME's own CPU runs until it is stopped; twenty seconds is several times what it needs.
+	@cd $(SUN3DIR)/m68020 && ($(TMEENV) timeout 20 $(CURDIR)/$(TMEINST)/bin/tmesh SUN3 \
+	    < /dev/null > tmesh.log 2>&1 || true)
+	@cd $(SUN3DIR)/rd68021 && $(TMEENV) RD68021_STOP_PC=0x0fef0f56 timeout 1800 \
+	    $(CURDIR)/$(TMEINST)/bin/tmesh SUN3 < /dev/null > tmesh.log 2>&1 \
+	  || { echo "FAIL: sun3 -- the core's machine did not stop by itself"; \
+	       tail -5 $(SUN3DIR)/rd68021/tmesh.log; exit 1; }
+	@grep '^rd68021: [0-9]' $(SUN3DIR)/rd68021/rd68021.log | tail -1 | sed 's/^/  /'
+	@if cmp -s $(SUN3DIR)/m68020/console.out $(SUN3DIR)/rd68021/console.out \
+	    && tail -c 1 $(SUN3DIR)/rd68021/console.out | grep -q '>'; then \
+	  echo "  sun3: $$(wc -c < $(SUN3DIR)/rd68021/console.out) bytes of console output identical to TME's m68020, ending at the monitor prompt"; \
+	  echo "PASS: sun3"; \
+	else \
+	  echo "FAIL: sun3 -- the console output differs"; \
+	  diff <(tr -d '\r\000' < $(SUN3DIR)/m68020/console.out) \
+	       <(tr -d '\r\000' < $(SUN3DIR)/rd68021/console.out) | head -20; exit 1; \
+	fi
 
 cosim-long: dirs
 	@$(MAKE) --no-print-directory cosim STEPS=4000000

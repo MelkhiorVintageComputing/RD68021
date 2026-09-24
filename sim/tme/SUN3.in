@@ -1,0 +1,23 @@
+# RD68021 -- the Sun-3/160 `make sun3` boots, as a TME machine description.
+#
+# The machine of Inputs/ref/Run-Sun3-SunOS-4.1.1/SUN3, cut to what a boot PROM
+# needs and run headless: no framebuffer, keyboard or mouse -- the EEPROM puts
+# the console on the first serial port, which is wired to two files -- and no
+# FPU until the coprocessor interface is built (M13). @CPU@ is either TME's own
+# `tme/ic/m68020` or `tme/ic/rd68021`, the RTL core; @ROM@ the patched PROM.
+mainbus0: tme/machine/sun3 sun3-idprom.bin
+cpu0 at mainbus0: @CPU@
+obio0 at mainbus0 obio: tme/generic/bus size 16MB
+obmem0 at mainbus0 obmem: tme/generic/bus size 4GB
+ram0 at obmem0 addr 0x0: tme/host/posix/memory ram 4MB
+rom0 at obmem0 addr 0x0fef0000: tme/host/posix/memory rom @ROM@
+zs0 at obio0 addr 0x020000 ipl 6: tme/machine/sun3/zs
+zs1 at obio0 addr 0x000000 ipl 6: tme/machine/sun3/zs
+eeprom0 at obio0 addr 0x040000: tme/host/posix/memory persistent sun3-eeprom.bin
+clock0 at obio0 addr 0x060000: tme/machine/sun3/clock
+mainbus0 memerr at obio0 addr 0x080000 ipl 7
+mainbus0 intreg at obio0 addr 0x0A0000
+vme0: tme/generic/bus size 4GB
+mainbus0 vme at vme0 addr 0x00000
+console0 at zs0 channel A: tme/host/posix/serial device-input console.in device-output console.out
+command mainbus0 power up

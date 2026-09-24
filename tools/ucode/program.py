@@ -142,7 +142,13 @@ u('sign extend the immediate into the data register',
 # ==========================================================================
 # EFFECTIVE ADDRESSES -- PRM section 2
 #
-# Each routine leaves the address in EA and returns. `call` latches the address
+# Each routine leaves the address in EA and returns. Its scratch is T2, T3 and
+# XW, and nothing else: an instruction may hold T0 and T1 across the call, and
+# must restore XW itself if it needs it after -- the indexed modes decode their
+# extension word there. assemble.py's check_ea_live holds every caller to that.
+# It used to be T0 and T1, while the callers held their operands in T0, so every
+# memory destination that needed an absolute long or an indexed address wrote
+# the wrong thing (doc/bugs-found.md). `call` latches the address
 # of the microword after the caller, and seq = RET goes back to it; one level is
 # enough, because an effective-address routine is called from an instruction and
 # calls nothing itself.
@@ -186,9 +192,9 @@ u('one word, sign extended',
 
 label('ea_abs_l')                        # (xxx).L
 u('the high half of a long word',
-  asrc='STG_C_HI', alu='A', dst='T0', pf='CONSUME')
+  asrc='STG_C_HI', alu='A', dst='T2', pf='CONSUME')
 u('... and the low half',
-  asrc='T0', bsrc='STG_C_U', alu='OR', dst='EA', pf='CONSUME', seq='RET')
+  asrc='T2', bsrc='STG_C_U', alu='OR', dst='EA', pf='CONSUME', seq='RET')
 
 label('ea_d16_pc')                       # (d16,PC)
 # PRM 2.5: "the value of the PC is the address of the extension word".
@@ -211,15 +217,15 @@ u('the same, with the program counter as the base',
 # a sign-extended byte.
 label('eab_an')
 u('base plus the scaled index',
-  asrc='AREG', bsrc='INDEX', alu='ADD', dst='T0', pf='CONSUME')
+  asrc='AREG', bsrc='INDEX', alu='ADD', dst='T2', pf='CONSUME')
 u('... plus the displacement byte',
-  asrc='T0', bsrc='XWDISP8', alu='ADD', dst='EA', seq='RET')
+  asrc='T2', bsrc='XWDISP8', alu='ADD', dst='EA', seq='RET')
 
 label('eab_pc')
 u('the extension word address plus the scaled index',
-  asrc='PC_C', bsrc='INDEX', alu='ADD', dst='T0', pf='CONSUME')
+  asrc='PC_C', bsrc='INDEX', alu='ADD', dst='T2', pf='CONSUME')
 u('... plus the displacement byte',
-  asrc='T0', bsrc='XWDISP8', alu='ADD', dst='EA', seq='RET')
+  asrc='T2', bsrc='XWDISP8', alu='ADD', dst='EA', seq='RET')
 
 # --------------------------------------------------------------------------
 # The full extension word -- PRM 2.5 and tables 2-1 and 2-2.
@@ -244,17 +250,17 @@ OD_SIZES = [('n', 'null'), ('w', 'word'), ('l', 'long')]
 
 
 def _disp_into_t1(kind):
-    """Leave a base or outer displacement of the given size in T1."""
+    """Leave a base or outer displacement of the given size in T3."""
     if kind == 'null':
-        u('no displacement', asrc='ZERO', alu='A', dst='T1')
+        u('no displacement', asrc='ZERO', alu='A', dst='T3')
     elif kind == 'word':
         u('a word displacement, sign extended',
-          bsrc='STG_C_S', alu='B', dst='T1', pf='CONSUME')
+          bsrc='STG_C_S', alu='B', dst='T3', pf='CONSUME')
     else:
         u('the high half of a long displacement',
-          asrc='STG_C_HI', alu='A', dst='T1', pf='CONSUME')
+          asrc='STG_C_HI', alu='A', dst='T3', pf='CONSUME')
         u('... and the low half',
-          asrc='T1', bsrc='STG_C_U', alu='OR', dst='T1', pf='CONSUME')
+          asrc='T3', bsrc='STG_C_U', alu='OR', dst='T3', pf='CONSUME')
 
 
 def _ea_full(bd, action, od):
@@ -266,25 +272,25 @@ def _ea_full(bd, action, od):
     # PC_C names the extension word only until it is gone.
     if action == 'post':
         u('the base register, or the extension word address',
-          asrc='EABASE', alu='A', dst='T0', pf='CONSUME')
+          asrc='EABASE', alu='A', dst='T2', pf='CONSUME')
     else:
         u('the base plus the scaled index',
-          asrc='EABASE', bsrc='INDEX', alu='ADD', dst='T0', pf='CONSUME')
+          asrc='EABASE', bsrc='INDEX', alu='ADD', dst='T2', pf='CONSUME')
     _disp_into_t1(bd[1])
-    u('... plus the base displacement', asrc='T0', bsrc='T1', alu='ADD', dst='T0')
+    u('... plus the base displacement', asrc='T2', bsrc='T3', alu='ADD', dst='T2')
     if action != 'none':
         u('the long word that address names',
-          bus='READ', fc='EASP', asel='T0', bytes=4)
+          bus='READ', fc='EASP', asel='T2', bytes=4)
         u('... is the address to go on with',
-          asrc='RDATA', alu='A', dst='T0')
+          asrc='RDATA', alu='A', dst='T2')
         if action == 'post':
-            u('... plus the scaled index', asrc='T0', bsrc='INDEX', alu='ADD',
-              dst='T0')
+            u('... plus the scaled index', asrc='T2', bsrc='INDEX', alu='ADD',
+              dst='T2')
         _disp_into_t1(od[1])
         u('... plus the outer displacement',
-          asrc='T0', bsrc='T1', alu='ADD', dst='T0')
+          asrc='T2', bsrc='T3', alu='ADD', dst='T2')
     u('and that is the effective address',
-      asrc='T0', alu='A', dst='EA', seq='RET')
+      asrc='T2', alu='A', dst='EA', seq='RET')
     return name
 
 
@@ -400,7 +406,7 @@ for _m, _r, _w in [
 # ==========================================================================
 
 def src_prologues(stem, szsel, an_ok=True, imm_ok=True, size='LONG',
-                  prelude=None):
+                  prelude=None, before_ea=None, after_ea=None):
     """Leave the <ea> source operand in T0, then fall into `stem`_go.
 
     `size` matters only when szsel is FIXED -- the instructions whose operand
@@ -410,6 +416,9 @@ def src_prologues(stem, szsel, an_ok=True, imm_ok=True, size='LONG',
     with an extension word of their own BEFORE the effective address's: the long
     forms of MULU, MULS, DIVU and DIVS put their register numbers and their
     signedness there, and it has to be latched before stage C moves on.
+    `before_ea` and `after_ea` are emitted around the effective-address call on
+    the memory path, for an instruction that needs something back the call may
+    have used.
     """
     def pre():
         if prelude is not None:
@@ -447,8 +456,12 @@ def src_prologues(stem, szsel, an_ok=True, imm_ok=True, size='LONG',
 
     label(stem + '_mem')
     pre()
+    if before_ea is not None:
+        before_ea()
     u('... or memory, whose address the mode decoder knows how to build',
       call=1, seq='EAMODE', szsel=szsel, size=size)
+    if after_ea is not None:
+        after_ea()
     u('read the operand it names',
       bus='READ', fc='EASP', asel='EA', szsel=szsel, size=size)
     u('... into the working register',
@@ -589,6 +602,33 @@ unary('not',  lambda src: u('the ones complement',
 unary('tst',  lambda src: u('the operand itself, for its condition codes alone',
                             asrc=src, alu='A', ccr='LOGIC', szsel='IR76'),
       'LOGIC', writes=False)
+
+# TST on the MC68020 also takes an address register, at word and long size, and
+# an immediate -- PRM 4, "MC68020, MC68030, MC68040 and CPU32" -- neither of
+# which the MC68000 or MC68010 allowed and neither of which reaches memory, so
+# neither can go through the mode decoder. These patterns come first: the
+# generic <ea> ones below cover both encodings and send them to a memory path
+# with no routine for them, which is an illegal instruction. Found by the
+# Sun-3/160 PROM, which says TST.L A2 (doc/bugs-found.md).
+label('tst_an')
+u('the address register, for its condition codes alone -- at word size its '
+  'low word',
+  asrc='AREG', alu='A', ccr='LOGIC', szsel='IR76', pf='ADV', seq='DECODE')
+label('tst_immw')
+u('one word of the instruction stream, for its condition codes alone',
+  asrc='STG_C', alu='A', ccr='LOGIC', szsel='IR76', pf='CONSUME')
+u('... and on', pf='ADV', seq='DECODE')
+label('tst_imml')
+u('two words, the first being the high half',
+  asrc='STG_C_HI', alu='A', dst='T0', pf='CONSUME')
+u('... and the second the low, for the condition codes alone',
+  asrc='T0', bsrc='STG_C_U', alu='OR', ccr='LOGIC', size='LONG', pf='CONSUME')
+u('... and on', pf='ADV', seq='DECODE')
+opcode('0100101001001---', 'tst_an',   'TST.W An')
+opcode('0100101010001---', 'tst_an',   'TST.L An')
+opcode('0100101000111100', 'tst_immw', 'TST.B #<data>')
+opcode('0100101001111100', 'tst_immw', 'TST.W #<data>')
+opcode('0100101010111100', 'tst_imml', 'TST.L #<data>')
 
 for _op, _stem, _mnem in (('0100001000', 'clr',  'CLR'),
                           ('0100010000', 'neg',  'NEG'),
@@ -1369,9 +1409,15 @@ def bitop(stem, act, static):
           bitimm=bi, pf='ADV', seq='DECODE')
 
     label(stem + '_mem')
-    number()
+    if static:
+        u('the bit number, which is the word after the opcode -- kept in T0, '
+          'because an indexed address decodes its own extension word in XW',
+          asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
     u('the address',
       call=1, seq='EAMODE', size='BYTE')
+    if static:
+        u('... and the bit number back where the mask is made from',
+          asrc='T0', alu='A', dst='XW', size='WORD')
     u('the byte that is there',
       bus='READ', fc='EASP', asel='EA', bytes=1)
     u('hold it',
@@ -1606,8 +1652,22 @@ def _mdlong_prelude():
       asrc='STG_C', alu='A', dst='XW', size='WORD', pf='CONSUME')
 
 
+# ... which an indexed source overwrites with ITS extension word, so the memory
+# path keeps a copy in T1 across the effective address -- check_ea_live -- and
+# only the memory path pays for it.
+def _mdlong_save():
+    u('the extension word kept across the effective address',
+      asrc='XW', alu='A', dst='T1', size='WORD')
+
+
+def _mdlong_restore():
+    u('... and put back',
+      asrc='T1', alu='A', dst='XW', size='WORD')
+
+
 src_prologues('mull', 'FIXED', an_ok=False, size='LONG',
-              prelude=_mdlong_prelude)
+              prelude=_mdlong_prelude, before_ea=_mdlong_save,
+              after_ea=_mdlong_restore)
 u('the source',
   asrc='T0', alu='A', dst='T1', size='LONG')
 u('and the register the extension word names as the low half',
@@ -1625,7 +1685,8 @@ u('... and the low, with the codes taken from all sixty-four bits',
   mdop='MUL', mdext=1, pf='ADV', seq='DECODE')
 
 src_prologues('divl', 'FIXED', an_ok=False, size='LONG',
-              prelude=_mdlong_prelude)
+              prelude=_mdlong_prelude, before_ea=_mdlong_save,
+              after_ea=_mdlong_restore)
 u('the divisor',
   asrc='T0', alu='A', dst='T1', size='LONG')
 u('the low half of the dividend',
@@ -2309,15 +2370,16 @@ opcode('0000111011------', 'cas',  'CAS.L')
 # UM 9.8.1, on a refusal, "no visible processor registers are changed".
 # ==========================================================================
 label('callm')
-u('the argument count, which is the word after the opcode',
-  asrc='STG_C', alu='A', dst='T3', size='WORD', pf='CONSUME')
+u('the argument count, which is the word after the opcode, in T1 because the '
+  'effective address may use T2 and T3',
+  asrc='STG_C', alu='A', dst='T1', size='WORD', pf='CONSUME')
 u('the address of the module descriptor',
   call=1, seq='EAMODE', size='LONG')
 u('its first long word: the options, the type and the access level',
   bus='READ', fc='DATA', asel='EA', bytes=4)
 u('... held, with the argument count put in the low half the manual reserves, '
   'which is where the frame wants it',
-  asrc='RDATA', bsrc='T3', alu='ORLOW16', dst='T0', size='LONG')
+  asrc='RDATA', bsrc='T1', alu='ORLOW16', dst='T0', size='LONG')
 u('anything but options 000 and 100 and types $00 and $01 is a format error, '
   'taken before anything has changed -- UM 9.7.1',
   seq='COND', cond='MODBAD', next='exc_format')
