@@ -95,6 +95,13 @@ struct rd68021 {
   /* RD68021_LOG_DEV_FROM: every device (non-memory) cycle from this clock. */
   unsigned long long dev_from;
   int syscalls;
+  /* RD68021_FAULTS: every bus error, and what became of it -- the first cycle
+     to the same address afterwards, which is the handler's RTE rerunning it. */
+  int faults_log;
+  int fault_pending;
+  unsigned long long fault_clock;
+  tme_uint32_t fault_addr, fault_pc, fault_data;
+  unsigned char fault_fc, fault_rw, fault_siz;
   unsigned long syscall_n;
   long ut_from, ut_to;          /* RD68021_UTRACE=from:to */
   tme_uint32_t ut_pc;
@@ -481,6 +488,30 @@ _rd_log_cycle(struct rd68021 *rd, const char *what, unsigned int port,
     rd->ring[k].what = what;
     rd->ring[k].port = port;
   }
+  if (rd->faults_log && rd->log) {
+    int berr = (strncmp(what, "BERR", 4) == 0);
+    tme_uint32_t a = rdm_addr(rd->m);
+    if (rd->fault_pending && a == rd->fault_addr && rdm_fc(rd->m) == rd->fault_fc) {
+      fprintf(rd->log, "  -> %s %llu clocks later: pc %08lx fc%u %08lx siz%u %c %08lx %s\n",
+              berr ? "FAULTED AGAIN" : "retried", rdm_clocks(rd->m) - rd->fault_clock,
+              (unsigned long) rdm_pc(rd->m), rdm_fc(rd->m), (unsigned long) a,
+              rdm_siz(rd->m), rdm_rw(rd->m) ? 'R' : 'W', (unsigned long) data, what);
+      rd->fault_pending = 0;
+    }
+    if (berr) {
+      if (rd->fault_pending) {
+        fprintf(rd->log, "  -> never retried\n");
+      }
+      fprintf(rd->log, "FAULT %llu pc %08lx fc%u %08lx siz%u %c %08lx sr %04x %s\n",
+              rdm_clocks(rd->m), (unsigned long) rdm_pc(rd->m), rdm_fc(rd->m),
+              (unsigned long) a, rdm_siz(rd->m), rdm_rw(rd->m) ? 'R' : 'W',
+              (unsigned long) (rdm_rw(rd->m) ? 0 : rdm_dout(rd->m)), rdm_sr(rd->m), what);
+      rd->fault_pending = 1;
+      rd->fault_clock = rdm_clocks(rd->m);
+      rd->fault_addr = a;
+      rd->fault_fc = rdm_fc(rd->m);
+    }
+  }
   if (rd->log == NULL) {
     return;
   }
@@ -848,6 +879,7 @@ TME_ELEMENT_X_NEW_DECL(tme_ic_,m68k,rd68021) {
   }
   rd->dev_from = getenv("RD68021_LOG_DEV_FROM") ? strtoull(getenv("RD68021_LOG_DEV_FROM"), NULL, 0) : 0;
   rd->syscalls = getenv("RD68021_SYSCALLS") != NULL;
+  rd->faults_log = getenv("RD68021_FAULTS") != NULL;
   rd->ut_from = -1;
   if (getenv("RD68021_UTRACE")) {
     char *c;

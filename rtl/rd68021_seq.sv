@@ -1285,7 +1285,7 @@ module rd68021_seq #(
   // core acts on; the reserved ones and SIZE are not among them, because the
   // residual byte count comes out of the internal word, which can say five and
   // UM table 5-2's two-bit field cannot.
-  logic        rs_rc_q, rs_rb_q;
+  logic        rs_rc_q, rs_rb_q, rs_dv_q;
   logic        rs_df_q, rs_rm_q, rs_rw_q;
   logic  [2:0] rs_space_q;
   // ... and the micro-address to resume at.
@@ -1320,6 +1320,7 @@ module rd68021_seq #(
     int08[rd68021_frame_pkg::I_OPSIZE_LO     +: 2] = size_q;
     int08[rd68021_frame_pkg::I_EADST_LO      +: 1] = eadst_q;
     int08[rd68021_frame_pkg::I_REGCNT_LO     +: 5] = cnt_q;
+    int08[rd68021_frame_pkg::I_DVALID_LO     +: 1] = pf_dvalid;
   end
 
   always_comb begin
@@ -1543,6 +1544,20 @@ module rd68021_seq #(
   assign pipe_fault = (retire && uses_c_word && stg_c_fault)
                    || (pipe_wait && pf_stuck);
 
+  // The short frame has no stage B address. UM 6.2: "when the short bus fault
+  // stack frame applies, the address of the pipe stage B word is the value in
+  // the PC plus four, and the address of the stage C word is the value in the
+  // PC plus two" -- and a handler finds the page to bring in by exactly that
+  // arithmetic, as RTE finds the fill point. It holds here only when stage D
+  // has a word and the instruction in it is one word long. After a flush stage
+  // D is empty and stage C is AT the program counter; after a longer
+  // instruction it is further on. Either way the frame is the long one, whose
+  // +$24 says where stage B is -- SunOS's forked child faulted on its very first
+  // word, with the pipe empty, and the short frame sent it back to the wrong
+  // place. doc/divergences.md.
+  logic pipe_short;
+  assign pipe_short = pf_dvalid && (stg_b_addr == pc_d + 32'd4);
+
   // Any of the three, and only the data one sets DF.
   logic fault_now;
   assign fault_now = req_fault || pipe_fault;
@@ -1711,8 +1726,8 @@ module rd68021_seq #(
     end else if (fault_now && !g0_q) begin
       // UM table 6-5 picks the frame by where the exception was taken, and
       // `check_boundary` makes that the same question as whether this microword
-      // decodes.
-      upc_nxt = (pipe_fault && at_decode)
+      // decodes -- but only when the pipe is what the short frame says it is.
+      upc_nxt = (pipe_fault && at_decode && pipe_short)
                 ? rd68021_ucode_pkg::ENTRY_FAULT_SHORT
                 : rd68021_ucode_pkg::ENTRY_FAULT_LONG;
     end else if (stopped_q) begin
@@ -1779,6 +1794,7 @@ module rd68021_seq #(
       pc_kept_q    <= 1'b0;
       rs_rc_q      <= 1'b0;
       rs_rb_q      <= 1'b0;
+      rs_dv_q      <= 1'b0;
       rs_df_q      <= 1'b0;
       rs_rm_q      <= 1'b0;
       rs_rw_q      <= 1'b1;
@@ -1877,6 +1893,7 @@ module rd68021_seq #(
             // The residual byte count, which UM table 5-2's SIZE field in the
             // special status word cannot hold when it is five -- doc/ssw.md.
             rst_bytes_q  <= y[rd68021_frame_pkg::I_BYTES_LO +: 3];
+            rs_dv_q      <= y[rd68021_frame_pkg::I_DVALID_LO];
           end
           rd68021_ucode_pkg::U_DST_INT36: begin
             trace_mode_q <= y[rd68021_frame_pkg::I_TRMODE_LO +: 2];
@@ -2301,11 +2318,13 @@ module rd68021_seq #(
   // The pipe is whole when its last field has been written, which is the fill
   // point in both frame formats: the words and the depth all come before it.
   assign ckpt_load = commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_FILL);
-  // {RB, RC}, as rd68021_ifu takes them. FC and FB are not among them: they are
+  // {D valid, RB, RC}, as rd68021_ifu takes them -- the first out of the
+  // internal word at +$08, the others out of the SSW, both read by now because
+  // +$0A is where the walk puts the depth. FC and FB are not among them: they are
   // what the frame tells the HANDLER, and this core writes them and never reads
   // them back -- doc/ssw.md.
   assign ckpt_data = (`UF(DST) == rd68021_ucode_pkg::U_DST_PIPE_F)
-                     ? {30'd0, rs_rb_q, rs_rc_q}
+                     ? {29'd0, rs_dv_q, rs_rb_q, rs_rc_q}
                      : y;
 
   // ==========================================================================

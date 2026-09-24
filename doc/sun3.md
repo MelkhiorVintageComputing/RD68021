@@ -100,13 +100,48 @@ thing a real operating system's code does on its first page.
   floating-point instruction is an F-line trap, as on a Sun-3 with no 68881.
 - **RMC.** The element does not pass the core's read-modify-write lock to TME's bus
   cycles. One CPU and no DMA master in this machine makes that unobservable.
-- **Booting SunOS -- in progress.** With the SCSI controller (TME's `si` board; the
-  input's `sun-sc` is not found by this PROM) and the first five files of the
-  installation tape, the PROM boots SunOS 4.1.1's install kernel (MUNIX). On TME's
-  m68020 it reaches its install menu and a working single-user shell. On the core
-  it boots to the same point -- kernel loaded, devices probed, RAM disk read, root
-  mounted, a thousand page faults taken and resumed -- and then its processes stop
-  making progress before the menu is printed. That stall is not yet understood.
+- **Booting SunOS is not a `make` target yet.** It needs the installation tape's
+  files from `Inputs/ref/Run-Sun3-SunOS-4.1.1` and about three minutes; see below.
+
+## SunOS 4.1.1
+
+With the SCSI controller (TME's `si` board; the input's `sun-sc` is not found by
+this PROM) and the first five files of the installation tape, the PROM boots
+SunOS 4.1.1's install kernel (MUNIX) on the core -- kernel loaded, devices
+probed, RAM disk read, root mounted -- to its install menu and a working
+single-user shell, as on TME's m68020:
+
+```
+What would you like to do?
+  1 - install SunOS mini-root
+  2 - exit to single user shell
+Enter a 1 or 2: 2
+you may restart this script by typing <cntl-D>
+# ls /
+.MUNIXFS  README    bin       etc       lib       stand     usr
+.profile  a         dev       extract   sbin      tmp
+# echo hello from the rd68021
+hello from the rd68021
+#
+```
+
+About 172 seconds of simulation, `PROMPT='1 or 2: *|# *' drive.sh SUNOS 3000 2
+"ls /" ...`. It found two more bugs, both in the bus-fault frames, and both in
+`doc/bugs-found.md`:
+
+4. **A bus fault taken in user mode stacked its status register in user space** --
+   the Sun-3 MMU refused it, and the second fault halted the processor.
+5. **A prefetch fault with the pipe empty resumed the previous instruction.** The
+   kernel starts a forked child with an RTE to its first instruction, on a page
+   the fork has not mapped yet. The child faulted, the kernel mapped the page and
+   returned, and the core ran the kernel's own RTE -- still in stage D -- in user
+   mode. The child died of a privilege violation and the install script never
+   printed its menu. Stage D's valid bit is now in the frame, and the short frame
+   is used only where its PC-relative stage addresses are true.
+
+The second was found by looking, as the user suggested, at how the machine
+answered page faults of newly forked processes: `RD68021_FAULTS` showed the
+child's first address faulting and never being fetched again.
 
 ## Time
 
@@ -129,12 +164,14 @@ pays nothing for them:
 | `RD68021_STOP_AT`, `RD68021_STOP_PC` | stop at a clock, or once the PC has sat in a sixteen-byte line a thousand samples |
 | `RD68021_LOG_FROM`/`_TO`, `RD68021_LOG_ADDR`, `RD68021_LOG_DEV_FROM` | every bus cycle in a clock window, in an address range, or to a device |
 | `RD68021_DUMP_AT` | the last 4096 bus cycles at a clock -- also dumped automatically on a halt |
+| `RD68021_FAULTS` | every bus error, and whether the same access was later retried, faulted again, or never seen again |
 | `RD68021_SYSCALLS`, `RD68021_UTRACE=from:to` | SunOS system calls (D0 at every TRAP #0), and every user-mode instruction between two of them; TME's own m68k prints the same, so the two can be compared |
 
 The log's periodic report also gives the hottest program-counter lines over the whole
 address space and, for each interrupt level, how often it was raised and how the
 acknowledges were answered. `sim/tme/drive.sh` types commands at the console's
-prompts.
+prompts -- `>`, `#` or `:` unless `PROMPT` says otherwise -- each once a line has
+ended and a new prompt has come back.
 
 ## The PROM patch
 

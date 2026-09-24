@@ -284,6 +284,80 @@ module core_fault_tb;
           "prefetch rerun: the short frame came off the stack");
 
     // ======================================================================
+    // The same fault with the pipe EMPTY: the first word after a flush. This
+    // is SunOS's forked child, whose first instruction -- reached by the RTE
+    // that starts it -- is on a page the fork has not mapped yet.
+    //
+    // There is no stage D, so there is no instruction being decoded, and stage
+    // C is the word AT the program counter. The short frame cannot say that --
+    // UM 6.2 puts its stage C at the PC plus two, and a handler pages in by
+    // that arithmetic -- so the frame is the long one, whose +$24 does. And the
+    // frame's stage D is the JMP's, left over: RTE must not run it again.
+    // ======================================================================
+    base_setup();
+    poke_w(GONE + 0, 16'h7604);            // MOVEQ #4,D3 -- the missing word
+    poke_w(GONE + 2, 16'h60FE);            // BRA *
+    poke_w(CODE + 0, 16'h4EF9);            // JMP (xxx).L
+    poke_l(CODE + 2, GONE);
+    poke_w(HAND + 0, 16'h4E73);            // RTE, with the rerun bits untouched
+    reset_dut();
+    run_until(HAND + 0, 3000, reached);
+    check(reached, "empty pipe: the handler is entered");
+    base = ISP0 - 32'h5C;
+    check(dut.u_seq.isp_q === base,
+          "empty pipe: the frame is the LONG one, forty-six words");
+    check(peek_w(base + 32'h06) === 16'hB008,
+          "empty pipe: +$06 format $B, vector offset $008");
+    check(peek_l(base + 32'h02) === GONE,
+          "empty pipe: +$02 the instruction whose word is missing");
+    check(peek_l(base + 32'h24) === GONE + 2,
+          "empty pipe: +$24 stage B, so stage C is at the missing word");
+    check(peek_w(base + 32'h0A) === 16'hF000,
+          "empty pipe: +$0A both stages faulted and are to be rerun");
+    berr_en = 1'b0;
+    run_until(GONE + 2, 3000, reached);
+    check(reached, "empty pipe: RTE resumes at the missing word");
+    check(dut.u_seq.dreg[3] === 32'h0000_0004,
+          "empty pipe: and it runs");
+    check(dut.u_seq.isp_q === ISP0,
+          "empty pipe: the long frame came off the stack");
+
+    // ======================================================================
+    // ... and with a two-word instruction in stage D. Stage C is its NEXT
+    // instruction, four bytes on, not two: the long frame again, and the
+    // instruction re-executed by RTE runs exactly once.
+    // ======================================================================
+    base_setup();
+    poke_w(GONE - 8, 16'h7001);            // MOVEQ #1,D0
+    poke_w(GONE - 6, 16'h7200);            // MOVEQ #0,D1
+    poke_w(GONE - 4, 16'h0641);            // ADDI.W #5,D1 -- decoded, not run
+    poke_w(GONE - 2, 16'h0005);
+    poke_w(GONE + 0, 16'h7604);            // MOVEQ #4,D3 -- the missing word
+    poke_w(GONE + 2, 16'h60FE);            // BRA *
+    poke_w(CODE + 0, 16'h4EF9);            // JMP (xxx).L
+    poke_l(CODE + 2, GONE - 8);
+    poke_w(HAND + 0, 16'h4E73);            // RTE
+    reset_dut();
+    run_until(HAND + 0, 3000, reached);
+    check(reached, "two-word: the handler is entered");
+    base = ISP0 - 32'h5C;
+    check(peek_w(base + 32'h06) === 16'hB008,
+          "two-word: +$06 format $B, vector offset $008");
+    check(peek_l(base + 32'h02) === GONE - 4,
+          "two-word: +$02 the instruction being decoded");
+    check(peek_l(base + 32'h24) === GONE + 2,
+          "two-word: +$24 stage B, so stage C is at the missing word");
+    berr_en = 1'b0;
+    run_until(GONE + 2, 3000, reached);
+    check(reached, "two-word: RTE resumes");
+    check(dut.u_seq.dreg[1] === 32'h0000_0005,
+          "two-word: the instruction being decoded ran, exactly once");
+    check(dut.u_seq.dreg[3] === 32'h0000_0004,
+          "two-word: and the one whose word had been missing");
+    check(dut.u_seq.isp_q === ISP0,
+          "two-word: the long frame came off the stack");
+
+    // ======================================================================
     // An address error -- UM 6.1.3, "an address error exception occurs when
     // the processor attempts to prefetch an instruction from an odd address
     // ... a bus cycle is not executed". Vector 3, and UM 6.2.1: the fault bits
@@ -301,9 +375,11 @@ module core_fault_tb;
     run_until(HAND + 2, 3000, reached);
     check(reached, "address error: the handler runs");
     check(dut.u_seq.dreg[5] === 32'h0000_0044, "address error: and only it");
-    base = ISP0 - 32'h20;
-    check(peek_w(base + 32'h06) === 16'hA00C,
-          "address error: +$06 format $A, vector offset $00C");
+    // After a flush the pipe is empty, so the frame is the long one -- the
+    // same rule as the empty-pipe bus error above.
+    base = ISP0 - 32'h5C;
+    check(peek_w(base + 32'h06) === 16'hB00C,
+          "address error: +$06 format $B, vector offset $00C");
     check(peek_l(base + 32'h02) === 32'h0000_0801,
           "address error: +$02 the odd address it could not fetch from");
     // UM 6.2.1: the fault bits are clear and the rerun bits alone show it.

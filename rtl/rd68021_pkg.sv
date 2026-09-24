@@ -31,8 +31,8 @@ package rd68021_pkg;
   // CPU space types -- UM Figure 5-31, encoded on A19-A16 when FC = FC_CPU
   // ==========================================================================
   // Which field of the instruction pipe RTE is putting back -- doc/checkpoint.md
-  // and rd68021_ifu. CK_FLAGS carries {stage_d_fault, FB, FC, RB, RC} in its low
-  // five bits, and the queue depth comes out of the two rerun bits.
+  // and rd68021_ifu. CK_FLAGS carries {D valid, RB, RC} in its low three bits,
+  // and the queue depth comes out of the two rerun bits.
   localparam logic [2:0] CK_STG_D = 3'd0;
   localparam logic [2:0] CK_STG_C = 3'd1;
   localparam logic [2:0] CK_STG_B = 3'd2;

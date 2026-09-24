@@ -7,22 +7,36 @@
 # ends in a prompt -- `>`, `#` or `:` -- the next command is typed, with a
 # carriage return. Once the last command's prompt has come back, or the time is
 # up, or the machine stops by itself, tmesh is stopped.
+#
+# PROMPT, an extended regular expression matched against the end of the output,
+# overrides what a prompt is.
+#
+# A prompt counts only if a line has ended since the last command was typed, so
+# that the prompt the command was typed at is not taken for its answer.
 cfg=$1; secs=$2; shift 2
+PROMPT=${PROMPT:-'[>#:] *'}
+# The console output since the last command, ending in a prompt, and with at
+# least one line ended in it.
+prompted() {
+  tr -d '\000' < console.out | tail -c +$((sent+1)) > console.new
+  tr -d '\r' < console.new | tail -c 40 | tr '\n' ' ' | grep -Eq "($PROMPT)\$" &&
+    { [ $sent -eq 0 ] || grep -q $'\n' console.new; }
+}
 rm -f console.in; mkfifo console.in; : > console.out
 LTDL_LIBRARY_PATH=$T/lib $T/bin/tmesh $cfg < /dev/null > tmesh.log 2>&1 &
 pid=$!
 exec 3>console.in
 start=$(date +%s); sent=0
 for cmd in "$@"; do
-  until tr -d '\000\r' < console.out | tail -c 3 | grep -q '[>#:] *$' && [ $(stat -c %s console.out) -gt $sent ]; do
+  until prompted; do
     sleep 1; [ $(( $(date +%s)-start )) -gt $secs ] && break 2
   done
-  sent=$(stat -c %s console.out)
+  sent=$(tr -d '\000' < console.out | wc -c)
   printf '%s\r' "$cmd" >&3
   sleep 2
 done
 # ... and the prompt after the last command.
-until tr -d '\000\r' < console.out | tail -c 3 | grep -q '[>#:] *$' && [ $(stat -c %s console.out) -gt $sent ]; do
+until prompted; do
   sleep 1
   [ $(( $(date +%s)-start )) -gt $secs ] && break
   kill -0 $pid 2>/dev/null || break

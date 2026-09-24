@@ -80,6 +80,26 @@ of stack frame for any type of exception."
 **How it is checked:** the fault testbenches of M9, which assert the frame format
 for each shape of fault.
 
+### ... and only when the pipe is what the short frame says it is
+
+The short frame has no stage B address. UM 6.2: "when the short bus fault stack
+frame applies, the address of the pipe stage B word is the value in the PC plus
+four, and the address of the stage C word is the value in the PC plus two". A
+handler finds the page to bring in by that arithmetic, and RTE finds where to
+refill from by it.
+
+In this core a prefetch fault is taken by the microword that would move stage C
+into stage D, and the frame's program counter is the address of the word in stage
+D. Stage C is at that address plus two only when stage D holds a word and the
+instruction in it is one word long. After a flush -- a branch, an RTE -- stage D
+is empty and stage C is *at* the program counter; after a longer instruction it is
+further on. **In both of those cases the frame is format `$B`**, whose +$24 says
+where stage B is, and the address error, which is always taken after a flush,
+is always format `$B`. The same UM 6.4 sentence covers it.
+
+SunOS 4.1.1 found this: its forked child's first instruction, reached by an RTE,
+was on a page the fork had not mapped. See doc/bugs-found.md.
+
 ---
 
 ## The cache holding register is not saved in a fault frame

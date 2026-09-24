@@ -137,6 +137,7 @@ This is a cycle-count divergence, measured and justified in
 | `+$36` | 4 | `pc_kept` | pc_prev was taken at a flush, not at the decode |
 | `+$46` | 31:0 | `pc_prev` | the address of the instruction before this one |
 | `+$08` | 14:10 | `regcnt` | MOVEM's register counter |
+| `+$08` | 15 | `dvalid` | stage D holds an instruction word |
 | `+$14` | 15:0 | `upc` | the micro-address to resume at |
 | `+$16` | 15:0 | `stage_d` | the instruction word being decoded |
 | `+$1C` | 31:0 | `t0` | working register |
@@ -149,13 +150,14 @@ This is a cycle-count divergence, measured and justified in
 | `+$40` | 31:0 | `pc_fetch` | the next long word the pipe will fetch |
 | `+$44` | 15:0 | `link` | the return address of the subroutine under way |
 
-**492 bits available, 337 used, 9 words spare** (`+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
+**492 bits available, 338 used, 9 words spare** (`+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
 
 ### The frozen set
 
 | Unit | Register | Bits | Lands in | |
 |---|---|--:|---|---|
 | `ifu` | `d_q` | 16 | `stage_d` |  |
+| `ifu` | `d_v_q` | 1 | `dvalid` | a prefetch fault taken with the pipe empty -- after a flush -- has no stage D, and the word at +$16 is whatever the last one was. Restoring it as valid ran it: SunOS's forked child executed its parent's RTE |
 | `ifu` | `c_q` | 16 | `stage_c` | frame +$0C |
 | `ifu` | `b_q` | 16 | `stage_b` | frame +$0E |
 | `ifu` | `c_f_q` | 1 | `ssw` | SSW FC |

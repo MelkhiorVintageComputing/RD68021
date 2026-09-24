@@ -123,6 +123,7 @@ INTERNAL = [
     (0x36,  4,  4, 'pc_kept',    1,  'pc_prev was taken at a flush, not at the decode'),
     (0x46, 31,  0, 'pc_prev',   32,  'the address of the instruction before this one'),
     (0x08, 14, 10, 'regcnt',     5,  "MOVEM's register counter"),
+    (0x08, 15, 15, 'dvalid',     1,  'stage D holds an instruction word'),
     (0x14, 15,  0, 'upc',       16,  'the micro-address to resume at'),
     (0x16, 15,  0, 'stage_d',   16,  'the instruction word being decoded'),
     (0x1C, 31,  0, 't0',        32,  'working register'),
@@ -153,6 +154,7 @@ CHECKPOINT = [
     # eadst_q and cnt_q were all added and all missed, and the first of them
     # would have surfaced in M9 as a wild jump on a demand-paged access.
     ('ifu', 'd_q',              16, 'stage_d',       ''),
+    ('ifu', 'd_v_q',             1, 'dvalid',        'a prefetch fault taken with the pipe empty -- after a flush -- has no stage D, and the word at +$16 is whatever the last one was. Restoring it as valid ran it: SunOS\'s forked child executed its parent\'s RTE'),
     ('ifu', 'c_q',              16, 'stage_c',       'frame +$0C'),
     ('ifu', 'b_q',              16, 'stage_b',       'frame +$0E'),
     ('ifu', 'c_f_q',             1, 'ssw',           'SSW FC'),
@@ -210,7 +212,6 @@ EXEMPT = [
                             'rerun bits, which say which stages RTE still owes '
                             'a word: none if RC, one if RB alone, two if '
                             'neither.'),
-    ('ifu', 'd_v_q',        'stage D is valid. Derived: RTE puts stage D back.'),
     ('ifu', 'primed_q',     'whether the pipe has ever been flushed. Always set '
                             'once the first instruction has been fetched.'),
     ('ifu', 'fetch_pend_q', 'a prefetch is outstanding. Derived: RTE re-issues '
@@ -351,6 +352,8 @@ EXEMPT = [
     ('seq', 'rs_rc_q',      'the special status word RTE has read back, taken '
                             'apart: RC'),
     ('seq', 'rs_rb_q',      '... RB'),
+    ('seq', 'rs_dv_q',      '... and, from the internal word at +$08, whether '
+                            'stage D held a word'),
     ('seq', 'rs_df_q',      '... DF'),
     ('seq', 'rs_rm_q',      '... RM'),
     ('seq', 'rs_rw_q',      '... RW'),

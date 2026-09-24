@@ -1656,3 +1656,37 @@ mode, where the two spaces coincide.
 says, for that one word. `core_fault_tb` now takes a data fault and a prefetch
 fault from user mode, and counts every user-space cycle to the supervisor stack,
 which must be none -- both fail on the old microcode.
+
+## M12 · A prefetch fault with the pipe empty resumed the last instruction
+
+**What:** a prefetch fault taken on the first word after a flush -- stage D empty,
+stage C the word that faulted -- built a short frame, and RTE out of it ran
+whatever stage D had last held. Two things were wrong. `d_v_q`, stage D's valid
+bit, was exempted from the checkpoint as "derived: RTE puts stage D back", and
+RTE put it back as valid, with the frame's stage D -- the previous instruction's
+word. And the short frame's derivation of the stage B address, the program
+counter plus four, is only true with a word in stage D and a one-word instruction
+there: after a flush it is two bytes out, and RTE refilled from the wrong place.
+The same arithmetic was wrong for a fault behind any instruction longer than a
+word.
+
+**Found by:** SunOS 4.1.1 on the core inside TME, never printing its install
+menu. The kernel starts a forked child with an RTE to its first instruction, on a
+page the fork has not mapped. The child faulted; the kernel mapped the page and
+returned; the core ran stage D, which held the kernel's own RTE, in user mode --
+a privilege violation, and the child died. Every few seconds of simulated time
+the parent tried again. The user's suggestion to look at the page faults of newly
+forked processes led to it; the element's `RD68021_FAULTS` log showed the fault
+at the child's first address "never retried", and the bus trace showed the RTE
+and then the format 0 frame of vector 8.
+
+**Why nothing found it sooner:** the prefetch-fault tests ran into the missing
+page along straight-line one-word instructions, the one shape where the short
+frame is exact. Nothing took a prefetch fault on a branch target.
+
+**Fixed by:** stage D's valid bit is in the frame (+$08 bit 15) and RTE restores
+it, and a stage D left empty is loaded from stage C by the queue once the walk is
+done. The frame is format $A only when stage D is full and stage B is at the
+program counter plus four, and format $B otherwise -- doc/divergences.md.
+`core_fault_tb` gains a fault on a JMP target and one behind a two-word
+instruction; both fail on the old RTL.

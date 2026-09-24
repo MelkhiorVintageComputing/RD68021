@@ -268,7 +268,10 @@ module rd68021_ifu #(
   // UM 6.2.1's FC bit is "the processor attempted to use stage C and found it
   // to be marked invalid", so the check belongs at stage C and stage D never
   // holds a faulted word at all -- which is why the manual has no bit for one.
-  assign auto_load  = !d_v_q && (cnt_q != 2'd0) && !do_flush && !c_f_q;
+  // Nor while RTE is putting the pipe back: stage D may come back empty, and
+  // stage C is not the frame's until the walk reaches it.
+  assign auto_load  = !d_v_q && (cnt_q != 2'd0) && !do_flush && !c_f_q
+                   && !ckpt_busy_q;
 
   assign pf_stuck   = pf_odd || (!d_v_q && (cnt_q != 2'd0) && c_f_q);
   assign do_adv     = (pf_op == rd68021_ucode_pkg::U_PF_ADV) || auto_load;
@@ -361,6 +364,11 @@ module rd68021_ifu #(
             // the frame still wants rerun is simply absent, and one it does not
             // is valid.
             cnt_q <= ckpt_data[0] ? 2'd0 : (ckpt_data[1] ? 2'd1 : 2'd2);
+            // Whether stage D held a word. A fault taken with the pipe empty
+            // -- the first word after a flush -- had none, and the frame's
+            // stage D is then the last instruction's, which must not run
+            // again: the queue loads stage D itself once the walk is done.
+            d_v_q <= ckpt_data[2];
             c_f_q <= 1'b0;
             b_f_q <= 1'b0;
           end
@@ -384,7 +392,6 @@ module rd68021_ifu #(
         // prefetch still in flight belongs to the stream the fault interrupted
         // and is thrown away when it lands, exactly as a flush does it.
         primed_q  <= 1'b1;
-        d_v_q     <= 1'b1;
         chr_v_q   <= 1'b0;
         if (fetch_pend_q) discard_q <= 1'b1;
       end
