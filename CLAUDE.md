@@ -31,8 +31,10 @@ TME in `Inputs/ref/Run-Sun3-SunOS-4.1.1/` exist here **only** to be run and comp
 against. You may **not** read them to work out how to
 write our RTL. Anyone (human or agent) writing code in `rtl/` must not open a file in
 those directories. (`sim/tme/` is written against TME's element and bus-connection
-interfaces, which is what running it inside TME needs; nothing there, and nothing in
-`rtl/`, comes from its CPU emulation.)
+interfaces, which is what running it inside TME needs. `sim/tme/rd68021_fpu.c` calls
+TME's floating-point routines to be the MC68881 on the core's coprocessor interface --
+TME used as a device, as its MMU and serial chips are, and the arithmetic both sides of
+`make sunos-fpu` share. Nothing in `rtl/` comes from TME.)
 
 The golden reference is the documentation in `Inputs/doc/`. When an oracle disagrees with
 this core, the manual is the arbiter and the disagreement is an investigation, not a bug
@@ -80,7 +82,7 @@ three, and they are not in `make check` for that reason.
 | `sim/models/` | bus-slave models, and the scripted coprocessor `make cpif` talks to (doc/coprocessor.md) |
 | `sim/programs/` | real code, built by the cross-compiler and run on the core |
 | `sim/suska/` | harnesses that run the same code on the Suska VHDL core |
-| `sim/tme/` | the core as a CPU element of TME, for `make sun3` and `make sunos` -- doc/sun3.md |
+| `sim/tme/` | the core as a CPU element of TME, and an MC68881 for its coprocessor interface -- doc/sun3.md |
 | `scripts/` | Vivado and Quartus synthesis, implementation and timing scripts |
 | `doc/` | pinout, coding standard, checkpoint, coprocessor, compliance, divergence and implementation reports |
 | `Inputs/doc/` | Motorola manuals, split by section, with machine-readable AC specs |
@@ -145,6 +147,7 @@ make suska            # the data cycles against a second core, the Suska WF68K30
 make sun3             # a Sun-3/160 boot PROM on the core, inside TME, to the monitor prompt
 make sunos            # SunOS 4.1.1 on that machine, to a single-user shell
 make sunos-disk       # an installed SunOS 4.1.1 from a disk image (SUNOS_IMG=), multi-user
+make sunos-fpu        # ... with an MC68881 on the coprocessor interface, a cc -f68881 program
 ```
 
 Implementation, each a vendor run of tens of minutes:

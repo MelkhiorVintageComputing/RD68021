@@ -45,6 +45,13 @@
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include <signal.h>
+
+/* sim/tme/rd68021_fpu.c, compiled into TME's m6888x.c: an MC68881 on the
+   coprocessor interface. */
+struct rd68021_fpu;
+struct rd68021_fpu *rd68021_fpu_new(void);
+int rd68021_fpu_cir(struct rd68021_fpu *, int, unsigned int, unsigned int, tme_uint32_t *);
 #include <sys/time.h>
 #include "rd68021_model.h"
 
@@ -74,6 +81,15 @@ struct rd68021 {
   int reset_release;       /* RESET let go: run the core out of reset */
   int running;             /* the core has been let out of reset */
   int driving_reset;       /* the core's own RESET instruction is running */
+
+  /* the MC68881 behind the coprocessor interface, at CpID 1, if the machine
+     has one: sim/tme/rd68021_fpu.c, appended to TME's m6888x.c */
+  struct rd68021_fpu *fpu;
+  /* what went over the interface, for the report: accesses, instructions
+     started (command and condition CIR writes), state saves and restores,
+     and the primitives read from the response CIR by their top byte. */
+  unsigned long long cir, cir_cmd, cir_cond, cir_save, cir_restore;
+  unsigned long long cir_prim[256];
 
   /* the core: */
   struct rdm *m;
@@ -342,6 +358,43 @@ _rd_answer(struct rd68021 *rd)
         rd->iack_vec[level]++;
         _rd_log_cycle(rd, "IACK-VECTOR", level, vector);
       }
+    } else if (type == 2 && rd->fpu != NULL && ((addr >> 13) & 7) == 1) {
+      /* the coprocessor interface: UM figure 7-3, the CpID on A15-A13 and the
+         register on A4-A0. A 32-bit port, byte k of the access on lane
+         (A1A0 + k) -- UM table 5-5. */
+      unsigned int n = TME_MIN(_rd_siz_bytes(siz), 4 - (addr & 3));
+      tme_uint32_t v = 0;
+      if (!rw) {
+        dout = rdm_dout(m);
+        for (k = 0; k < n; k++) {
+          lane = (addr + k) & 3;
+          v = (v << 8) | ((dout >> (24 - 8 * lane)) & 0xff);
+        }
+      }
+      if (!rd68021_fpu_cir(rd->fpu, rw, addr & 0x1f, n, &v)) {
+        rdm_set_berr_n(m, 0);
+        _rd_log_cycle(rd, "CIR-BERR", addr & 0x1f, 0);
+        return;
+      }
+      rd->cir++;
+      switch (addr & 0x1f) {
+      case 0x0a: if (!rw) rd->cir_cmd++; break;
+      case 0x0e: if (!rw) rd->cir_cond++; break;
+      case 0x04: if (rw) rd->cir_save++; break;
+      case 0x06: if (!rw) rd->cir_restore++; break;
+      case 0x00: if (rw) rd->cir_prim[(v >> 8) & 0xff]++; break;
+      default: break;
+      }
+      if (rw) {
+        tme_uint32_t d = 0;
+        for (k = 0; k < n; k++) {
+          lane = (addr + k) & 3;
+          d |= ((v >> (8 * (n - 1 - k))) & 0xff) << (24 - 8 * lane);
+        }
+        rdm_set_d(m, d);
+      }
+      rdm_set_dsack_n(m, _rd_dsack(4));
+      _rd_log_cycle(rd, "CIR", addr & 0x1f, v);
     } else {
       rdm_set_berr_n(m, 0);
       _rd_log_cycle(rd, "CPU-SPACE-BERR", type, 0);
@@ -628,6 +681,44 @@ _rd_clock(struct rd68021 *rd)
 /* The thread                                                               */
 /* ------------------------------------------------------------------------ */
 
+/* the MC68881's traffic, for the report */
+static void
+_rd_report_fpu(struct rd68021 *rd)
+{
+  unsigned int p;
+  if (rd->fpu == NULL || rd->log == NULL) return;
+  fprintf(rd->log, "rd68021: MC68881: %llu CIR accesses, %llu general and "
+          "%llu conditional instructions, %llu saves, %llu restores; "
+          "primitives read:", rd->cir, rd->cir_cmd, rd->cir_cond,
+          rd->cir_save, rd->cir_restore);
+  for (p = 0; p < 256; p++) {
+    if (rd->cir_prim[p]) fprintf(rd->log, " $%02Xxx %llu", p, rd->cir_prim[p]);
+  }
+  fprintf(rd->log, "\n");
+}
+
+/* A run is ended by SIGTERM -- sim/tme/drive.sh -- which would lose the counts
+   since the last periodic report. So SIGTERM exits, and the exit writes a last
+   report. */
+static struct rd68021 *_rd_final;
+static void
+_rd_final_report(void)
+{
+  struct rd68021 *rd = _rd_final;
+  if (rd && rd->log) {
+    fprintf(rd->log, "rd68021: %llu clocks, %llu bus cycles, %llu faults (final)\n",
+            rdm_clocks(rd->m), rd->cycles, rd->faults);
+    _rd_report_fpu(rd);
+    fflush(rd->log);
+  }
+}
+static void
+_rd_sigterm(int sig)
+{
+  (void) sig;
+  exit(0);
+}
+
 static void
 _rd_thread(struct rd68021 *rd)
 {
@@ -704,6 +795,7 @@ _rd_thread(struct rd68021 *rd)
     fprintf(rd->log, "rd68021: %llu clocks, %llu bus cycles, %llu faults, "
             "last fc%u %08lx\n", rdm_clocks(rd->m), rd->cycles, rd->faults,
             rdm_fc(rd->m), (unsigned long) rdm_addr(rd->m));
+    _rd_report_fpu(rd);
     {
       unsigned int b, j, best;
       unsigned long seen[16] = {0};
@@ -892,8 +984,10 @@ TME_ELEMENT_X_NEW_DECL(tme_ic_,m68k,rd68021) {
     if (TME_ARG_IS(args[arg_i], "log") && args[arg_i + 1] != NULL) {
       rd->log = fopen(args[arg_i + 1], "w");
       if (rd->log) setvbuf(rd->log, NULL, _IOLBF, 0);
+    } else if (TME_ARG_IS(args[arg_i], "fpu") && TME_ARG_IS(args[arg_i + 1], "m68881")) {
+      rd->fpu = rd68021_fpu_new();
     } else {
-      tme_output_append_error(_output, "%s %s [ log FILE ]", _("usage:"), args[0]);
+      tme_output_append_error(_output, "%s %s [ log FILE ] [ fpu m68881 ]", _("usage:"), args[0]);
       tme_free(rd);
       return (EINVAL);
     }
@@ -902,6 +996,9 @@ TME_ELEMENT_X_NEW_DECL(tme_ic_,m68k,rd68021) {
   tme_cond_init(&rd->cond);
   rd->m = rdm_new();
   _rd_time_cpu = rd;
+  _rd_final = rd;
+  atexit(_rd_final_report);
+  signal(SIGTERM, _rd_sigterm);
   _rd_time_base = time(NULL);
   tme_rd_time_hook = _rd_time;
   element->tme_element_private = rd;

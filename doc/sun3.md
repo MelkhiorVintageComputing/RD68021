@@ -178,6 +178,24 @@ It found one more, in the frames again:
    reused it. Every fault now takes the long frame, and the `/etc/psdatabase` the
    core writes is byte for byte the one TME's m68020 writes.
 
+## With an MC68881: `make sunos-fpu`
+
+The same installed system on two machines that both have an MC68881 -- TME's m68020
+with its own, the core with `sim/tme/rd68021_fpu.c` on its coprocessor interface --
+compiling a C program with `cc -f68881` on the machine and running it. The consoles are
+identical, time stamps aside, and the core's report shows what crossed the interface on
+the way:
+
+```
+MC68881: 6057 CIR accesses, 852 general and 57 conditional instructions,
+         644 saves, 645 restores; primitives read: $08xx 909 $81xx 17
+         $95xx 60 $96xx 335 $A1xx 18 $B1xx 25 $B2xx 153
+```
+
+The saves and restores are the kernel's: SunOS switches the FPU's context with
+FSAVE, FMOVEM and FRESTORE at every context switch once a process has used it.
+`doc/coprocessor.md` has how the MC68881 is built and what it does not do.
+
 ## Time
 
 TME's scheduler and the Sun-3's clock chip ran on host time, and the core runs

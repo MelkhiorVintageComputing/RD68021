@@ -1,0 +1,9 @@
+root
+echo '#include <stdio.h>' > t.c
+echo '#include <math.h>' >> t.c
+echo 'double f(x, n) double x; int n; { double s = 0; int i; for (i = 1; i <= n; i++) s += x / i; return s; }' >> t.c
+echo 'main() { int i; double a = 1.0; float g = 0.5; for (i = 0; i < 8; i++) { a = a * 1.1 + f(a, i); g = g * 3 / 7;' >> t.c
+echo 'printf("%d %.17g %.9g %.17g %.17g %ld\n", i, a, g, sqrt(a), sin(a), (long) a); }' >> t.c
+echo 'if (a > 100.0) printf("big\n"); else printf("small\n"); }' >> t.c
+cc -f68881 -O -o t t.c -lm
+./t

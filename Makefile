@@ -52,7 +52,7 @@ IVFLAGS := -g2012 -Wall -Wno-timescale -DTB_ICACHE_ENTRIES=$(ICACHE_ENTRIES)
 
 .PHONY: all help dirs lint lint-source lint-iverilog lint-verilator lint-yosys \
         lint-quartus lint-questa quartus synth impl paths audit ucode ucode-check sim sim-bus \
-        timing timing-verbose ea cache cycles suska sun3 sunos sunos-disk cpif check clean
+        timing timing-verbose ea cache cycles suska sun3 sunos sunos-disk sunos-fpu cpif check clean
 
 all: lint
 
@@ -72,6 +72,7 @@ help:
 	@echo "  make sun3      a Sun-3/160 boot PROM on the core, inside TME"
 	@echo "  make sunos     SunOS 4.1.1 on that machine, to a single-user shell"
 	@echo "  make sunos-disk  an installed SunOS 4.1.1 from disk, multi-user (SUNOS_IMG=)"
+	@echo "  make sunos-fpu   ... with an MC68881 on the coprocessor interface"
 	@echo "  make cpif      the coprocessor interface against a scripted coprocessor"
 	@echo "  make ucode     regenerate rtl/gen/ from tools/ucode/"
 	@echo "  make check     the gate: ucode-check, lint, audit"
@@ -611,6 +612,54 @@ sunos-disk: sun3
 	else \
 	  echo "FAIL: sunos-disk -- the console output differs"; \
 	  diff $(SUNDSKDIR)/m68020/console.txt $(SUNDSKDIR)/rd68021/console.txt | head -20; exit 1; \
+	fi
+
+# ---------------------------------------------------------------------------
+# The coprocessor interface in a whole machine -- doc/coprocessor.md
+#
+# `make sunos-disk`'s machine with an MC68881 on both CPUs: TME's m68020 with
+# its built-in one, and the core with sim/tme/rd68021_fpu.c answering on the
+# coprocessor interface -- the MC68881's side of MC68881 UM section 7 in front
+# of TME's floating-point arithmetic, so that the two machines compute alike and
+# only the protocol differs. Logged in as root, a C program is written with
+# echo, compiled with cc -f68881 on the machine itself, and run: double and float
+# arithmetic, sqrt and sin, the integer conversions and a floating-point
+# comparison. The consoles must match, time stamps aside, and the core's
+# report must show coprocessor instructions having been run. About twenty
+# minutes on the core.
+# ---------------------------------------------------------------------------
+SUNFPUDIR := $(BUILD)/sunos-fpu-run
+
+sunos-fpu: sun3
+	@test -f "$(SUNOS_IMG)" || { echo "FAIL: sunos-fpu -- no disk image at $(SUNOS_IMG); set SUNOS_IMG"; exit 1; }
+	@sed 's/^installed-#megs .*/installed-#megs 8/; s/^boot-device .*/boot-device sd(0,0,0)/' \
+	    $(SUN3DIR)/eeprom.txt > $(SUN3DIR)/eeprom-sd.txt
+	@$(TMEENV) $(TMEINST)/bin/tme-sun-eeprom < $(SUN3DIR)/eeprom-sd.txt > $(SUN3DIR)/eeprom-sd.bin 2>/dev/null
+	@mapfile -t C < sim/tme/sunos-fpu.cmds; \
+	for cpu in m68020 rd68021; do \
+	  d=$(SUNFPUDIR)/$$cpu; rm -rf $$d; mkdir -p $$d; \
+	  cp $(SUN3DIR)/prom.bin $(SUN3DIR)/sun3-idprom.bin $$d/; \
+	  cp $(SUN3DIR)/eeprom-sd.bin $$d/sun3-eeprom.bin; \
+	  cp --sparse=always "$(SUNOS_IMG)" $$d/disk.img; \
+	  arg="tme/ic/m68020 fpu-type m68881 fpu-compliance unknown fpu-incomplete line-f"; \
+	  [ $$cpu = rd68021 ] && arg="tme/ic/rd68021 log rd68021.log fpu m68881"; \
+	  sed "s|@CPU@|$$arg|" sim/tme/SUNOS-DISK.in > $$d/SUNOS; \
+	  (cd $$d && PROMPT='login: *|# *' T=$(CURDIR)/$(TMEINST) \
+	      $(CURDIR)/sim/tme/drive.sh SUNOS 7200 "$${C[@]}" > /dev/null 2>&1); \
+	  tr -d '\r\000' < $$d/console.out | LC_ALL=C tr '\200-\377' '\000-\177' \
+	    | $(STAMPS) > $$d/console.txt; \
+	done
+	@grep 'MC68881:' $(SUNFPUDIR)/rd68021/rd68021.log | tail -1 | sed 's/^/  /'
+	@if cmp -s $(SUNFPUDIR)/m68020/console.txt $(SUNFPUDIR)/rd68021/console.txt \
+	    && tail -c 2 $(SUNFPUDIR)/rd68021/console.txt | grep -q '^# $$' \
+	    && grep 'MC68881:' $(SUNFPUDIR)/rd68021/rd68021.log | tail -1 \
+	       | grep -qv ' 0 general and 0 conditional'; then \
+	  sed -n '/# \.\/t/,$$p' $(SUNFPUDIR)/rd68021/console.txt | sed 's/^/    /'; echo; \
+	  echo "  sunos-fpu: $$(wc -l < $(SUNFPUDIR)/rd68021/console.txt) lines of console output identical to TME's m68020 with its MC68881, time stamps aside"; \
+	  echo "PASS: sunos-fpu"; \
+	else \
+	  echo "FAIL: sunos-fpu -- the console output differs, or no coprocessor instruction ran"; \
+	  diff $(SUNFPUDIR)/m68020/console.txt $(SUNFPUDIR)/rd68021/console.txt | head -20; exit 1; \
 	fi
 
 cosim-long: dirs

@@ -175,6 +175,39 @@ $0002; the fourteen undefined bits are zero.
 
 ---
 
+## In a whole machine: `make sunos-fpu`
+
+The installed SunOS 4.1.1 of `make sunos-disk`, on two machines that both have an
+MC68881: TME's m68020 with its own, and the core with `sim/tme/rd68021_fpu.c` on its
+coprocessor interface at CpID 1. Logged in as root, a C program is written to a file with
+`echo`, compiled on the machine with `cc -f68881 -O` -- which emits MC68881 instructions
+inline -- and run. The two consoles must be identical once the time stamps are masked,
+and the core's report must show coprocessor instructions having run.
+
+`sim/tme/rd68021_fpu.c` is the MC68881's side of the protocol, written from MC68881 UM
+section 7: which primitive it answers each instruction class with (its table 7-7), when
+it asks for an operand and in which format, the order of FMOVEM's registers, the
+format words of FSAVE and FRESTORE. Behind it is TME's own floating-point arithmetic,
+reached through a private CPU structure that only ever holds FPU state: an operand that
+arrives through the operand CIR is handed to TME's routine as a data register or an
+immediate, and a result is taken out before the routine would store it. So both
+machines compute alike, and what is compared is everything around the arithmetic:
+every operand the core moved, in which size and direction, which registers FMOVEM
+walked, what the kernel saved and restored at a context switch.
+
+Two things about TME found on the way, neither the core's:
+
+- TME's predicate evaluator makes predicate $0F, "true", false, so an FBT does not
+  branch under TME. The MC68881 here uses the same evaluator, so the two machines
+  agree; a program relying on it would see the same wrong answer on both.
+- TME's own m68020 with its MC68881 hangs after `awk` does floating-point work: the
+  machine goes idle and the shell never prompts again. `make sunos-fpu` does not run
+  `awk` for that reason.
+
+What the MC68881 front end does not do -- packed decimal out, arithmetic exceptions
+enabled in the FPCR, the PC bit, the busy state frame -- is listed in the file; the
+compiled program uses none of it.
+
 ## What is not checked
 
 - **There is no oracle.** Musashi emulates a floating-point unit inline and never
@@ -184,9 +217,10 @@ $0002; the fourteen undefined bits are zero.
   A misreading shared between the model and the core is invisible. The model is
   deliberately thin, a queue per register and a log, so that each test states the
   protocol it expects rather than inheriting it from the model.
-- **No real coprocessor instruction runs**: nothing computes a floating-point
-  result. Compiled code with `-m68881` needs an MC68881 model on the bus, and a
-  Sun-3 with an FPU needs one inside TME.
+- **Against a real MC68881 part.** The scripted coprocessor and the MC68881 front end
+  in TME are both written from the manuals; `make sunos-fpu` checks that a real
+  operating system and a real compiler's code get the same answers through the core as
+  through TME's own CPU, which is the strongest check there is short of hardware.
 - **Concurrency.** This processor never overlaps its own execution with a
   coprocessor's, because the dialogue holds the sequencer. What the manual allows
   a coprocessor to do concurrently, it can still do: the processor is released

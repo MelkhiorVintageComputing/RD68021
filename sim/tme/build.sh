@@ -32,7 +32,10 @@ fi
 
 # The core, as a static library behind a C interface.
 V=$B/vobj
-verilator --cc -O3 --top-module rd68021_top -GICACHE_ENTRIES=64 \
+# The coprocessor interface is built: with no coprocessor answering, every F-line
+# word is still an F-line exception, and with `fpu m68881` on the element, the
+# MC68881 of sim/tme/rd68021_fpu.c answers at CpID 1.
+verilator --cc -O3 --top-module rd68021_top -GICACHE_ENTRIES=64 -GCOPROCESSOR=1 \
   -Wno-fatal --Mdir $V -CFLAGS "-O2" $ROOT/rtl/rd68021.vlt $ROOT/sim/tme/public.vlt "$@" \
   > $B/verilator.log 2>&1
 make -s -C $V -f Vrd68021_top.mk -j8 > $B/vmake.log 2>&1
@@ -118,6 +121,19 @@ patch(src + '/ic/m68k/m68k-execute.c',
       '    { extern void rd68021_utrace(unsigned long, unsigned long, unsigned long, unsigned);\n'
       '      rd68021_utrace(ic->tme_m68k_ireg_pc, ic->tme_m68k_ireg_d0, ic->tme_m68k_ireg_d1,\n'
       '                     ic->tme_m68k_ireg_sr); }\n')
+# The MC68881 behind the coprocessor interface -- sim/tme/rd68021_fpu.c, compiled
+# as part of m6888x.c so that it reaches that file's static helpers, and one
+# return in tme_m68k_fmove_rm so that a converted result can be taken before it
+# is stored.
+patch(src + '/ic/m68k/m6888x.c',
+      '  /* if this is a data register direct EA: */\n  if (ea_mode == 0) {\n\n    switch (ea_size) {\n',
+      '  /* RD68021: the result is wanted, not stored -- sim/tme/rd68021_fpu.c */\n'
+      '  { extern int rd68021_fpu_capture; if (rd68021_fpu_capture) TME_M68K_INSN_OK; }\n\n'
+      '  /* if this is a data register direct EA: */\n  if (ea_mode == 0) {\n\n    switch (ea_size) {\n')
+m = src + '/ic/m68k/m6888x.c'
+s2 = open(m).read()
+if '#include "rd68021_fpu.c"' not in s2:
+    open(m, 'a').write('\n/* RD68021 */\n#include "rd68021_fpu.c"\n')
 p = src + '/ic/isil7170.c'
 s = open(p).read()
 s = s.replace('gettimeofday(&now, NULL);', 'tme_gettimeofday(&now);')
@@ -125,7 +141,9 @@ open(p, 'w').write(s)
 PYEOF
 
 # The element, into the m68k module.
-cp $ROOT/sim/tme/rd68021.c $ROOT/sim/tme/rd68021_model.h $SRC/ic/m68k/
+cp $ROOT/sim/tme/rd68021.c $ROOT/sim/tme/rd68021_model.h $ROOT/sim/tme/rd68021_fpu.c $SRC/ic/m68k/
+# m6888x.c includes rd68021_fpu.c, which make cannot see: rebuild it by hand.
+rm -f $SRC/ic/m68k/m6888x.lo $SRC/ic/m68k/m6888x.o
 grep -q 'rd68021.lo' $SRC/ic/m68k/Makefile \
   || sed -i 's/^\(\tm68010.lo m68020.lo m6888x.lo\)$/\1 rd68021.lo/' $SRC/ic/m68k/Makefile
 grep -q 'rd68021.lo' $SRC/ic/m68k/Makefile || { echo "sim/tme/build.sh: could not add rd68021.lo"; exit 1; }
