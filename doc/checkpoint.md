@@ -31,14 +31,27 @@ Table 6-5 gives format `$A` for "Address Error or Bus Error — Execution Unit a
 Instruction Boundary" and `$B` for "Instruction Execution in Progress". Picking
 the rule is the irreversible decision; the frames themselves are bookkeeping.
 
-**This design emits `$A` only for a fault on a prefetch taken with no instruction
-in progress. Every data fault produces `$B`.**
+**This design emits `$B` for every bus error and every address error, and never
+`$A`.** RTE still accepts a format `$A` frame.
 
-That follows from a choice made in M5 and not from the frame format: the microcode
-stalls on `req_ack`, so there is no bus/sequencer concurrency in this phase and a
-data access always has an instruction in progress. A real MC68020, whose bus
-controller runs ahead, can retire an instruction while its write is still
-outstanding and so can produce a short frame for a data fault.
+Two things decide it:
+
+- **Data faults.** The microcode stalls on `req_ack`, so there is no
+  bus/sequencer concurrency and a data access always has an instruction in
+  progress. A real MC68020, whose bus controller runs ahead, can retire an
+  instruction while its write is still outstanding, and so can produce a short
+  frame for a data fault.
+- **Prefetch faults.** One is taken by the microword that needs the missing
+  word, which is usually the instruction's own last microword -- the one that
+  writes its result and advances the pipe. RTE re-executes that microword, so it
+  has to find everything it reads where it left it: the working registers, the
+  latched operand size, the extension word. The long frame carries all of those;
+  the short frame carries none of them, and it cannot, because it has no version
+  field (below). A short frame was built for a while, for the case that looked
+  like a boundary. It lost the working registers to the fault handler, and SunOS
+  found it twice: once as a forked child that could not start, once as a `ps -U`
+  whose `MOVEA.L D7,A0` at the end of a page loaded A0 from a T0 the kernel had
+  reused. `doc/bugs-found.md`.
 
 The manual licenses this explicitly, UM 6.4:
 
@@ -80,7 +93,8 @@ be read by something else with no way to know it should not be.
 > **Rule: format `$A` carries no private state at all.** Everything it needs is
 > either an architectural field or derivable from one.
 
-`tools/ucode/frames.py` enforces that, and the enforcement is negative-tested.
+`tools/ucode/frames.py` enforces that for the private assignment. This design
+satisfies it the simple way: it never builds a short frame (above).
 
 What makes it possible is that UM 6.2 states the derivation itself:
 
@@ -119,7 +133,7 @@ This is a cycle-count divergence, measured and justified in
 | `$0` | 4 | four-word | `+$00` sr, `+$02` pc ×2, `+$06` fmtvec |
 | `$1` | 4 | throwaway four-word | `+$00` sr, `+$02` pc ×2, `+$06` fmtvec |
 | `$2` | 6 | six-word | `+$00` sr, `+$02` pc ×2, `+$06` fmtvec, `+$08` instr_addr ×2 |
-| `$9` | 10 | coprocessor midinstruction | `+$00` sr, `+$02` pc ×2, `+$06` fmtvec, `+$08` instr_addr ×2, `+$0C` internal ×4 |
+| `$9` | 10 | coprocessor midinstruction | `+$00` sr, `+$02` scanpc ×2, `+$06` fmtvec, `+$08` instr_addr ×2, `+$0C` internal, `+$0E` opword, `+$10` ea ×2 |
 | `$A` | 16 | short bus fault | `+$00` sr, `+$02` pc ×2, `+$06` fmtvec, `+$08` internal, `+$0A` ssw, `+$0C` stage_c, `+$0E` stage_b, `+$10` dfa ×2, `+$14` internal, `+$16` internal, `+$18` dob ×2, `+$1C` internal, `+$1E` internal |
 | `$B` | 46 | long bus fault | `+$00` sr, `+$02` pc ×2, `+$06` fmtvec, `+$08` internal, `+$0A` ssw, `+$0C` stage_c, `+$0E` stage_b, `+$10` dfa ×2, `+$14` internal, `+$16` internal, `+$18` dob ×2, `+$1C` internal ×4, `+$24` stage_b_addr ×2, `+$28` internal ×2, `+$2C` dib ×2, `+$30` internal ×3, `+$36` version, `+$38` internal ×18 |
 
@@ -149,8 +163,9 @@ This is a cycle-count divergence, measured and justified in
 | `+$3C` | 31:0 | `ea_save` | the copy of it taken at the fault |
 | `+$40` | 31:0 | `pc_fetch` | the next long word the pipe will fetch |
 | `+$44` | 15:0 | `link` | the return address of the subroutine under way |
+| `+$4A` | 15:0 | `cprim` | the coprocessor response primitive being served |
 
-**492 bits available, 338 used, 9 words spare** (`+$4A`, `+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
+**492 bits available, 354 used, 8 words spare** (`+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
 
 ### The frozen set
 
@@ -196,6 +211,7 @@ This is a cycle-count divergence, measured and justified in
 | `seq` | `pc_prev_q` | 32 | `pc_prev` | a trace frame carries it at +$08 |
 | `seq` | `pc_kept_q` | 1 | `pc_kept` | pc_prev_q was taken at a flush, so the decode must not overwrite it |
 | `seq` | `sr_q` | 16 | `sr` | frame +$00 |
+| `seq` | `cprim_q` | 16 | `cprim` | UM 7.5.2.8: a bus error on any CIR access but the first, or on an operand a primitive moves, is an ordinary bus error, and RTE goes back to the primitive it interrupted |
 
 ### Not checkpointed, and why
 

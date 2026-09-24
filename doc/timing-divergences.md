@@ -53,6 +53,7 @@ and two finishing.
 | **MOVEP** | +13 and +14 | slower | Four byte transfers, each an operand at five clocks. |
 | **Exceptions** | TRAP +18, ILLEGAL and line A +23 | slower | A four-word frame is four operand writes and a vector read at five clocks each, plus the pipe refill at the handler. |
 | **RTE** | +14 | slower | Four reads, and the format word is decoded in microcode. |
+| **RTE out of a coprocessor frame** | +44 | slower | Six frame reads, the format word tested against five other formats first, and the response CIR read that resumes the dialogue -- a bus cycle to the coprocessor that the manual's 31 may not include. The only coprocessor count UM 8 gives. |
 | **Control flow** | BRA.S/W +1, BRA.L +4, JSR +8, BSR +7, RTS +3 | slower | A flush abandons the prefetch in flight, and the queue refills from the cache one long word per two clocks. JSR and BSR also write the return address. |
 | **The shifts and rotates** | 2 clocks, every count | **faster** (-2 to -10) | `rd68021_shifter.sv` is a barrel. UM 8 charges ROXL 12. |
 | **The multiply** | MULU.W 4, MULU.L 7 | **faster** (-23, -38) | 32 by 32 combinationally in four DSP blocks. It is not on the critical path (`doc/critical-path.md`). |
@@ -120,7 +121,7 @@ overlap with the prefetch of the next instruction, but it is close.
 | `ABCD D0,D4` | 4 | 4 | 2 | -2 | 7 |
 | `ABCD -(A1),-(A2)` | 16 | 16 | 21 | **+5** | 22 |
 | `ADDX.L D0,D4` | 2 | 2 | 2 |  | 7 |
-| `CMPM.L (A0)+,(A1)+` | 9 | 9 | 16 | **+7** | 17 |
+| `CMPM.L (A0)+,(A1)+` | 9 | 9 | 17 | **+8** | 18 |
 | `PACK D0,D4,#0` | 6 | 6 | 4 | -2 | 9 |
 | `UNPK D0,D4,#0` | 8 | 8 | 4 | -4 | 9 |
 | `CLR.L D4` | 2 | 2 | 2 |  | 7 |
@@ -175,7 +176,7 @@ overlap with the prefetch of the next instruction, but it is close.
 | `MOVEM.L (A0),D4-D5` | 18 | 8 + 4x2 + #.W,(An) 2 | 70 | **+52** | 75 |
 | `MOVEP.L D4,(0,A2)` | 17 | 17 | 31 | **+14** | 38 |
 | `MOVEP.L (0,A0),D4` | 18 | 18 | 31 | **+13** | 36 |
-| `MOVES.L (A0),D4` | 9 | 7 + #.W,(An) 2 | 12 | **+3** | 17 |
+| `MOVES.L (A0),D4` | 9 | 7 + #.W,(An) 2 | 13 | **+4** | 18 |
 | `MOVE.L D0,D4` | 2 | Rn -> Dn | 2 |  | 7 |
 | `MOVEA.L A0,A4` | 2 | Rn -> An | 3 | **+1** | 7 |
 | `MOVE.W #1,D4` | 4 | #.W -> Dn | 3 | -1 | 8 |
@@ -202,6 +203,7 @@ overlap with the prefetch of the next instruction, but it is close.
 | `RTR` | 14 | 14 | 20 | **+6** | 20 |
 | `RTD #4` | 10 | 10 | 14 | **+4** | 14 |
 | `RTE (format 0)` | 21 | 21 | 35 | **+14** | 35 |
+| `RTE (coprocessor)` | 31 | 31 | 75 | **+44** | 76 |
 | `CHK.L D1,D4 (in range)` | 8 | 8 + Dn 0 | 5 | -3 | 7 |
 | `CHK2.L (A0),D4` | 22 | 18 + #.W,(An) 4 | 25 | **+3** | 31 |
 | `CMP2.L (A0),D4` | 22 | 18 + #.W,(An) 4 | 24 | **+2** | 30 |

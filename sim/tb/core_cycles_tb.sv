@@ -22,6 +22,12 @@ module core_cycles_tb;
 
 `undef  TB_ICACHE_ENTRIES
 `define TB_ICACHE_ENTRIES 64
+// The coprocessor interface is built and the scripted coprocessor is on the bus,
+// for the one row that needs them: RTE out of a coprocessor midinstruction frame
+// goes back to reading the response CIR. Nothing else here is an F-line word.
+`ifndef TB_COPROCESSOR
+`define TB_COPROCESSOR
+`endif
 `include "rd68021_core_harness.svh"
 
   localparam logic [31:0] ISP0 = 32'h0000_1000;

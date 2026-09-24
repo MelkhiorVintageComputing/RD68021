@@ -43,12 +43,16 @@ FRAMES = {
         (0x06, 1, 'fmtvec'),
         (0x08, 2, 'instr_addr'),
     ]),
+    # UM figure 7-43. Table 6-5 draws the same ten words as "internal
+    # registers, 4 words" after the instruction address; section 7 names them.
     0x9: dict(words=10, name='coprocessor midinstruction', slots=[
         (0x00, 1, 'sr'),
-        (0x02, 2, 'pc'),
+        (0x02, 2, 'scanpc'),
         (0x06, 1, 'fmtvec'),
-        (0x08, 2, 'instr_addr'),
-        (0x0C, 4, 'internal'),
+        (0x08, 2, 'instr_addr'),   # UM figure 7-43's "program counter"
+        (0x0C, 1, 'internal'),
+        (0x0E, 1, 'opword'),
+        (0x10, 2, 'ea'),
     ]),
     0xA: dict(words=16, name='short bus fault', slots=[
         (0x00, 1, 'sr'),
@@ -135,6 +139,7 @@ INTERNAL = [
     (0x3C, 31,  0, 'ea_save',   32,  'the copy of it taken at the fault'),
     (0x40, 31,  0, 'pc_fetch',  32,  'the next long word the pipe will fetch'),
     (0x44, 15,  0, 'link',      16,  'the return address of the subroutine under way'),
+    (0x4A, 15,  0, 'cprim',     16,  'the coprocessor response primitive being served'),
 ]
 
 # --------------------------------------------------------------------------
@@ -193,6 +198,7 @@ CHECKPOINT = [
     ('seq', 'pc_prev_q',        32, 'pc_prev',       'a trace frame carries it at +$08'),
     ('seq', 'pc_kept_q',         1, 'pc_kept',      'pc_prev_q was taken at a flush, so the decode must not overwrite it'),
     ('seq', 'sr_q',             16, 'sr',            'frame +$00'),
+    ('seq', 'cprim_q',          16, 'cprim',         'UM 7.5.2.8: a bus error on any CIR access but the first, or on an operand a primitive moves, is an ordinary bus error, and RTE goes back to the primitive it interrupted'),
 ]
 
 # Rows of CHECKPOINT whose register the RTL does not have YET, and the milestone
@@ -292,6 +298,9 @@ EXEMPT = [
     ('biu', 'op_active',    'an operand is under way'),
     ('biu', 'op_first',     'no cycle of it has started yet -- OCS'),
     ('biu', 'op_isfetch',   'which of the two requesters it belongs to'),
+    ('biu', 'op_cpflt',     'whether a bus error on it is a fault -- a '
+                            'coprocessor register access -- which the next '
+                            'request, or a rerun, sets again'),
     ('biu', 'arb',          'the arbiter. UM figure 5-44: it is not part of the '
                             'processor state and a fault does not disturb it.'),
     ('biu', 'bg_n_o',       'the grant pin'),
@@ -416,6 +425,9 @@ ARCH_FIELDS = {
     'dib': 'data input buffer',
     'version': 'version number and internal information',
     'internal': 'internal register',
+    'scanpc': 'scan program counter',
+    'opword': 'operation word',
+    'ea': 'effective address',
 }
 
 

@@ -52,7 +52,7 @@ IVFLAGS := -g2012 -Wall -Wno-timescale -DTB_ICACHE_ENTRIES=$(ICACHE_ENTRIES)
 
 .PHONY: all help dirs lint lint-source lint-iverilog lint-verilator lint-yosys \
         lint-quartus lint-questa quartus synth impl paths audit ucode ucode-check sim sim-bus \
-        timing timing-verbose ea cache cycles suska sun3 sunos check clean
+        timing timing-verbose ea cache cycles suska sun3 sunos sunos-disk cpif check clean
 
 all: lint
 
@@ -71,6 +71,8 @@ help:
 	@echo "  make suska     the bus against a second core, the Suska WF68K30L"
 	@echo "  make sun3      a Sun-3/160 boot PROM on the core, inside TME"
 	@echo "  make sunos     SunOS 4.1.1 on that machine, to a single-user shell"
+	@echo "  make sunos-disk  an installed SunOS 4.1.1 from disk, multi-user (SUNOS_IMG=)"
+	@echo "  make cpif      the coprocessor interface against a scripted coprocessor"
 	@echo "  make ucode     regenerate rtl/gen/ from tools/ucode/"
 	@echo "  make check     the gate: ucode-check, lint, audit"
 	@echo
@@ -178,6 +180,12 @@ VECGROUPS := all
 
 TBS := $(filter-out core_ea_tb core_vec_tb core_cosim_tb core_cycles_tb,$(patsubst sim/tb/%.sv,%,$(wildcard sim/tb/*_tb.sv)))
 
+# COPROCESSOR=1 builds the coprocessor interface into every core testbench, and
+# puts the scripted coprocessor of sim/models/rd68021_cpmodel.sv on the bus.
+ifeq ($(COPROCESSOR),1)
+IVFLAGS += -DTB_COPROCESSOR
+endif
+
 sim: dirs
 	@ok=1; for tb in $(TBS); do \
 	  iverilog $(IVFLAGS) -I sim/tb -o $(BUILD)/$$tb.vvp -s $$tb \
@@ -193,6 +201,11 @@ sim: dirs
 	    echo "  $$(grep -E '^PASS' $(BUILD)/$$tb.log | head -1)"; \
 	  fi; \
 	done; test $$ok -eq 1
+
+# The coprocessor interface, UM section 7, against the scripted coprocessor of
+# sim/models/rd68021_cpmodel.sv -- doc/coprocessor.md. Part of `sim` as well.
+cpif: dirs
+	@$(MAKE) --no-print-directory sim TBS=core_cpif_tb
 
 sim-bus: dirs
 	@$(MAKE) --no-print-directory sim TBS="$(filter bus_%,$(TBS))"
@@ -550,6 +563,54 @@ sunos: sun3
 	  echo "FAIL: sunos -- the console output differs"; \
 	  diff <(tr -d '\r\000' < $(SUNOSDIR)/m68020/console.out) \
 	       <(tr -d '\r\000' < $(SUNOSDIR)/rd68021/console.out) | head -20; exit 1; \
+	fi
+
+# ---------------------------------------------------------------------------
+# An installed SunOS 4.1.1, from disk -- doc/sun3.md
+#
+# A disk image with the whole system installed, made by the unattended installer
+# in Run-Sun3-SunOS-4.1.1's diskimage/ directory. It is not an input -- it is
+# 300 MB and made on the host -- so its path is a variable, and the target says
+# so if it is not there. It is copied, never written: the boot runs fsck and
+# writes logs.
+#
+# The PROM boots it from sd(0,0,0), the system comes up multi-user, and
+# drive.sh logs in as root and types three commands, on both CPUs. The consoles
+# must be identical once the time stamps -- the date the system prints, and the
+# login message -- are masked: TME's m68020 keeps host time and the core the
+# simulated time of doc/sun3.md. About twelve minutes on the core.
+# ---------------------------------------------------------------------------
+SUNOS_IMG ?= $(HOME)/Run-Sun3-SunOS-4.1.1/diskimage/work/sunos411-sun3.img
+SUNDSKDIR := $(BUILD)/sunos-disk
+SUNDSKCMD := root "uname -a" "ls /" df
+# The time stamps: "Thu Sep 24 16:08:05 GMT 2026" and "Sep 24 16:08:10 sun3 ...".
+STAMPS    := sed -E 's/[A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9][0-9] [0-9:]{8} [A-Z]+ [0-9]{4}/DATE/; s/^[A-Z][a-z]{2} [ 0-9][0-9] [0-9:]{8} /STAMP /'
+
+sunos-disk: sun3
+	@test -f "$(SUNOS_IMG)" || { echo "FAIL: sunos-disk -- no disk image at $(SUNOS_IMG); set SUNOS_IMG"; exit 1; }
+	@sed 's/^installed-#megs .*/installed-#megs 8/; s/^boot-device .*/boot-device sd(0,0,0)/' \
+	    $(SUN3DIR)/eeprom.txt > $(SUN3DIR)/eeprom-sd.txt
+	@$(TMEENV) $(TMEINST)/bin/tme-sun-eeprom < $(SUN3DIR)/eeprom-sd.txt > $(SUN3DIR)/eeprom-sd.bin 2>/dev/null
+	@for cpu in m68020 rd68021; do \
+	  d=$(SUNDSKDIR)/$$cpu; rm -rf $$d; mkdir -p $$d; \
+	  cp $(SUN3DIR)/prom.bin $(SUN3DIR)/sun3-idprom.bin $$d/; \
+	  cp $(SUN3DIR)/eeprom-sd.bin $$d/sun3-eeprom.bin; \
+	  cp --sparse=always "$(SUNOS_IMG)" $$d/disk.img; \
+	  arg=tme/ic/$$cpu; [ $$cpu = rd68021 ] && arg="tme/ic/rd68021 log rd68021.log"; \
+	  sed "s|@CPU@|$$arg|" sim/tme/SUNOS-DISK.in > $$d/SUNOS; \
+	  (cd $$d && PROMPT='login: *|# *' T=$(CURDIR)/$(TMEINST) \
+	      $(CURDIR)/sim/tme/drive.sh SUNOS 5400 $(SUNDSKCMD) > /dev/null 2>&1); \
+	  tr -d '\r\000' < $$d/console.out | LC_ALL=C tr '\200-\377' '\000-\177' \
+	    | $(STAMPS) > $$d/console.txt; \
+	done
+	@if cmp -s $(SUNDSKDIR)/m68020/console.txt $(SUNDSKDIR)/rd68021/console.txt \
+	    && tail -c 2 $(SUNDSKDIR)/rd68021/console.txt | grep -q '^# $$'; then \
+	  tail -6 $(SUNDSKDIR)/rd68021/console.txt | sed 's/^/    /'; echo; \
+	  echo "  sunos-disk: $$(wc -l < $(SUNDSKDIR)/rd68021/console.txt) lines of console output identical to TME's m68020, time stamps aside, ending at a root prompt"; \
+	  echo "PASS: sunos-disk"; \
+	else \
+	  echo "FAIL: sunos-disk -- the console output differs"; \
+	  diff $(SUNDSKDIR)/m68020/console.txt $(SUNDSKDIR)/rd68021/console.txt | head -20; exit 1; \
 	fi
 
 cosim-long: dirs

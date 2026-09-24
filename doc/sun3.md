@@ -136,12 +136,47 @@ the shell's prompt -- about three minutes on the core. It found two more bugs, b
    the fork has not mapped yet. The child faulted, the kernel mapped the page and
    returned, and the core ran the kernel's own RTE -- still in stage D -- in user
    mode. The child died of a privilege violation and the install script never
-   printed its menu. Stage D's valid bit is now in the frame, and the short frame
-   is used only where its PC-relative stage addresses are true.
+   printed its menu. Stage D's valid bit is now in the frame, and every fault
+   takes the long frame.
 
 The second was found by looking, as the user suggested, at how the machine
 answered page faults of newly forked processes: `RD68021_FAULTS` showed the
 child's first address faulting and never being fetched again.
+
+## An installed SunOS 4.1.1, from disk
+
+`make sunos-disk` boots a disk image with the whole of SunOS 4.1.1 installed --
+made by the unattended installer in `Run-Sun3-SunOS-4.1.1/diskimage`, not an input
+(`SUNOS_IMG=` names it) -- on the installer's machine: TME's `sun-sc` SCSI board and
+an ACB-4000 disk, `sim/tme/SUNOS-DISK.in`. The GENERIC kernel comes up from
+`sd(0,0,0)`, checks both file systems, starts the daemons and reaches
+`sun3 login:`; `drive.sh` logs in as root and types `uname -a`, `ls /` and `df`.
+The console must be identical to TME's m68020 once the time stamps are masked --
+about twelve minutes on the core, two billion clocks.
+
+```
+sun3 login: root
+Last login: Thu Sep 24 15:30:31 on console
+SunOS Release 4.1.1 (GENERIC) #1: Sat Oct 13 06:05:48 PDT 1990
+sun3# uname -a
+SunOS sun3 4.1.1 1 sun3
+sun3# df
+Filesystem            kbytes    used   avail capacity  Mounted on
+/dev/sd0a              23815    2399   19034    11%    /
+/dev/sd0g             232094  114647   94237    55%    /usr
+```
+
+It found one more, in the frames again:
+
+6. **A prefetch fault resumed an instruction with the fault handler's working
+   registers.** `/etc/rc` printed `Memory fault` where TME's m68020 printed
+   nothing: `ps -U` died, and `/etc/psdatabase` was never rewritten. Its last
+   system call and the shell's report bracketed a prefetch fault at the start of a
+   page of the shared C library, and then a read of address $42. The last word of
+   the page before was `MOVEA.L D7,A0`, whose final microword copies the source out
+   of T0; the short frame does not carry T0, and the kernel's fault handler had
+   reused it. Every fault now takes the long frame, and the `/etc/psdatabase` the
+   core writes is byte for byte the one TME's m68020 writes.
 
 ## Time
 

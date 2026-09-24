@@ -48,16 +48,18 @@ read one word shifted. It is a silent demand-paging failure.
 
 ## 2. Coprocessor interface register select: A5–A0 or A4–A0?
 
-**Not yet followed either way — decided in M13.**
+**Followed: A4–A0.** Decided in M13.
 
 §5.4.3 says the coprocessor interface register is selected by **A5–A0**. Figure 5-31,
 "MC68020/EC020 CPU Space Address Encoding", draws the `CP REG` field on **A4–A0**, with
 A15–A13 carrying the CpID and A12–A5 zero.
 
 §7.3's register map (the eleven CIRs at offsets `$00`–`$1C`) needs five bits to address a
-word-granular register set spanning `$00`–`$1F`, which favours the figure. Cross-check
-against `MC68881UM_split/11-section-07-coprocessor-interface.pdf`, which is the same
-protocol seen from the coprocessor's side, before deciding.
+word-granular register set spanning `$00`–`$1F`, which favours the figure, and so does
+§7 itself: figure 7-3 draws the CIR field on A4–A0 and 7.1.4.3 says "signals A4–A0 of the
+MC68020/EC020 address bus select the CIR being accessed". A5 is zero, with A12–A6.
+`rd68021_biu.sv` builds the address that way and `sim/models/rd68021_cpmodel.sv` decodes
+it independently from figure 7-3.
 
 ---
 
@@ -220,3 +222,64 @@ about to be destroyed.
 
 `sim/tb/core_bitfield_tb.sv` checks both halves: the other seven against the
 field as found, BFINS against the value inserted.
+
+---
+
+## cpRESTORE's addressing modes: three statements, two answers
+
+**Followed: control modes, (An)+, and the immediate.**
+
+- UM 7.2.3.4.1: "All memory addressing modes except the predecrement addressing mode
+  are valid." The immediate is a memory mode (PRM table 2-4).
+- PRM 6, cpRESTORE, in words: "Only postincrement or control addressing modes can be
+  used". The immediate is neither.
+- PRM 6, cpRESTORE, the table that sentence introduces: it lists `# <data>` as mode 111,
+  register 100 -- valid.
+
+Two of the three allow it, and the one that does not is the one a table contradicts on
+the same page. So `cpRESTORE #<frame>` restores a state frame written in the instruction
+stream, which comes out of the pipe and moves the scanPC past it. cpSAVE's table and text
+agree with each other and with UM 7.2.3.3.1: control alterable or predecrement, no
+immediate.
+
+---
+
+## Transfer multiple main processor registers: which register first?
+
+**Followed: D0 first, then D1..D7, then A0..A7** -- the order MOVEM's control form uses.
+
+UM 7.4.15 gives the mask as figure 7-36, A7 in bit 15 down to D0 in bit 0, and says "the
+selected registers are transferred in the order D7–D0 and then A7–A0". Read literally
+that is D7 first. It can equally be read as naming the two groups the way the rest of the
+manual names register ranges -- "D7–D0" is how figure 7-36 labels the data half -- with
+the data registers before the address registers. The MC68881 manual cannot settle it: it
+never issues this primitive ("the FPCP only uses six of those primitives", MC68881 UM
+7.4.2).
+
+A coprocessor that relies on the order has to be told which one this is, so it is here and
+in `doc/coprocessor.md`. The mask bit layout, and which registers are transferred, are
+unambiguous.
+
+---
+
+## The midinstruction frame: "internal registers" or named fields?
+
+**Followed: figure 7-43's names.** Table 6-5 draws format $9 as the six-word frame plus
+"internal registers, 4 words" at `+$0C`–`+$12`. Figure 7-43 names those words: an internal
+register at `+$0C`, the operation word at `+$0E` and the effective address at `+$10`. They
+are not in conflict -- one is less specific -- but a handler that emulates a coprocessor
+instruction needs the named ones, and `tools/ucode/frames.py` lays the frame out by
+figure 7-43.
+
+---
+
+## The state frame length: in bytes, or times four?
+
+**Followed: in bytes.** UM 7.2.3.1 says the processor writes the state frame "to
+descending memory addresses, beginning with the address specified by the sum of the
+effective address and the length field multiplied by four". UM 7.2.3.2 says the length
+byte "specifies the size in bytes (which must be a multiple of four)", and 7.2.3.3.2 that
+it is "the number of bytes of state information, not including the format word and
+associated null word". The MC68881's own frames settle it: its idle frame has length $18
+and is "six long words from the operand CIR" (MC68881 UM 7.5.3.1) -- 24 bytes, not 96.
+

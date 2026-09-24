@@ -19,7 +19,10 @@ PROMPT=${PROMPT:-'[>#:] *'}
 # least one line ended in it.
 prompted() {
   tr -d '\000' < console.out | tail -c +$((sent+1)) > console.new
-  tr -d '\r' < console.new | tail -c 40 | tr '\n' ' ' | grep -Eq "($PROMPT)\$" &&
+  # Bit 7 stripped: a getty set for even parity sends it, and "login:" then
+  # comes out as bytes no pattern matches.
+  tr -d '\r' < console.new | LC_ALL=C tr '\200-\377' '\000-\177' | tail -c 40 \
+    | tr '\n' ' ' | grep -Eaq "($PROMPT)\$" &&
     { [ $sent -eq 0 ] || grep -q $'\n' console.new; }
 }
 rm -f console.in; mkfifo console.in; : > console.out

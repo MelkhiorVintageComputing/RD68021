@@ -37,6 +37,7 @@ module rd68021_biu #(
     input  logic        req_rmc,
     input  logic  [3:0] req_cpuspace,
     input  logic  [7:0] req_cpuaddr,
+    input  logic        req_cpfault,
     output logic        req_ack,
     output logic        req_last,
     output logic [39:0] req_rdata,
@@ -176,6 +177,10 @@ module rd68021_biu #(
   logic        op_rmc;
   logic        op_first;     // no bus cycle of this operand has started yet -- OCS
   logic        op_isfetch;   // the request came from the instruction fetch unit
+  // A bus error on this CPU-space operand is a bus error and not an answer: a
+  // coprocessor interface register other than the one that starts an
+  // instruction -- UM 7.5.2.8.
+  logic        op_cpflt;
 
   // Declared here, above the logic that reads them, rather than beside the
   // logic that drives them: Quartus, Vivado and Questa all refuse a use above
@@ -655,6 +660,11 @@ module rd68021_biu #(
         // put their field on.
         cpu_space_addr = {12'h000, rd68021_pkg::CPUS_ACCESS, 8'h00,
                           req_cpuaddr};
+      rd68021_pkg::CPUS_COPROC:
+        // UM figure 7-3: the CpID on A15-A13 and the interface register on
+        // A4-A0, "address lines not specified above are 0".
+        cpu_space_addr = {12'h000, rd68021_pkg::CPUS_COPROC, req_cpuaddr[7:5],
+                          8'h00, req_cpuaddr[4:0]};
       default:
         cpu_space_addr = {12'h000, req_cpuspace, req_cpuaddr, 8'h00};
     endcase
@@ -745,6 +755,7 @@ module rd68021_biu #(
       op_rmc     <= 1'b0;
       op_first   <= 1'b1;
       op_isfetch <= 1'b0;
+      op_cpflt   <= 1'b0;
       op_data    <= '0;
       cyc_addr   <= '0;
       cyc_fc     <= '0;
@@ -820,8 +831,10 @@ module rd68021_biu #(
             // instruction; the microcode reads it off the end code and decides.
             // Raising a fault here as well would take the bus error exception
             // instead, and the spurious interrupt would be unreachable.
-            req_fault    <= term_err && (op_fc != rd68021_pkg::FC_CPU);
-            req_fault_wr <= term_err && (op_fc != rd68021_pkg::FC_CPU)
+            req_fault    <= term_err && ((op_fc != rd68021_pkg::FC_CPU)
+                                         || op_cpflt);
+            req_fault_wr <= term_err && ((op_fc != rd68021_pkg::FC_CPU)
+                                         || op_cpflt)
                                      && !op_rw;
             if (op_rw) rdata_q <= rd_merged;
           end
@@ -850,6 +863,9 @@ module rd68021_biu #(
           op_rmc     <= next_rmc;
           op_first   <= 1'b1;
           op_isfetch <= take_fetch;
+          // An operand RTE hands back in CPU space can only be a coprocessor
+          // access that faulted, so it faults again if it has to.
+          op_cpflt   <= take_rst ? 1'b1 : (take_req && req_cpfault);
           // A restarted operand keeps what it had already transferred: the
           // residual says how much is left, and the buffer holds the rest.
           if (take_rst)        op_data <= {8'd0, rst_dob};
@@ -1125,7 +1141,7 @@ module rd68021_biu #(
       flt_dob   <= '0;
       flt_dib   <= '0;
     end else if (st_n == rd68021_pkg::ST_S5 && op_finishing && !op_isfetch
-                 && term_err && (op_fc != rd68021_pkg::FC_CPU)) begin
+                 && term_err && ((op_fc != rd68021_pkg::FC_CPU) || op_cpflt)) begin
       flt_addr  <= op_addr;
       flt_bytes <= op_rem;
       flt_fc    <= op_fc;

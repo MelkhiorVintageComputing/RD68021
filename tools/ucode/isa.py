@@ -69,6 +69,14 @@ SEQ = enc(
     'RESUME',    # ... or to the one RTE read out of a fault frame, which is the
                  # microword that faulted: doc/checkpoint.md rule 2 makes it
                  # re-executable, so resuming is a jump and nothing else
+    # The coprocessor's response primitive decoder supplies the address -- UM
+    # 7.4. A primitive read from the response CIR says what the processor does
+    # next, and most of what it says steers the bus: which register it reads,
+    # which way an operand goes, whether an effective address is evaluated.
+    # Resolving it in hardware into a micro-address, as the extension-word
+    # decoder does for an effective address, keeps all of that out of the
+    # request fan-in.
+    'CPDEC',
 )
 
 # Conditions the COND arm can test. M5 needs none of them yet; the field exists
@@ -99,6 +107,7 @@ COND = enc(
     'FMT2',      # ... a six-word frame
     'FMTA',      # ... a short bus fault frame
     'FMTB',      # ... and a long one
+    'FMT9',      # ... a coprocessor midinstruction frame -- UM 7.4.19
     # UM 6.2.2: the three bits of the special status word a handler is allowed
     # to have changed, plus the two that say what the faulted access was, which
     # RTE needs to know which buffer to rerun it from.
@@ -133,6 +142,47 @@ COND = enc(
                  # a spurious interrupt, UM 6.1.9, and not a bus fault
     'RESNEG',    # the ALU result is negative at the effective size
     'GTZ',       # ... and the signed comparison just made came out greater
+    # ---- The coprocessor interface, UM section 7 --------------------------
+    # The response primitive held in cprim, UM figure 7-22: come again, pass
+    # the program counter, direction, and the three bits individual primitives
+    # give their own names to -- IA or SP in bit 8, PF in bit 1, TF in bit 0.
+    'CPCA', 'CPPC', 'CPDR', 'CPB8', 'CPPF', 'CPTF',
+    # Which coprocessor instruction stage D holds -- UM figures 7-6 to 7-13.
+    # The category decides how a dialogue ends: a general instruction is over
+    # when the coprocessor lets it go, a conditional one when it has a verdict.
+    'CPGEN',     # bits 8:6 = 000, cpGEN
+    'CPBCC',     # bit 7 set: cpBcc
+    'CPDBCC',    # bits 5:3 = 001 in the 001 group: cpDBcc
+    'CPTRAP',    # bits 5:3 = 111 in the 001 group: cpTRAPcc
+    'IR0', 'IR1', 'IR6',   # single bits of stage D: cpTRAPcc's opmode, cpBcc.L
+    # The byte counter an operand transfer runs down, in T1. The bus unit
+    # moves one to four bytes per request and the count is fixed in the
+    # microword, so the tail of an odd-length operand is a branch.
+    'T1GE4', 'T1B1', 'T1B0', 'T1ZERO',
+    # A trace will be taken when this instruction ends -- UM 7.5.2.5 keeps the
+    # dialogue going until the coprocessor has finished, so that it is.
+    'TRACEPEND',
+    # An interrupt the mask admits is waiting -- UM 7.5.2.6: a null primitive
+    # with CA and IA set services it in the middle of the instruction.
+    'IRQPEND',
+    # The addressing mode in stage D's effective-address field, for the
+    # primitives that evaluate it -- UM 7.4.9 and 7.4.16.
+    'EADN', 'EAAN', 'EAPOST', 'EAPRE', 'EAIMM',
+    'EAUNALT',   # program-counter relative or immediate: not alterable
+    'CPEAOK',    # in the class the primitive's valid-EA field names, table 7-4
+    'EACTLALT',  # control alterable, UM 7.4.8
+    'CPMEAOK',   # what UM 7.4.16 allows for the primitive's direction
+    'CPLEN124',  # the primitive's length is one, two or four bytes
+    # A coprocessor format word, read into T0 -- UM table 7-2.
+    'FWNOTRDY',  # $01, not ready, come again
+    'FWEMPTY',   # $00, empty or reset
+    'FWBAD',     # $02, invalid, or $03-$0F, which the processor takes as it
+    'FWLEN',     # a valid format whose length is not a multiple of four
+    # A control register select code the processor does not have -- UM table
+    # 7-5 for the coprocessor, and UM 6.1.5 for MOVEC, where it is an illegal
+    # instruction.
+    'CREGBAD',
+    'CREGBADC',  # ... the same code, read from stage C before it is latched
 )
 
 # --------------------------------------------------------------------------
@@ -286,6 +336,18 @@ ASRC = enc(
     'INT36',     # ... and the one at +$36, which carries the version nibble
     'CREG',      # the control register MOVEC's extension word names
     'XREG',      # the general register it names -- data or address per bit 15
+    # ---- The coprocessor interface -----------------------------------------
+    'CPLEN',     # the primitive's length field, bits 7:0
+    'CPVEC',     # ... read as a vector number, times four: the take-exception
+                 # primitives -- UM 7.4.18 to 7.4.20
+    'CPREG',     # the general register a transfer-single-register primitive
+                 # names: D/A in bit 3 and the number in 2:0 -- UM figure 7-33
+    'CPINT',     # the midinstruction frame's internal word at +$0C
+    'FWLONG',    # a format word from T0 with its reserved word, as the long word
+                 # stored at the head of a coprocessor state frame -- UM 7-14
+    'FWLEN',     # ... and its length field alone
+    'PC_C_RAW',  # the scanPC as a frame field: the address of stage C, read
+                 # without using the word there -- UM 7.4.1
 )
 
 # A convention, not a field: ASRC.DREG and ASRC.AREG read the register that bits
@@ -333,6 +395,13 @@ BSRC = enc(
                  # and the immediate shift counts
     'DIVQ',      # the quotient, for assembling the word divide's result
     'IRQLEVEL',  # the level of the interrupt being taken, for the mask
+    'THREE',     # the tail of an operand three bytes long
+    # UM 7.4.9: an (An)+ or -(An) operand steps the register by its length,
+    # and by two for a single byte through A7, "to maintain a word-aligned
+    # stack".
+    'CPSTEP',
+    'CPLEN',     # the length alone
+    'TWENTY',    # the length of a midinstruction frame -- UM figure 7-43
 )
 
 ALU = enc(
@@ -451,6 +520,18 @@ DST = enc(
     # puts a byte or word into the low part of a data register and sign-extends
     # it into the whole of an address register. MOVES needs both.
     'XREG_SZ',
+    # ---- The coprocessor interface -----------------------------------------
+    'CPRIM',     # the response primitive just read, held while it is served
+    'CPREG',     # the general register a transfer-single-register primitive
+                 # names, written whole
+    # UM 7.4.17: the scanPC, written by the coprocessor. The pipe behind stage
+    # D is emptied and refilled from here; stage D and the program counter --
+    # the coprocessor instruction's own -- stay where they are.
+    'SCANPC',
+    'CPINT',     # the midinstruction frame's internal word, put back by RTE
+    # The address register the effective-address field names, written as a
+    # VALUE: sign extended from the operand size -- UM 7.4.9.
+    'AREG_R',
 )
 
 # How wide the destination write is. A write to a data register of size byte or
@@ -487,6 +568,9 @@ SZSEL = enc(
     'CHK',       # bit 7 alone: 1 word, 0 long. CHK is the only instruction that
                  # encodes its size that way -- PRM 8 gives it opmode 110 and
                  # 100, the second being the MC68020's addition.
+    # The primitive's length field: one byte, two, or four -- the only lengths
+    # UM 7.4.9 allows for a register operand.
+    'CPLEN',
 )
 
 # Condition codes -- PRM 3.3 and table 3-18.
@@ -553,7 +637,13 @@ CPUSPACE = enc('NONE', 'IACK', 'BKPT', 'COPROC',
                # for a type $01 module. The register offset comes out of the
                # microword's `vec` field, which is otherwise the exception
                # vector and is free on every microword that makes one of these.
-               'ACCESS')
+               'ACCESS',
+               # UM 7.5.2.8: the CIR access that STARTS a coprocessor
+               # instruction. A bus error on it means there is no coprocessor,
+               # and the microcode takes an F-line exception off the end code;
+               # on every other CIR access -- COPROC -- it is a bus error. The
+               # CIR offset is in `vec` too, and the CpID comes from stage D.
+               'CPINIT')
 
 # Which exception stack frame a microword is building. UM table 6-5 names the
 # exceptions that take each; the code below is the value that goes in bits 15:12
@@ -587,14 +677,14 @@ UADDR_BITS = 12
 
 FIELDS = OrderedDict([
     ('seq',   (3,  SEQ,   'NEXT')),
-    ('cond',  (6,  COND,  'NEVER')),
+    ('cond',  (7,  COND,  'NEVER')),
     ('next',  (UADDR_BITS, None, 0)),
     ('bus',   (2,  BUS,   'NONE')),
     ('asel',  (4,  ASEL,  'ZERO')),
     ('fc',    (3,  FC,    'DATA')),
     ('bytes', (3,  None,  0)),      # operand size in bytes, 0 when bus is NONE
     ('asrc',  (7,  ASRC,  'ZERO')),
-    ('bsrc',  (5,  BSRC,  'ZERO')),
+    ('bsrc',  (6,  BSRC,  'ZERO')),
     ('alu',   (6,  ALU,   'A')),
     ('dst',   (6,  DST,   'NONE')),
     ('size',  (2,  SIZE,  'LONG')),

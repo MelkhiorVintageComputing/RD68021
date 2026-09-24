@@ -311,7 +311,8 @@ package rd68021_ucode_pkg;
     # the decoder's fall-through, and the trace exception, which the sequencer
     # puts in front of the decode arm at every instruction boundary.
     for lbl in ('reset', 'illegal', 'exc_trace', 'exc_irq',
-                'exc_fault_long', 'exc_fault_short'):
+                'exc_fault_long', 'exc_line_f',
+                'exc_cp_irq'):
         out.append('  localparam logic [UADDR-1:0] ENTRY_%s = %d\'d%d;'
                    % (lbl.upper().replace('EXC_', ''),
                       isa.UADDR_BITS,
@@ -478,6 +479,54 @@ endmodule""")
     return '\n'.join(out) + '\n'
 
 
+def cpdec_rom():
+    """The response primitive decoder: a coprocessor's request in, a
+    micro-address out -- UM 7.4.
+
+    The same trick as the extension-word decoder. A primitive read from the
+    response CIR decides which interface register is read next, which way an
+    operand moves, whether the effective address is evaluated, and whether the
+    request is refused outright as a protocol violation (UM table 7-6); resolving
+    that once, in hardware, keeps every one of those decisions out of the bus
+    request's fan-in.
+    """
+    ordered = program.CPPATTERNS
+    disjoint = make_disjoint(ordered)
+    bad = check_disjoint(ordered, disjoint, width=17)
+    if bad:
+        raise SystemExit('assemble: the disjoint primitive table does not agree '
+                         'with the ordered one:\n  ' + '\n  '.join(bad))
+    out = [BANNER]
+    out.append("""// The coprocessor response primitive decoder -- UM 7.4 and table 7-6.
+//
+// Seventeen bits in: the instruction's category (1 for a conditional one, whose
+// dialogue allows less) and the sixteen-bit primitive read from the response
+// CIR. A micro-address out. Every encoding the manual leaves undefined, and
+// every one it forbids in a conditional instruction, lands on the protocol
+// violation -- UM 7.5.2.1.
+//
+// %d ordered patterns became %d disjoint ones.
+
+module rd68021_cpdec_rom (
+    input  logic        cond_cat,
+    input  logic [15:0] prim,
+    output logic [%d:0] entry
+);
+
+  always_comb begin
+    casez ({cond_cat, prim})
+""" % (len(ordered), len(disjoint), isa.UADDR_BITS - 1))
+    for p, t, m in disjoint:
+        out.append("      17'b%s: entry = %d'd%d;   // %s"
+                   % (p.replace('-', '?'), isa.UADDR_BITS, program.entry(t), m))
+    out.append("""      default: entry = %d'd%d;   // undefined: a protocol violation
+    endcase
+  end
+
+endmodule""" % (isa.UADDR_BITS, program.entry('cp_protocol')))
+    return '\n'.join(out) + '\n'
+
+
 def eamode_rom():
     """The addressing-mode decoder: six bits of stage D in, a micro-address out.
 
@@ -543,6 +592,7 @@ OUTPUTS = {
     os.path.join(GEN, 'rd68021_eamode_rom.sv'): eamode_rom,
     os.path.join(GEN, 'rd68021_frame_pkg.sv'): frame_pkg,
     os.path.join(GEN, 'rd68021_eadec_rom.sv'): eadec_rom,
+    os.path.join(GEN, 'rd68021_cpdec_rom.sv'): cpdec_rom,
     os.path.join(GEN, 'rd68021_ucode_pkg.sv'): ucode_pkg,
     os.path.join(GEN, 'rd68021_ucode_rom.sv'): ucode_rom,
     os.path.join(GEN, 'rd68021_decode_rom.sv'): decode_rom,
@@ -570,11 +620,17 @@ OUTPUTS = {
 # microword computes, so they are not in this table.
 # --------------------------------------------------------------------------
 COND_READS = {
-    'FMT0': 'XW', 'FMT1': 'XW', 'FMT2': 'XW', 'FMTA': 'XW', 'FMTB': 'XW',
+    'FMT0': 'XW', 'FMT1': 'XW', 'FMT2': 'XW', 'FMTA': 'XW', 'FMTB': 'XW', 'FMT9': 'XW',
     'XW10': 'XW', 'XW11': 'XW', 'XW15': 'XW',
     'MASK0': 'T0', 'MODBAD': 'T0', 'MODTYPE1': 'T0', 'MODOPT4': 'T0',
     'ASTAT_BAD': 'T2', 'ASTAT_STACK': 'T2', 'T3ZERO': 'T3',
     'USER': 'SR', 'MASTER': 'SR',
+    'CPCA': 'CPRIM', 'CPPC': 'CPRIM', 'CPDR': 'CPRIM', 'CPB8': 'CPRIM',
+    'CPPF': 'CPRIM', 'CPTF': 'CPRIM', 'CPEAOK': 'CPRIM', 'CPMEAOK': 'CPRIM',
+    'CPLEN124': 'CPRIM',
+    'T1GE4': 'T1', 'T1B1': 'T1', 'T1B0': 'T1', 'T1ZERO': 'T1',
+    'FWNOTRDY': 'T0', 'FWEMPTY': 'T0', 'FWBAD': 'T0', 'FWLEN': 'T0',
+    'CREGBAD': 'XW', 'IRQPEND': 'SR',
 }
 
 # ... and the ones that read the CONDITION CODES, which a microword writes
@@ -586,43 +642,6 @@ COND_READS = {
 # not here, for the reason they are not in the table above: testing what the
 # current microword computes is what they exist for.
 COND_READS_CCR = ('CC', 'NCC', 'ZSET', 'CSET', 'VSET')
-
-
-def check_boundary():
-    """The short fault frame is reachable from the decode arm and nowhere else.
-
-    UM table 6-5 picks format $A when the exception is taken at an instruction
-    boundary and $B when it is taken during one, and this core decides which by
-    asking whether the microword that could not get its word from the pipe was a
-    DECODE. That is only the same question while two things hold:
-
-      - every microword that ADVANCES the pipe also decodes, so a faulted word
-        can never be pulled into stage D mid-instruction. CONSUME is not an
-        advance: it throws the word away, which is why TRAPcc's unread operand
-        word does not fault on one that came from a faulted prefetch -- UM 6.1.2
-        delays the exception "until it attempts to use the prefetched
-        information", and that one never does;
-      - no microword that decodes also READS stage C as data, so a DECODE that
-        faults is always about the instruction it was going to start and never
-        about an extension word it was going to use.
-
-    Both are true of the microprogram as written. Neither is enforced by
-    anything else, and if either stops being true the frame format goes wrong in
-    a way only a demand-paging handler would ever notice.
-    """
-    bad = []
-    for i, (f, c) in enumerate(program.WORDS):
-        seq = f.get('seq', 'NEXT')
-        if f.get('pf') == 'ADV' and seq != 'DECODE':
-            bad.append('microword %d advances the pipe without decoding, so a '
-                       'faulted word could reach stage D mid-instruction -- %s'
-                       % (i, c))
-        if seq == 'DECODE' and (f.get('asrc') in ('STG_C', 'STG_C_HI')
-                                or f.get('bsrc') in ('STG_C_U', 'STG_C_S')):
-            bad.append('microword %d decodes and reads stage C as data, so a '
-                       'fault on it could be either frame format -- %s'
-                       % (i, c))
-    return bad
 
 
 def check_areg_size():
@@ -798,6 +817,46 @@ def _ea_reads(f):
     return r
 
 
+# --------------------------------------------------------------------------
+# Read data does not survive a fault
+#
+# The bus unit's read data is not in the checkpoint set: it is whatever the
+# last read returned, and after a fault and RTE that is the last word RTE read
+# out of the frame. doc/checkpoint.md rule 2 makes a faulted microword
+# re-executable -- but only if everything it reads is still what it was. So a
+# microword that can fault may not take a VALUE from RDATA read by an earlier
+# microword:
+#
+#   - a microword that uses stage C or advances the pipe can take a prefetch
+#     fault, and
+#   - a microword with a bus request can take a data fault,
+#
+# and either is re-executed after RTE. The one exception is a write whose data
+# is RDATA and which changes nothing else: RTE finishes that write out of the
+# frame's data output buffer, and the value on the ALU is never looked at.
+#
+# SunOS found it: libc's strcmp loop is CMPM, whose last microword compared the
+# read data and advanced the pipe. At the end of a page the prefetch of the next
+# one faulted, RTE re-ran the compare against a stale word, and ps -U died of a
+# memory fault. doc/bugs-found.md.
+# --------------------------------------------------------------------------
+def check_rdata_restart():
+    bad = []
+    for i, (f, c) in enumerate(program.WORDS):
+        if not (f.get('asrc') == 'RDATA' or f.get('bsrc') == 'RDATA'):
+            continue
+        pipe = (f.get('pf') in ('ADV', 'CONSUME')
+                or f.get('asrc') in ('STG_C', 'STG_C_HI')
+                or f.get('bsrc') in ('STG_C_U', 'STG_C_S')
+                or f.get('seq') == 'EADEC')
+        bus = f.get('bus', 'NONE') != 'NONE'
+        effect = f.get('dst', 'NONE') != 'NONE' or f.get('ccr', 'NONE') != 'NONE'
+        if pipe or (bus and effect):
+            bad.append('microword %d takes a value from RDATA and can fault, so '
+                       'RTE would re-run it on stale read data -- %s' % (i, c))
+    return bad
+
+
 def check_ea_live():
     W = program.WORDS
     bad = []
@@ -851,8 +910,7 @@ def main():
     args = ap.parse_args()
 
     bad = (frames.check() + isa.check() + check_cond_dst() + check_live_cond() + check_shift_src()
-           + check_ea_live()
-           + check_boundary()
+           + check_ea_live() + check_rdata_restart()
            + check_areg_size() + check_restore_order())
     if bad:
         print('FAIL: the tables are not self-consistent')

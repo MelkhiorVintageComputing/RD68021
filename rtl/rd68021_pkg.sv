@@ -39,6 +39,10 @@ package rd68021_pkg;
   localparam logic [2:0] CK_PC_D  = 3'd3;
   localparam logic [2:0] CK_FILL  = 3'd4;
   localparam logic [2:0] CK_FLAGS = 3'd5;
+  // Not a restore: the coprocessor writing the scanPC -- UM 7.4.17. The queue
+  // behind stage D is emptied and refilled from the address, and stage D and
+  // the program counter stay: they are the coprocessor instruction's own.
+  localparam logic [2:0] CK_SCAN  = 3'd6;
 
   localparam logic [3:0] CPUS_BKPT      = 4'h0;  // breakpoint acknowledge
   localparam logic [3:0] CPUS_ACCESS    = 4'h1;  // access level control (CALLM/RTM)

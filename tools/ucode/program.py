@@ -27,6 +27,7 @@ LABELS = OrderedDict()
 PATTERNS = []       # [(pattern, target, mnemonic)]
 EAPATTERNS = []     # [(pattern, target, what)] -- extension words
 MODEPATTERNS = []   # [(pattern, target, what)] -- the mode and register fields
+CPPATTERNS = []     # [(pattern, target, what)] -- coprocessor response primitives
 
 
 def label(name):
@@ -68,6 +69,17 @@ def extword(pattern, target, what):
         raise SystemExit('program: %r is not seventeen of 0, 1 and - (the first '
                          'is the program-counter base bit)' % pattern)
     EAPATTERNS.append((pattern, target, what))
+
+
+def cpprim(pattern, target, what):
+    """A response primitive pattern, for the seq = CPDEC arm.
+
+    Seventeen characters: the category bit (1 for a conditional instruction),
+    then bits 15 down to 0 of the primitive -- UM figure 7-22.
+    """
+    if len(pattern) != 17 or any(c not in '01-' for c in pattern):
+        raise SystemExit('program: %r is not seventeen of 0, 1 and -' % pattern)
+    CPPATTERNS.append((pattern, target, what))
 
 
 def eamode(pattern, target, what):
@@ -942,8 +954,14 @@ u('... likewise',
   asrc='AREGW', bsrc='OPSIZE', alu='ADD', dst='AREG_ADDR', szsel='IR76')
 u('read the destination',
   bus='READ', fc='DATA', asel='T1', szsel='IR76')
+# Held before it is used: the microword that compares also advances the pipe,
+# and a prefetch fault there re-executes it after RTE -- when the bus unit's
+# read data is the last word RTE read, not this operand. T3 is in the frame.
+# check_rdata_restart in the assembler; doc/bugs-found.md.
+u('hold it too',
+  asrc='RDATA', alu='A', dst='T3', szsel='IR76')
 u('destination minus source, for the codes alone',
-  asrc='RDATA', bsrc='T2', alu='SUB', ccr='CMP', szsel='IR76',
+  asrc='T3', bsrc='T2', alu='SUB', ccr='CMP', szsel='IR76',
   pf='ADV', seq='DECODE')
 
 # ---- the patterns, most specific first ----
@@ -2106,8 +2124,11 @@ u('which way?',
   seq='COND', cond='XW11', next='moves_out')
 u('in, through the SOURCE function code',
   bus='READ', fc='SFC', asel='EA', szsel='IR76')
+u('... held, because the microword that writes it also advances the pipe -- '
+  'check_rdata_restart',
+  asrc='RDATA', alu='A', dst='T1', szsel='IR76')
 u('... into the register the extension word names',
-  asrc='RDATA', alu='A', dst='XREG_SZ', szsel='IR76', pf='ADV', seq='DECODE')
+  asrc='T1', alu='A', dst='XREG_SZ', szsel='IR76', pf='ADV', seq='DECODE')
 
 label('moves_out')
 u('out, through the DESTINATION function code',
@@ -2686,24 +2707,28 @@ opcode('0000011011------', 'callm', 'CALLM #n,<ea>')
 # implemented with fewer bits." The direction is bit 0 of the opcode and
 # everything else is in the extension word.
 #
-# MOVEC is privileged. The privilege violation is M8, along with the format
-# error an unimplemented control-register code has to raise; until then this
-# runs in whatever mode it is given, which the vector sweep always makes
-# supervisor.
+# MOVEC is privileged, and a control register code the MC68020 does not have is
+# an illegal instruction -- UM 6.1.5, "a MOVEC instruction with an undefined
+# register specification field in the first extension word". The check reads
+# stage C on the microword that latches it into XW, so it costs no clock.
 # ==========================================================================
 label('movec_to_gen')
 u('MOVEC is privileged -- PRM 6, "if supervisor state then ... else TRAP"',
   seq='COND', cond='USER', next='exc_priv')
-u('the extension word names both registers',
-  asrc='STG_C', alu='A', dst='XW', size='WORD', pf='CONSUME')
+u('the extension word names both registers -- and one this part does not '
+  'have is an illegal instruction, UM 6.1.5, tested on stage C as it is taken',
+  asrc='STG_C', alu='A', dst='XW', size='WORD', pf='CONSUME',
+  seq='COND', cond='CREGBADC', next='exc_illegal')
 u('the control register into the general one',
   asrc='CREG', alu='A', dst='XREG', size='LONG', pf='ADV', seq='DECODE')
 
 label('movec_to_ctl')
 u('MOVEC is privileged -- PRM 6, "if supervisor state then ... else TRAP"',
   seq='COND', cond='USER', next='exc_priv')
-u('the extension word names both registers',
-  asrc='STG_C', alu='A', dst='XW', size='WORD', pf='CONSUME')
+u('the extension word names both registers -- and one this part does not '
+  'have is an illegal instruction, UM 6.1.5, tested on stage C as it is taken',
+  asrc='STG_C', alu='A', dst='XW', size='WORD', pf='CONSUME',
+  seq='COND', cond='CREGBADC', next='exc_illegal')
 u('the general register into the control one',
   asrc='XREG', alu='A', dst='CREG', size='LONG', pf='ADV', seq='DECODE')
 
@@ -2857,7 +2882,7 @@ u('and the frame carries the address of the next instruction',
 
 opcode('010011100100----', 'trap_n', 'TRAP #n')
 opcode('1010------------', 'exc_line_a', 'an A-line instruction')
-opcode('1111------------', 'exc_line_f', 'an F-line instruction')
+# The F-line patterns are with the coprocessor interface, at the end.
 
 
 # ==========================================================================
@@ -2900,6 +2925,8 @@ u('a short bus fault frame?',
   seq='COND', cond='FMTA', next='rte_fault_short')
 u('a long one?',
   seq='COND', cond='FMTB', next='rte_fault_long')
+u('a coprocessor midinstruction frame? UM 7.4.19',
+  seq='COND', cond='FMT9', next='rte_nine')
 u('and anything else is a format error -- UM 6.1.8',
   next='exc_format')
 
@@ -3476,12 +3503,945 @@ def fault_frame(stem, long_frame):
       next='exc_f0_vector')
 
 
-# UM table 6-5: the short frame when the exception was taken at an instruction
-# boundary, the long one when it was taken during an instruction. Which of them
-# a fault reaches is decided by the sequencer, and `check_boundary` in the
-# assembler is what keeps that decision the same question as the manual's.
+# UM table 6-5 gives the short frame to a fault taken at an instruction
+# boundary. This design never builds it: a prefetch fault is taken by the
+# instruction's own last microword, which RTE re-executes, and that microword
+# may read any working register -- which only the long frame carries. RTE still
+# takes a short frame apart. doc/divergences.md.
 fault_frame('exc_fault_long', True)
-fault_frame('exc_fault_short', False)
+# ==========================================================================
+# THE COPROCESSOR INTERFACE -- UM section 7, M13
+#
+# A coprocessor instruction is a conversation. The processor starts it by
+# writing to one of the coprocessor's interface registers (a CIR) in CPU space
+# type $2, then reads the response CIR and does what the primitive it finds
+# there says -- fetch an operand, evaluate an effective address, take an
+# exception -- until a primitive releases it. doc/coprocessor.md has the whole
+# protocol as built; this is the microcode of it.
+#
+# Four things hold the conversation's state, and they are the four the
+# midinstruction frame of UM figure 7-43 saves, which is what lets an interrupt
+# be taken in the middle of it:
+#
+#   the program counter    pc_d. Stage D is the F-line operation word for the
+#                          whole instruction and nothing advances it.
+#   the scanPC             the address of stage C. Every word the instruction
+#                          reads from the stream is CONSUMEd, which moves it on,
+#                          and UM 7.4.17 writes it by refilling the queue.
+#   the effective address  EA, for the write-to-previously-evaluated-EA
+#                          primitive.
+#   the operation word     stage D.
+#
+# Nothing else lives across two primitives. Within one, T0-T3 are scratch, and
+# the primitive itself is in cprim, which the long fault frame carries: a bus
+# error on a CIR access or on an operand is an ordinary bus error (UM 7.5.2.8).
+# ==========================================================================
+
+# The interface registers -- UM figure 7-5.
+CIR_RESPONSE, CIR_CONTROL, CIR_SAVE, CIR_RESTORE = 0x00, 0x02, 0x04, 0x06
+CIR_OPWORD, CIR_COMMAND, CIR_CONDITION = 0x08, 0x0A, 0x0E
+CIR_OPERAND, CIR_REGSEL, CIR_IADDR, CIR_OADDR = 0x10, 0x14, 0x18, 0x1C
+
+
+def cir_read(comment, off, nbytes, init=False, **kw):
+    u(comment, bus='READ', fc='CPU', cpuspace='CPINIT' if init else 'COPROC',
+      vec=off, bytes=nbytes, **kw)
+
+
+def cir_write(comment, off, nbytes, init=False, **kw):
+    kw.setdefault('alu', 'A')
+    u(comment, bus='WRITE', fc='CPU', cpuspace='CPINIT' if init else 'COPROC',
+      vec=off, bytes=nbytes, **kw)
+
+
+# --------------------------------------------------------------------------
+# The opcode patterns -- UM figures 7-6 to 7-17 and PRM 8.
+#
+# Bits 11:9 are the CpID and bits 8:6 the type. A CpID of zero is never a
+# coprocessor (UM 7.1.3), types 110 and 111 never are (UM 7.5.2.2), and an
+# effective address a form does not allow is an F-line exception with no CIR
+# access -- "an operation word ... that does not map to one of the valid
+# coprocessor instructions". All of those are the catch-all at the end.
+# --------------------------------------------------------------------------
+opcode('1111000---------', 'exc_line_f', 'F-line, CpID 0')
+opcode('1111---000------', 'cp_gen',     'cpGEN')
+opcode('1111---001001---', 'cp_dbcc',    'cpDBcc')
+opcode('1111---001111010', 'cp_trapcc',  'cpTRAPcc.W')
+opcode('1111---001111011', 'cp_trapcc',  'cpTRAPcc.L')
+opcode('1111---001111100', 'cp_trapcc',  'cpTRAPcc')
+# cpScc takes a data alterable effective address (PRM 4): not An -- that slot is
+# cpDBcc -- and nothing in mode 111 beyond the two absolute forms.
+opcode('1111---001111101', 'exc_line_f', 'cpScc, not data alterable')
+opcode('1111---00111111-', 'exc_line_f', 'cpScc, not data alterable')
+opcode('1111---001------', 'cp_scc',     'cpScc')
+opcode('1111---01-------', 'cp_bcc',     'cpBcc')
+# UM 7.2.3.3.1: cpSAVE takes the control alterable modes and -(An).
+for _m in ('010---', '100---', '101---', '110---', '11100-'):
+    opcode('1111---100' + _m, 'cp_save', 'cpSAVE')
+# UM 7.2.3.4.1: "all memory addressing modes except the predecrement". PRM 6's
+# text says "only postincrement or control", and its table then lists the
+# immediate as well -- doc/manual-contradictions.md. Two of the three allow it:
+# the state frame is then in the instruction stream.
+for _m in ('010---', '011---', '101---', '110---', '11100-', '11101-'):
+    opcode('1111---101' + _m, 'cp_restore', 'cpRESTORE')
+opcode('1111---101111100', 'cp_restore_imm', 'cpRESTORE #<frame>')
+opcode('1111------------', 'exc_line_f', 'an F-line instruction')
+
+
+# --------------------------------------------------------------------------
+# The dialogue -- UM 7.2.1.2, 7.2.2 and 7.4
+# --------------------------------------------------------------------------
+label('cp_resp')
+cir_read('read the response CIR -- UM 7.3.1', CIR_RESPONSE, 2)
+u('... and hold the primitive while it is served',
+  asrc='RDATA', alu='A', dst='CPRIM', size='WORD')
+u('PC set? UM 7.4.2: the program counter goes to the instruction address CIR '
+  '"as the first operation in servicing the primitive request" -- before an '
+  'exception it may lead to, too',
+  seq='COND', cond='CPPC', next='cp_passpc')
+label('cp_dispatch')
+u('what the primitive asks for -- the decoder, UM 7.4 and table 7-6',
+  seq='CPDEC')
+
+label('cp_passpc')
+cir_write('the address of the F-line operation word', CIR_IADDR, 4,
+          asrc='PC_D', next='cp_dispatch')
+
+# After a primitive that allows come-again. CA set: read the response CIR
+# again. CA clear: a general instruction is released -- the decoder refuses CA
+# clear for these in a conditional one -- unless a trace is pending, in which
+# case UM 7.5.2.5 keeps reading until the coprocessor says it has finished.
+label('cp_next')
+u('come again?', seq='COND', cond='CPCA', next='cp_resp')
+u('a trace pending holds the dialogue open -- UM 7.5.2.5',
+  seq='COND', cond='TRACEPEND', next='cp_resp')
+label('cp_done')
+u('the coprocessor has let go: the scanPC is the next instruction -- UM 7.4.1',
+  pf='ADV', seq='DECODE')
+
+# The two aborts. UM 7.3.2: the processor writes the abort mask to the control
+# CIR before an F-line or privilege exception a primitive caused, and before a
+# format error; the exception acknowledge before taking one a primitive asked
+# for. The fourteen other bits "are undefined": they are written as zero.
+label('cp_fline_abort')
+cir_write('abort -- UM 7.3.2', CIR_CONTROL, 2, bsrc='ONE', alu='B',
+          next='exc_line_f')
+
+label('cp_priv_abort')
+cir_write('abort -- UM 7.4.5', CIR_CONTROL, 2, bsrc='ONE', alu='B',
+          next='exc_priv')
+
+label('cp_format_abort')
+cir_write('abort -- UM 7.2.3.2.3', CIR_CONTROL, 2, bsrc='ONE', alu='B',
+          next='exc_format')
+
+# A protocol violation the processor detects -- UM 7.5.2.1. Not notified to the
+# coprocessor; the midinstruction frame, vector 13, and RTE reads the response
+# CIR again.
+label('cp_protocol')
+u('vector 13', asrc='VECOFF', alu='A', dst='T0', size='LONG', vec=13,
+  next='exc_cp9')
+
+# ---- Busy -- UM 7.4.3 ------------------------------------------------------
+# "It services pending interrupts using a preinstruction exception stack frame
+# ... then restarts the general or conditional coprocessor instruction". Going
+# back to the operation word IS that: the decode arm takes a pending interrupt
+# at the boundary with this instruction's own address in the frame, and then
+# decodes it afresh. It was never executed, so it is not traced.
+label('cp_busy')
+u('start again from the operation word',
+  asrc='PC_D', alu='A', pf='FLUSH', notrace=1)
+u('... which is an instruction boundary',
+  seq='DECODE')
+
+# ---- Null -- UM 7.4.4 and table 7-3 ------------------------------------------
+label('cp_null')
+u('come again?', seq='COND', cond='CPCA', next='cp_null_ca')
+u('the end of a general instruction?', seq='COND', cond='CPGEN',
+  next='cp_null_gen')
+u('a conditional one: the verdict is in TF', next='cp_cond_done')
+
+label('cp_null_gen')
+u('processing finished', seq='COND', cond='CPPF', next='cp_done')
+u('not finished: the dialogue only goes on if a trace is pending',
+  seq='COND', cond='TRACEPEND', next='cp_null_ca')
+u('... and none is', next='cp_done')
+
+label('cp_null_ca')
+u('interrupts allowed?', seq='COND', cond='CPB8', next='cp_null_ia')
+u('no: read the response again at once', next='cp_resp')
+
+label('cp_null_ia')
+u('one pending? UM 7.5.2.6: serviced with the midinstruction frame',
+  seq='COND', cond='IRQPEND', next='exc_cp_irq')
+u('none', next='cp_resp')
+
+# ---- Supervisor check -- UM 7.4.5 --------------------------------------------
+label('cp_svchk')
+u('at the user level the instruction is aborted',
+  seq='COND', cond='USER', next='cp_priv_abort')
+u('at the supervisor level the response is read again', next='cp_resp')
+
+# ---- Transfer operation word -- UM 7.4.6 --------------------------------------
+label('cp_opword')
+cir_write('the F-line operation word to the operation word CIR', CIR_OPWORD, 2,
+          asrc='STG_D', next='cp_next')
+
+# ---- Transfer from instruction stream -- UM 7.4.7 -----------------------------
+# The length is even -- the decoder refuses an odd one -- so what is left after
+# the long words is nothing or one word.
+label('cp_stream')
+u('the length', asrc='CPLEN', alu='A', dst='T1')
+label('cp_stream_loop')
+u('four or more to go?', seq='COND', cond='T1GE4', next='cp_stream_long')
+u('none?', seq='COND', cond='T1ZERO', next='cp_next')
+cir_write('the last word -- "using a word write to the operand CIR"',
+          CIR_OPERAND, 2, asrc='STG_C', pf='CONSUME', next='cp_next')
+label('cp_stream_long')
+u('two words of the stream', asrc='STG_C_HI', alu='A', dst='T0',
+  pf='CONSUME')
+u('... as one long word', asrc='T0', bsrc='STG_C_U', alu='OR', dst='T0',
+  pf='CONSUME')
+cir_write('to the operand CIR', CIR_OPERAND, 4, asrc='T0')
+u('four fewer', asrc='T1', bsrc='FOUR', alu='SUB', dst='T1',
+  next='cp_stream_loop')
+
+
+# ---- Moving an operand between memory and the operand CIR ---------------------
+# UM 7.3.8 and the primitives that use it: long words "whenever possible", the
+# remainder "using a one-, two-, or three-byte transfer as required", and every
+# part aligned to the most significant byte of the operand CIR -- which is what
+# a transfer of n bytes to offset $10 is, since the bus unit puts an n-byte
+# operand on the top n lanes of a long-word aligned address.
+#
+# T2 is the address and T1 the count. `fc` is the memory side's address space;
+# `out` is where the loop goes when the count reaches zero.
+def xfer_loop(stem, to_cp, fc, out):
+    label(stem)
+    u('four or more to go?', seq='COND', cond='T1GE4', next=stem + '_4')
+    u('none?', seq='COND', cond='T1ZERO', next=out)
+    u('two or three?', seq='COND', cond='T1B1', next=stem + '_23')
+    _xfer_part(stem + '_1', 1, to_cp, fc, out)
+    label(stem + '_23')
+    u('three?', seq='COND', cond='T1B0', next=stem + '_3')
+    _xfer_part(stem + '_2', 2, to_cp, fc, out)
+    label(stem + '_3')
+    _xfer_part(stem + '_3x', 3, to_cp, fc, out)
+    label(stem + '_4')
+    _xfer_part(stem + '_4x', 4, to_cp, fc, stem)
+
+
+def _xfer_part(stem, n, to_cp, fc, out):
+    step = {1: 'ONE', 2: 'TWO', 3: 'THREE', 4: 'FOUR'}[n]
+    if to_cp:
+        u('%d byte(s) from memory, and the count goes down' % n,
+          bus='READ', fc=fc, asel='T2', bytes=n,
+          asrc='T1', bsrc=step, alu='SUB', dst='T1')
+        cir_write('... to the operand CIR', CIR_OPERAND, n, asrc='RDATA')
+    else:
+        cir_read('%d byte(s) from the operand CIR, and the count goes down' % n,
+                 CIR_OPERAND, n, asrc='T1', bsrc=step, alu='SUB', dst='T1')
+        u('... to memory',
+          bus='WRITE', fc=fc, asel='T2', bytes=n, asrc='RDATA', alu='A')
+    u('the address moves on', asrc='T2', bsrc=step, alu='ADD', dst='T2',
+      next=out)
+
+
+# ---- Evaluate and transfer effective address -- UM 7.4.8 ----------------------
+label('cp_evalea')
+u('only a control alterable address is evaluated',
+  seq='COND', cond='EACTLALT', next='cp_evalea_go')
+u('... anything else is aborted as an F-line exception', next='cp_fline_abort')
+label('cp_evalea_go')
+u('evaluate it', call=1, seq='EAMODE')
+cir_write('to the operand address CIR', CIR_OADDR, 4, asrc='EA',
+          next='cp_next')
+
+# ---- Evaluate effective address and transfer data -- UM 7.4.9 -----------------
+label('cp_eadata')
+u('in the class the primitive names? table 7-4',
+  seq='COND', cond='CPEAOK', next='cp_eadata_ok')
+u('no: aborted, and an F-line exception', next='cp_fline_abort')
+label('cp_eadata_ok')
+u('a data register?', seq='COND', cond='EADN', next='cp_ead_dn')
+u('an address register?', seq='COND', cond='EAAN', next='cp_ead_an')
+u('an immediate?', seq='COND', cond='EAIMM', next='cp_ead_imm')
+u('(An)+?', seq='COND', cond='EAPOST', next='cp_ead_post')
+u('-(An)?', seq='COND', cond='EAPRE', next='cp_ead_pre')
+u('memory, the other modes: to it?', seq='COND', cond='CPDR',
+  next='cp_ead_wr')
+label('cp_ead_calc')
+u('evaluate it', call=1, seq='EAMODE')
+label('cp_ead_mem')
+u('the operand begins at the effective address', asrc='EA', alu='A',
+  dst='T2')
+u('... and is as long as the primitive says', asrc='CPLEN', alu='A',
+  dst='T1')
+u('which way?', seq='COND', cond='CPDR', next='cp_ead_out')
+xfer_loop('cp_ead_in', True, 'EASP', 'cp_next')
+label('cp_ead_out')
+xfer_loop('cp_ead_outl', False, 'EASP', 'cp_next')
+
+label('cp_ead_wr')
+u('UM table 7-6: a write to an address that is not alterable is a protocol '
+  'violation, even in a class the primitive declared',
+  seq='COND', cond='EAUNALT', next='cp_protocol')
+u('otherwise as for a read', next='cp_ead_calc')
+
+# (An)+ and -(An) step the register by the operand's length, which may be
+# anything up to 255 -- so not by the operand SIZE the shared routines use.
+label('cp_ead_post')
+u('the address register is the address', asrc='AREG', alu='A', dst='EA')
+u('... and steps on by the length, two for a byte through A7',
+  asrc='AREG', bsrc='CPSTEP', alu='ADD', dst='AREG_EA_ADDR',
+  next='cp_ead_mem')
+label('cp_ead_pre')
+u('the address register steps back by the length first',
+  asrc='AREG', bsrc='CPSTEP', alu='SUB', dst='AREG_EA_ADDR')
+u('... and that is the address', asrc='AREG', alu='A', dst='EA',
+  next='cp_ead_mem')
+
+# A register is one, two or four bytes -- UM table 7-6 -- and the operand
+# size follows the length.
+label('cp_ead_dn')
+u('one, two or four bytes?', seq='COND', cond='CPLEN124', next='cp_ead_dn_ok')
+u('no: a protocol violation', next='cp_protocol')
+label('cp_ead_dn_ok')
+u('which way?', seq='COND', cond='CPDR', next='cp_ead_dn_in')
+cir_write('the data register to the operand CIR', CIR_OPERAND, 0,
+          asrc='DREG', szsel='CPLEN', next='cp_next')
+label('cp_ead_dn_in')
+cir_read('the operand CIR ...', CIR_OPERAND, 0, szsel='CPLEN')
+u('... into the low part of the data register -- UM 7.4.9',
+  asrc='RDATA', alu='A', dst='DREG_R', szsel='CPLEN', next='cp_next')
+
+label('cp_ead_an')
+u('one, two or four bytes?', seq='COND', cond='CPLEN124', next='cp_ead_an_ok')
+u('no: a protocol violation', next='cp_protocol')
+label('cp_ead_an_ok')
+u('which way?', seq='COND', cond='CPDR', next='cp_ead_an_in')
+cir_write('the address register to the operand CIR', CIR_OPERAND, 0,
+          asrc='AREG', szsel='CPLEN', next='cp_next')
+label('cp_ead_an_in')
+cir_read('the operand CIR ...', CIR_OPERAND, 0, szsel='CPLEN')
+u('... sign extended into the whole address register -- UM 7.4.9',
+  asrc='RDATA', alu='A', dst='AREG_R', szsel='CPLEN', next='cp_next')
+
+# UM 7.4.9: "the length of an immediate operand must be one byte or an even
+# number of bytes (less than 256), and the direction of transfer must be to the
+# coprocessor". A byte immediate occupies a word, the byte in its low half.
+label('cp_ead_imm')
+u('to the coprocessor only', seq='COND', cond='CPDR', next='cp_protocol')
+u('one less than the length', asrc='CPLEN', bsrc='ONE', alu='SUB', dst='T1')
+u('a byte?', seq='COND', cond='T1ZERO', next='cp_ead_imm_b')
+u('the length', asrc='CPLEN', alu='A', dst='T1')
+u('odd, and not one: a protocol violation', seq='COND', cond='T1B0',
+  next='cp_protocol')
+u('even: the words of the stream, exactly as the stream primitive moves them',
+  next='cp_stream_loop')
+label('cp_ead_imm_b')
+cir_write('the low byte of the immediate word', CIR_OPERAND, 1,
+          asrc='STG_C', pf='CONSUME', next='cp_next')
+
+# ---- Write to previously evaluated effective address -- UM 7.4.10 --------------
+# "The function code ... indicates either supervisor or user data space", and
+# the address is used exactly as it was left: no register is stepped.
+label('cp_wprev')
+u('the address the last evaluation left', asrc='EA', alu='A', dst='T2')
+u('the length', asrc='CPLEN', alu='A', dst='T1')
+xfer_loop('cp_wprev_x', False, 'DATA', 'cp_next')
+
+# ---- Take address and transfer data -- UM 7.4.11 ------------------------------
+label('cp_takeaddr')
+cir_read('the address, from the operand address CIR', CIR_OADDR, 4)
+u('... held', asrc='RDATA', alu='A', dst='T2')
+u('the length', asrc='CPLEN', alu='A', dst='T1')
+u('which way?', seq='COND', cond='CPDR', next='cp_takeaddr_out')
+xfer_loop('cp_takeaddr_in', True, 'DATA', 'cp_next')
+label('cp_takeaddr_out')
+xfer_loop('cp_takeaddr_o', False, 'DATA', 'cp_next')
+
+# ---- Transfer to/from top of stack -- UM 7.4.12 --------------------------------
+# One, two or four bytes, through the ACTIVE stack pointer: (A7)+ to the
+# coprocessor, -(A7) from it, and a byte steps it by two.
+label('cp_tos')
+u('one, two or four bytes?', seq='COND', cond='CPLEN124', next='cp_tos_ok')
+u('no: a protocol violation', next='cp_protocol')
+label('cp_tos_ok')
+u('the length', asrc='CPLEN', alu='A', dst='T1')
+u('which way?', seq='COND', cond='CPDR', next='cp_tos_out')
+u('the operand is at the top of the stack', asrc='SP', alu='A', dst='T2')
+u('(A7)+: four?', seq='COND', cond='T1GE4', next='cp_tos_in4')
+u('... or two, which a byte also takes',
+  asrc='SP', bsrc='TWO', alu='ADD', dst='SP', next='cp_tos_in_go')
+label('cp_tos_in4')
+u('... four', asrc='SP', bsrc='FOUR', alu='ADD', dst='SP')
+label('cp_tos_in_go')
+xfer_loop('cp_tos_in', True, 'DATA', 'cp_next')
+
+label('cp_tos_out')
+u('-(A7): four?', seq='COND', cond='T1GE4', next='cp_tos_out4')
+u('... or two, which a byte also takes',
+  asrc='SP', bsrc='TWO', alu='SUB', dst='SP', next='cp_tos_out_go')
+label('cp_tos_out4')
+u('... four', asrc='SP', bsrc='FOUR', alu='SUB', dst='SP')
+label('cp_tos_out_go')
+u('the operand goes where the stack pointer now is', asrc='SP', alu='A',
+  dst='T2')
+xfer_loop('cp_tos_o', False, 'DATA', 'cp_next')
+
+# ---- Transfer single main processor register -- UM 7.4.13 ---------------------
+label('cp_sreg')
+u('which way?', seq='COND', cond='CPDR', next='cp_sreg_in')
+cir_write('the register to the operand CIR', CIR_OPERAND, 4, asrc='CPREG',
+          next='cp_next')
+label('cp_sreg_in')
+cir_read('the operand CIR ...', CIR_OPERAND, 4)
+u('... into the register', asrc='RDATA', alu='A', dst='CPREG',
+  next='cp_next')
+
+# ---- Transfer main processor control register -- UM 7.4.14 ---------------------
+# The select code goes through XW, which is where MOVEC keeps its own, so that
+# both reach the control registers through the same multiplexer.
+label('cp_creg')
+cir_read('the control register select code, from the register select CIR',
+         CIR_REGSEL, 2)
+u('... held where MOVEC keeps its own', asrc='RDATA', alu='A', dst='XW',
+  size='WORD')
+u('one of table 7-5?', seq='COND', cond='CREGBAD', next='cp_protocol')
+u('which way?', seq='COND', cond='CPDR', next='cp_creg_in')
+cir_write('the control register to the operand CIR', CIR_OPERAND, 4,
+          asrc='CREG', next='cp_next')
+label('cp_creg_in')
+cir_read('the operand CIR ...', CIR_OPERAND, 4)
+u('... into the control register', asrc='RDATA', alu='A', dst='CREG',
+  next='cp_next')
+
+# ---- Transfer multiple main processor registers -- UM 7.4.15 ------------------
+# "The selected registers are transferred in the order D7-D0 and then A7-A0",
+# with bit 0 of the mask selecting D0. The same walk as MOVEM's control form,
+# which takes them D0 first; doc/manual-contradictions.md says why that is the
+# reading taken.
+label('cp_mreg')
+cir_read('the register select mask', CIR_REGSEL, 2)
+u('... into T0', asrc='RDATA', alu='A', dst='T0', size='WORD')
+u('from the first register', cnt='ZERO')
+label('cp_mreg_loop')
+u('all sixteen looked at?', seq='COND', cond='CNT16', next='cp_next')
+u('is this one selected?', seq='COND', cond='MASK0', next='cp_mreg_x')
+label('cp_mreg_nx')
+u('shift the mask along and step the register number',
+  asrc='T0', alu='LSR1', dst='T0', size='WORD', cnt='INC',
+  next='cp_mreg_loop')
+label('cp_mreg_x')
+u('which way?', seq='COND', cond='CPDR', next='cp_mreg_in')
+cir_write('the register to the operand CIR', CIR_OPERAND, 4, asrc='REGN',
+          next='cp_mreg_nx')
+label('cp_mreg_in')
+cir_read('the operand CIR ...', CIR_OPERAND, 4)
+u('... into the register', asrc='RDATA', alu='A', dst='REGN',
+  next='cp_mreg_nx')
+
+# ---- Transfer multiple coprocessor registers -- UM 7.4.16 ---------------------
+# One operand for every set bit of the mask, each LENGTH bytes. The address
+# steps on through them; -(An) walks the operands down and the bytes of each up,
+# figure 7-38.
+label('cp_mcreg')
+u('an address the direction allows?', seq='COND', cond='CPMEAOK',
+  next='cp_mcreg_ok')
+u('no: aborted, and an F-line exception', next='cp_fline_abort')
+label('cp_mcreg_ok')
+u('(An)+?', seq='COND', cond='EAPOST', next='cp_mcreg_an')
+u('-(An)?', seq='COND', cond='EAPRE', next='cp_mcreg_an')
+u('a control address', call=1, seq='EAMODE')
+u('... which the operands are walked from', asrc='EA', alu='A', dst='T2',
+  next='cp_mcreg_mask')
+label('cp_mcreg_an')
+u('the address register', asrc='AREG', alu='A', dst='EA')
+u('... is where they start', asrc='AREG', alu='A', dst='T2')
+label('cp_mcreg_mask')
+cir_read('the register select mask', CIR_REGSEL, 2)
+u('... into T0 -- its ones count the operands', asrc='RDATA', alu='A',
+  dst='T0', size='WORD')
+u('from the first bit', cnt='ZERO')
+label('cp_mcreg_loop')
+u('all sixteen looked at?', seq='COND', cond='CNT16', next='cp_next')
+u('an operand?', seq='COND', cond='MASK0', next='cp_mcreg_op')
+label('cp_mcreg_nx')
+u('shift the mask along', asrc='T0', alu='LSR1', dst='T0', size='WORD',
+  cnt='INC', next='cp_mcreg_loop')
+label('cp_mcreg_op')
+u('one operand\'s worth', asrc='CPLEN', alu='A', dst='T1')
+u('-(An)?', seq='COND', cond='EAPRE', next='cp_mcreg_pre')
+u('which way?', seq='COND', cond='CPDR', next='cp_mcreg_out')
+xfer_loop('cp_mcreg_in', True, 'EASP', 'cp_mcreg_post')
+label('cp_mcreg_out')
+xfer_loop('cp_mcreg_o', False, 'EASP', 'cp_mcreg_post')
+# (An)+: the register follows the address, "incremented by the size of an
+# operand after each operand is transferred".
+label('cp_mcreg_post')
+u('(An)+?', seq='COND', cond='EAPOST', next='cp_mcreg_upd')
+u('no', next='cp_mcreg_nx')
+label('cp_mcreg_upd')
+u('the address register follows', asrc='T2', alu='A', dst='AREG_EA_ADDR',
+  next='cp_mcreg_nx')
+# -(An): "the processor decrements the address register by the size of an
+# operand before the operand is transferred", and then writes its bytes upwards.
+label('cp_mcreg_pre')
+u('the address register steps down by one operand',
+  asrc='AREG', bsrc='CPLEN', alu='SUB', dst='AREG_EA_ADDR')
+u('... and the operand is written up from there', asrc='AREG', alu='A',
+  dst='T2')
+xfer_loop('cp_mcreg_pr', False, 'EASP', 'cp_mcreg_nx')
+
+# ---- Transfer status register and scanPC -- UM 7.4.17 --------------------------
+label('cp_srpc')
+u('which way?', seq='COND', cond='CPDR', next='cp_srpc_in')
+u('the scanPC too?', seq='COND', cond='CPB8', next='cp_srpc_pc')
+label('cp_srpc_sr')
+cir_write('the status register to the operand CIR', CIR_OPERAND, 2,
+          asrc='SR', next='cp_next')
+label('cp_srpc_pc')
+cir_write('the scanPC to the instruction address CIR, first', CIR_IADDR, 4,
+          asrc='PC_C_RAW', next='cp_srpc_sr')
+label('cp_srpc_in')
+cir_read('the status register from the operand CIR ...', CIR_OPERAND, 2)
+u('... into the status register', asrc='RDATA', alu='A', dst='SR',
+  size='WORD')
+u('the scanPC too?', seq='COND', cond='CPB8', next='cp_srpc_inpc')
+u('no', next='cp_next')
+label('cp_srpc_inpc')
+cir_read('then the scanPC, from the instruction address CIR', CIR_IADDR, 4)
+u('... and the queue is refilled from there -- in the space the new status '
+  'register says',
+  asrc='RDATA', alu='A', dst='SCANPC', next='cp_next')
+
+# ---- Take pre-, mid- and postinstruction exception -- UM 7.4.18 to 7.4.20 ------
+label('cp_takepre')
+cir_write('acknowledge -- UM 7.3.2', CIR_CONTROL, 2, bsrc='TWO', alu='B')
+u('the coprocessor\'s vector', asrc='CPVEC', alu='A', dst='T0')
+u('figure 7-41: the four-word frame, with the address of the operation word, '
+  'so that RTE starts the instruction again',
+  asrc='PC_D', alu='A', dst='T1', size='LONG', next='exc_f0')
+
+label('cp_takemid')
+cir_write('acknowledge', CIR_CONTROL, 2, bsrc='TWO', alu='B')
+u('the coprocessor\'s vector, and figure 7-43: the midinstruction frame',
+  asrc='CPVEC', alu='A', dst='T0', next='exc_cp9')
+
+label('cp_takepost')
+cir_write('acknowledge', CIR_CONTROL, 2, bsrc='TWO', alu='B')
+u('the coprocessor\'s vector', asrc='CPVEC', alu='A', dst='T0')
+u('figure 7-45: the operation word\'s address at +$08 ...',
+  asrc='PC_D', alu='A', dst='T2', size='LONG')
+u('... and the scanPC as the program counter, "the address of the next '
+  'instruction"',
+  asrc='PC_C_RAW', alu='A', dst='T1', size='LONG', next='exc_f2')
+
+
+# --------------------------------------------------------------------------
+# The primitive patterns -- UM 7.4, 7.6 and table 7-6.
+#
+# Seventeen characters: the category (1 = conditional), CA, PC, then bits 13:8
+# and the parameter byte. Ordered, first match wins, and everything not matched
+# is a protocol violation -- which is what UM 7.6 makes of the encodings it
+# leaves undefined ($00, $3F, $0B, $18-$1B, $1F, $28-$2B, $38-$3B in bits 13:8).
+# --------------------------------------------------------------------------
+def _prim(cat, ca, fn, par='--------'):
+    assert len(fn) == 6 and len(par) == 8
+    return cat + ca + '-' + fn + par
+
+
+# Refused in a conditional instruction: every primitive but null that allows
+# come-again, with CA clear (the footnote to table 7-6) ...
+for _fn in ('000111', '100111', '001111', '101111', '-00101', '-01110',
+            '-01100', '-01101', '-00110'):
+    cpprim(_prim('1', '0', _fn), 'cp_protocol', 'CA clear in a conditional')
+# ... the supervisor check with bit 15 clear (UM 7.4.5) ...
+cpprim(_prim('1', '0', '000100'), 'cp_protocol',
+       'supervisor check, bit 15 clear, conditional')
+# ... and the four that are general-category only, whatever CA says.
+for _fn in ('001010', '-10---', '100000', '-00001', '-0001-'):
+    cpprim(_prim('1', '-', _fn), 'cp_protocol', 'general only')
+# Odd lengths where the manual forbids them.
+cpprim(_prim('-', '-', '-01111', '-------1'), 'cp_protocol',
+       'transfer from instruction stream, odd length')
+cpprim(_prim('-', '-', '-00001', '-------1'), 'cp_protocol',
+       'transfer multiple coprocessor registers, odd length')
+
+cpprim(_prim('-', '-', '100100'), 'cp_busy',     'busy')
+cpprim(_prim('-', '-', '00100-'), 'cp_null',     'null')
+cpprim(_prim('-', '-', '000100'), 'cp_svchk',    'supervisor check')
+cpprim(_prim('-', '-', '-00111'), 'cp_opword',   'transfer operation word')
+cpprim(_prim('-', '-', '-01111'), 'cp_stream',   'transfer from instruction stream')
+cpprim(_prim('-', '-', '001010'), 'cp_evalea',   'evaluate and transfer effective address')
+cpprim(_prim('-', '-', '-10---'), 'cp_eadata',   'evaluate effective address and transfer data')
+cpprim(_prim('-', '-', '100000'), 'cp_wprev',    'write to previously evaluated effective address')
+cpprim(_prim('-', '-', '-00101'), 'cp_takeaddr', 'take address and transfer data')
+cpprim(_prim('-', '-', '-01110'), 'cp_tos',      'transfer to/from top of stack')
+cpprim(_prim('-', '-', '-01100'), 'cp_sreg',     'transfer single main processor register')
+cpprim(_prim('-', '-', '-01101'), 'cp_creg',     'transfer main processor control register')
+cpprim(_prim('-', '-', '-00110'), 'cp_mreg',     'transfer multiple main processor registers')
+cpprim(_prim('-', '-', '-00001'), 'cp_mcreg',    'transfer multiple coprocessor registers')
+cpprim(_prim('-', '-', '-0001-'), 'cp_srpc',     'transfer status register and scanPC')
+cpprim(_prim('-', '-', '-11100'), 'cp_takepre',  'take preinstruction exception')
+cpprim(_prim('-', '-', '-11101'), 'cp_takemid',  'take midinstruction exception')
+cpprim(_prim('-', '-', '-11110'), 'cp_takepost', 'take postinstruction exception')
+
+
+# --------------------------------------------------------------------------
+# The instructions
+# --------------------------------------------------------------------------
+# cpGEN -- UM 7.2.1. The command word is the word after the operation word.
+label('cp_gen')
+cir_write('the command word to the command CIR -- UM 7.3.6',
+          CIR_COMMAND, 2, init=True, asrc='STG_C', pf='CONSUME')
+u('no coprocessor answered: UM 7.5.2.8, an F-line exception',
+  seq='COND', cond='BERR', next='exc_line_f')
+u('the scanPC is the word after the command word -- UM 7.4.1',
+  next='cp_resp')
+
+# cpBcc -- UM 7.2.2.1. "The MC68020 writes the entire operation word to the
+# condition CIR", and the scanPC stays on the word after it.
+label('cp_bcc')
+cir_write('the operation word to the condition CIR -- UM 7.3.7',
+          CIR_CONDITION, 2, init=True, asrc='STG_D')
+u('no coprocessor', seq='COND', cond='BERR', next='exc_line_f')
+u('the dialogue', next='cp_resp')
+
+# cpScc, cpDBcc and cpTRAPcc -- UM 7.2.2.2 to 7.2.2.4. The condition selector is
+# the word after the operation word.
+for _stem in ('cp_scc', 'cp_dbcc', 'cp_trapcc'):
+    label(_stem)
+    cir_write('the condition selector word to the condition CIR',
+              CIR_CONDITION, 2, init=True, asrc='STG_C', pf='CONSUME')
+    u('no coprocessor', seq='COND', cond='BERR', next='exc_line_f')
+    u('the dialogue', next='cp_resp')
+
+# The end of a conditional dialogue: a null primitive with CA clear, and the
+# verdict in TF -- UM 7.4.4. Which instruction it was is in stage D.
+label('cp_cond_done')
+u('cpBcc?', seq='COND', cond='CPBCC', next='cp_bcc_tail')
+u('cpDBcc?', seq='COND', cond='CPDBCC', next='cp_dbcc_tail')
+u('cpTRAPcc?', seq='COND', cond='CPTRAP', next='cp_trapcc_tail')
+u('cpScc', next='cp_scc_tail')
+
+# cpBcc: "adds the displacement to the scanPC", which "must be pointing to the
+# location of the first word of the displacement".
+label('cp_bcc_tail')
+u('true?', seq='COND', cond='CPTF', next='cp_bcc_taken')
+u('false: the long form?', seq='COND', cond='IR6', next='cp_bcc_nl')
+u('... the displacement word is eaten', pf='CONSUME', next='cp_done')
+label('cp_bcc_nl')
+u('... both words of it', pf='CONSUME')
+u('...', pf='CONSUME', next='cp_done')
+label('cp_bcc_taken')
+u('the base, which is the scanPC', asrc='PC_C', alu='A', dst='T1')
+u('the long form?', seq='COND', cond='IR6', next='cp_bcc_tl')
+u('the word displacement, sign extended, onto the base',
+  asrc='T1', bsrc='STG_C_S', alu='ADD', pf='FLUSH', next='cp_bcc_go')
+label('cp_bcc_tl')
+u('the high half of a long displacement', asrc='STG_C_HI', alu='A',
+  dst='T0', pf='CONSUME')
+u('... and the low', asrc='T0', bsrc='STG_C_U', alu='OR', dst='T0')
+u('... onto the base', asrc='T1', bsrc='T0', alu='ADD', pf='FLUSH')
+label('cp_bcc_go')
+u('then wait for the pipe and decode', seq='DECODE')
+
+# cpScc: all ones for true, all zeros for false, in the byte at the effective
+# address -- evaluated only now, after the dialogue, from the extension words
+# the scanPC has reached.
+label('cp_scc_tail')
+u('true?', seq='COND', cond='CPTF', next='cp_scc_t')
+u('false: zero', asrc='ZERO', alu='A', dst='T0', next='cp_scc_st')
+label('cp_scc_t')
+u('true: ones', asrc='ZERO', alu='NOT', dst='T0')
+label('cp_scc_st')
+u('a data register?', seq='COND', cond='EADN', next='cp_scc_dn')
+u('the byte at the effective address', call=1, seq='EAMODE', size='BYTE')
+u('... is set or cleared',
+  bus='WRITE', fc='DATA', asel='EA', asrc='T0', alu='A', bytes=1,
+  next='cp_done')
+label('cp_scc_dn')
+u('the low byte of the data register',
+  asrc='T0', alu='A', dst='DREG_R', size='BYTE', next='cp_done')
+
+# cpDBcc: the scanPC is on the displacement.
+label('cp_dbcc_tail')
+u('true: the instruction is over', seq='COND', cond='CPTF',
+  next='cp_dbcc_done')
+u('the low word of the counter, one less, and -1 also ends it',
+  asrc='DREG', bsrc='ONE', alu='SUB', dst='DREG_R', size='WORD',
+  seq='COND', cond='RESM1', next='cp_dbcc_done')
+u('the branch, from the address of the displacement',
+  asrc='PC_C', bsrc='STG_C_S', alu='ADD', pf='FLUSH', next='cp_bcc_go')
+label('cp_dbcc_done')
+u('the displacement word is eaten either way', pf='CONSUME', next='cp_done')
+
+# cpTRAPcc: the operand words are eaten first, so that the frame's program
+# counter is the next instruction -- UM 7.5.2.4.
+label('cp_trapcc_tail')
+u('an operand word?', seq='COND', cond='IR1', next='cp_trapcc_w')
+u('none', next='cp_trapcc_t')
+label('cp_trapcc_w')
+u('eaten', pf='CONSUME')
+u('a second?', seq='COND', cond='IR0', next='cp_trapcc_l')
+u('no', next='cp_trapcc_t')
+label('cp_trapcc_l')
+u('eaten', pf='CONSUME')
+label('cp_trapcc_t')
+u('true: the trap -- vector 7 and the six-word frame', seq='COND',
+  cond='CPTF', next='exc_trapcc')
+u('false: on to the next instruction', next='cp_done')
+
+
+# cpSAVE -- UM 7.2.3.3. Privileged, and the only coprocessor instruction that
+# starts with a READ.
+label('cp_save')
+u('privileged -- checked before any CIR is touched, UM 7.2.3.3.2',
+  seq='COND', cond='USER', next='exc_priv')
+cir_read('the save CIR', CIR_SAVE, 2, init=True)
+u('no coprocessor', seq='COND', cond='BERR', next='exc_line_f')
+u('the format word', asrc='RDATA', alu='A', dst='T0', size='WORD')
+u('not ready: "the main processor services any pending interrupts and then '
+  'reads the save CIR again"',
+  seq='COND', cond='FWNOTRDY', next='cp_busy')
+u('invalid, or a reserved code', seq='COND', cond='FWBAD',
+  next='cp_format_abort')
+u('empty?', seq='COND', cond='FWEMPTY', next='cp_save_empty')
+u('a length that is not a multiple of four', seq='COND', cond='FWLEN',
+  next='cp_format_abort')
+u('the length of the state', asrc='FWLEN', alu='A', dst='T1',
+  next='cp_save_ea')
+label('cp_save_empty')
+u('an empty frame is the format word and nothing else', asrc='ZERO',
+  alu='A', dst='T1')
+label('cp_save_ea')
+u('-(An)?', seq='COND', cond='EAPRE', next='cp_save_pre')
+u('a control address', call=1, seq='EAMODE')
+u('... and the format word goes there', next='cp_save_fw')
+label('cp_save_pre')
+u('the whole frame: the state, the format word and its reserved word',
+  asrc='T1', bsrc='FOUR', alu='ADD', dst='T2')
+u('the address register steps down by it',
+  asrc='AREG', bsrc='T2', alu='SUB', dst='AREG_EA_ADDR')
+u('... and the frame starts there', asrc='AREG', alu='A', dst='EA')
+label('cp_save_fw')
+u('the format word first, at the lowest address -- figure 7-14',
+  bus='WRITE', fc='DATA', asel='EA', asrc='FWLONG', alu='A', bytes=4)
+u('the state goes in from the top down: its last long word is at EA + length',
+  asrc='EA', bsrc='T1', alu='ADD', dst='T2')
+label('cp_save_loop')
+u('all of it?', seq='COND', cond='T1ZERO', next='cp_done')
+cir_read('a long word from the operand CIR, and four fewer', CIR_OPERAND, 4,
+         asrc='T1', bsrc='FOUR', alu='SUB', dst='T1')
+u('... to memory', bus='WRITE', fc='DATA', asel='T2', asrc='RDATA', alu='A',
+  bytes=4)
+u('... and down', asrc='T2', bsrc='FOUR', alu='SUB', dst='T2',
+  next='cp_save_loop')
+
+# cpRESTORE -- UM 7.2.3.4.
+label('cp_restore')
+u('privileged', seq='COND', cond='USER', next='exc_priv')
+u('(An)+?', seq='COND', cond='EAPOST', next='cp_rest_an')
+u('a control address', call=1, seq='EAMODE')
+u('... where the frame is', next='cp_rest_fw')
+label('cp_rest_an')
+u('the address register', asrc='AREG', alu='A', dst='EA')
+label('cp_rest_fw')
+u('the format word from memory', bus='READ', fc='EASP', asel='EA', bytes=2)
+u('... kept, for its length -- UM figure 7-18 note 2', asrc='RDATA', alu='A',
+  dst='T1', size='WORD')
+cir_write('... and written to the restore CIR', CIR_RESTORE, 2, init=True,
+          asrc='T1')
+u('no coprocessor', seq='COND', cond='BERR', next='exc_line_f')
+label('cp_rest_rd')
+cir_read('what the coprocessor makes of it', CIR_RESTORE, 2)
+u('... held', asrc='RDATA', alu='A', dst='T0', size='WORD')
+u('not ready: read it again, without servicing interrupts -- UM 7.2.3.2.2',
+  seq='COND', cond='FWNOTRDY', next='cp_rest_rd')
+u('invalid', seq='COND', cond='FWBAD', next='cp_format_abort')
+u('empty: nothing follows', seq='COND', cond='FWEMPTY', next='cp_rest_empty')
+u('the length is the one read from MEMORY', asrc='T1', alu='A', dst='T0',
+  size='WORD')
+u('... and must be a multiple of four -- UM 7.5.2.7', seq='COND',
+  cond='FWLEN', next='cp_format_abort')
+u('the length', asrc='FWLEN', alu='A', dst='T1')
+u('the state follows the format word and its reserved word',
+  asrc='EA', bsrc='FOUR', alu='ADD', dst='T2')
+label('cp_rest_loop')
+u('all of it?', seq='COND', cond='T1ZERO', next='cp_rest_end')
+u('a long word from memory, going up, and four fewer',
+  bus='READ', fc='EASP', asel='T2', bytes=4,
+  asrc='T1', bsrc='FOUR', alu='SUB', dst='T1')
+cir_write('... to the operand CIR', CIR_OPERAND, 4, asrc='RDATA')
+u('... and up', asrc='T2', bsrc='FOUR', alu='ADD', dst='T2',
+  next='cp_rest_loop')
+label('cp_rest_empty')
+u('the frame is the format word and its reserved word', asrc='EA',
+  bsrc='FOUR', alu='ADD', dst='T2')
+label('cp_rest_end')
+u('(An)+?', seq='COND', cond='EAPOST', next='cp_rest_upd')
+u('no', next='cp_done')
+label('cp_rest_upd')
+u('the address register is past the frame', asrc='T2', alu='A',
+  dst='AREG_EA_ADDR', next='cp_done')
+
+
+# cpRESTORE of an immediate frame: the format word, its reserved word and the
+# state are the words after the operation word, so they come out of the pipe
+# and the scanPC ends past them.
+label('cp_restore_imm')
+u('privileged', seq='COND', cond='USER', next='exc_priv')
+u('the format word, from the stream', asrc='STG_C', alu='A', dst='T1',
+  size='WORD', pf='CONSUME')
+u('... and its reserved word, eaten', pf='CONSUME')
+cir_write('... written to the restore CIR', CIR_RESTORE, 2, init=True,
+          asrc='T1')
+u('no coprocessor', seq='COND', cond='BERR', next='exc_line_f')
+label('cp_resti_rd')
+cir_read('what the coprocessor makes of it', CIR_RESTORE, 2)
+u('... held', asrc='RDATA', alu='A', dst='T0', size='WORD')
+u('not ready: read it again', seq='COND', cond='FWNOTRDY', next='cp_resti_rd')
+u('invalid', seq='COND', cond='FWBAD', next='cp_format_abort')
+u('empty: nothing follows', seq='COND', cond='FWEMPTY', next='cp_done')
+u('the length from the stream', asrc='T1', alu='A', dst='T0', size='WORD')
+u('... a multiple of four', seq='COND', cond='FWLEN', next='cp_format_abort')
+u('the length', asrc='FWLEN', alu='A', dst='T1')
+label('cp_resti_loop')
+u('all of it?', seq='COND', cond='T1ZERO', next='cp_done')
+u('two words of the stream', asrc='STG_C_HI', alu='A', dst='T0',
+  pf='CONSUME')
+u('... as one long word', asrc='T0', bsrc='STG_C_U', alu='OR', dst='T0',
+  pf='CONSUME')
+cir_write('to the operand CIR', CIR_OPERAND, 4, asrc='T0')
+u('four fewer', asrc='T1', bsrc='FOUR', alu='SUB', dst='T1',
+  next='cp_resti_loop')
+
+
+# --------------------------------------------------------------------------
+# The midinstruction frame -- UM figure 7-43, format $9
+#
+# Entered with T0 = the vector offset. It is built with ea_save as the pointer
+# because EA is one of the things it saves. Everything a coprocessor
+# instruction needs to go on with the dialogue is in it; RTE reads it back and
+# goes straight to the response CIR.
+# --------------------------------------------------------------------------
+def frame9_body(ptr_from_sp=True):
+    if ptr_from_sp:
+        u('the stack pointer, now the supervisor one', asrc='SP', alu='A',
+          dst='EA_SAVE')
+    for off, n, src, what in [(0x10, 4, 'EA', 'the effective address'),
+                              (0x0E, 2, 'STG_D', 'the operation word'),
+                              (0x0C, 2, 'CPINT', 'the internal register'),
+                              (0x08, 4, 'PC_D', 'the program counter'),
+                              (0x06, 2, 'FMTVEC', 'format $9 and the vector'),
+                              (0x02, 4, 'PC_C_RAW', 'the scanPC'),
+                              (0x00, 2, 'T3', 'the status register')]:
+        u('+$%02X: %s' % (off, what), asrc='EA_SAVE',
+          bsrc={2: 'TWO', 4: 'FOUR'}[n], alu='SUB', dst='EA_SAVE')
+        u('... written there', bus='WRITE', fc='DATA', asel='EA_SAVE',
+          asrc=src, alu='A', bytes=n,
+          **({'frame': 'F9'} if src == 'FMTVEC' else {}))
+
+
+label('exc_cp9')
+u('a copy of the status register as it was', asrc='SR', alu='A', dst='T3',
+  size='WORD')
+u('supervisor, and no tracing of the handler -- UM 6.1 step one',
+  asrc='SR', alu='EXCSR', dst='SR', size='WORD')
+frame9_body()
+u('and the stack pointer is where the frame begins', asrc='EA_SAVE', alu='A',
+  dst='SP', size='LONG', next='exc_f0_vector')
+
+# An interrupt in the middle of the dialogue -- UM 7.5.2.6. The same
+# acknowledge as exc_irq and the same throwaway frame when M is set, around the
+# midinstruction frame instead of the four-word one.
+label('exc_cp_irq')
+u('a copy of the status register as it was', asrc='SR', alu='A', dst='T3',
+  size='WORD')
+u('the mask goes up to this level',
+  asrc='SR', bsrc='IRQLEVEL', alu='SETMASK', dst='SR', size='WORD')
+u('the acknowledge cycle', bus='READ', fc='CPU', bytes=1, cpuspace='IACK',
+  seq='COND', cond='AVEC', next='exc_cp_irq_auto')
+u('... or nobody answered', seq='COND', cond='BERR', next='exc_cp_irq_spur')
+u('the device supplied a vector number', asrc='IRQVEC', alu='A', dst='T0',
+  size='LONG', next='exc_cp_irq_go')
+label('exc_cp_irq_auto')
+u('the autovector', asrc='AUTOVEC', alu='A', dst='T0', size='LONG',
+  next='exc_cp_irq_go')
+label('exc_cp_irq_spur')
+u('a spurious interrupt', asrc='VECOFF', alu='A', dst='T0', size='LONG',
+  vec=24)
+label('exc_cp_irq_go')
+u('the master stack?', seq='COND', cond='MASTER', next='exc_cp_irq_m')
+u('supervisor, and no tracing of the handler',
+  asrc='SR', alu='EXCSR', dst='SR', size='WORD')
+frame9_body()
+u('and the stack pointer is where the frame begins', asrc='EA_SAVE', alu='A',
+  dst='SP', size='LONG', next='exc_f0_vector')
+label('exc_cp_irq_m')
+u('supervisor, and no tracing of the handler',
+  asrc='SR', alu='EXCSR', dst='SR', size='WORD')
+frame9_body()
+u('the master stack pointer is where that frame begins', asrc='EA_SAVE',
+  alu='A', dst='SP', size='LONG')
+# UM 6.1.9: "this second frame contains the same PC value and vector offset as
+# the frame created on top of the master stack, but has a format number of 1".
+# The midinstruction frame's first long word after the status register is the
+# scanPC, so that is what the throwaway carries.
+u('now clear M, which moves the stack from MSP to ISP',
+  asrc='SR', alu='CLRM', dst='SR', size='WORD')
+u('the saved status register again, with S set',
+  asrc='T3', alu='SETS', dst='T3', size='WORD')
+u('the same program counter', asrc='PC_C_RAW', alu='A', dst='T1',
+  size='LONG')
+u('the interrupt stack', asrc='SP', alu='A', dst='EA_SAVE', size='LONG')
+u('+$06: format $1 and the vector', asrc='EA_SAVE', bsrc='TWO', alu='SUB',
+  dst='EA_SAVE')
+u('... written there', bus='WRITE', fc='DATA', asel='EA_SAVE',
+  asrc='FMTVEC', alu='A', bytes=2, frame='F1')
+u('+$02: the program counter', asrc='EA_SAVE', bsrc='FOUR', alu='SUB',
+  dst='EA_SAVE')
+u('... written there', bus='WRITE', fc='DATA', asel='EA_SAVE', asrc='T1',
+  alu='A', bytes=4)
+u('+$00: the status register', asrc='EA_SAVE', bsrc='TWO', alu='SUB',
+  dst='EA_SAVE')
+u('... written there', bus='WRITE', fc='DATA', asel='EA_SAVE', asrc='T3',
+  alu='A', bytes=2)
+u('and the interrupt stack pointer is where the throwaway begins',
+  asrc='EA_SAVE', alu='A', dst='SP', size='LONG', next='exc_f0_vector')
+
+# RTE of a midinstruction frame -- UM 7.4.19: "the MC68020 returns from the
+# exception handler and reads the response CIR". Entered from rte with T1 the
+# frame base. The status register is written last but one, because it decides
+# which stack pointer is stepped and the space the queue refills from; the
+# scanPC is written last, which is what refills it.
+label('rte_nine')
+u('+$02: the scanPC', asrc='T1', bsrc='TWO', alu='ADD', dst='T2')
+u('... read', bus='READ', fc='DATA', asel='T2', bytes=4)
+u('... and held', asrc='RDATA', alu='A', dst='T0')
+u('+$08: the program counter', asrc='T1', bsrc='EIGHT', alu='ADD', dst='T2')
+u('... read', bus='READ', fc='DATA', asel='T2', bytes=4)
+u('... into the pipe', asrc='RDATA', alu='A', dst='PC_D')
+u('+$0C: the internal register', asrc='T2', bsrc='FOUR', alu='ADD', dst='T2')
+u('... read', bus='READ', fc='DATA', asel='T2', bytes=2)
+u('... unpacked', asrc='RDATA', alu='A', dst='CPINT', size='WORD')
+u('+$0E: the operation word', asrc='T2', bsrc='TWO', alu='ADD', dst='T2')
+u('... read', bus='READ', fc='DATA', asel='T2', bytes=2)
+u('... into stage D', asrc='RDATA', alu='A', dst='STG_D', size='WORD')
+u('+$10: the effective address', asrc='T2', bsrc='TWO', alu='ADD', dst='T2')
+u('... read', bus='READ', fc='DATA', asel='T2', bytes=4)
+u('... back', asrc='RDATA', alu='A', dst='EA')
+u('+$00: the status register', bus='READ', fc='DATA', asel='T1', bytes=2)
+u('... held', asrc='RDATA', alu='A', dst='T3', size='WORD')
+u('the stack pointer, past the frame, while it is still this stack',
+  asrc='T1', bsrc='TWENTY', alu='ADD', dst='SP', size='LONG')
+u('the status register', asrc='T3', alu='A', dst='SR', size='WORD')
+u('the queue refills from the scanPC', asrc='T0', alu='A', dst='SCANPC')
+u('and the dialogue goes on where it stopped', next='cp_resp')
+
+
 # ==========================================================================
 def entry(name):
     if name not in LABELS:

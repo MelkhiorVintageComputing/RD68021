@@ -54,51 +54,47 @@ a clean copy of figure 5-44 or a real MC68020.
 
 ---
 
-## Format $A is emitted only for a prefetch fault
+## Format $A is never emitted
 
 Table 6-5 gives the short bus fault frame for "Address Error or Bus Error —
-Execution Unit at Instruction Boundary". A real MC68020's bus controller runs
-ahead of its sequencer, so it can retire an instruction while that instruction's
-write is still outstanding, and a *data* fault can then arrive with the execution
-unit at an instruction boundary — a short frame for a data access.
+Execution Unit at Instruction Boundary", and the long one for "Instruction
+Execution in Progress".
 
-**This design emits format `$A` only for a fault on a prefetch, and every data
-fault produces format `$B`.** The microcode stalls on `req_ack`, so there is no
-bus/sequencer concurrency in this phase and a data access always has an
-instruction in progress.
+**This design gives every bus error and address error the long frame, format
+`$B`.** RTE still takes a short frame apart.
 
-**What could differ:** a handler that branches on the frame format rather than on
-the SSW will see `$B` where a real part might have given it `$A`. The frame is
-larger and carries strictly more information, so nothing a handler needs is
-missing; it is 30 words more stack.
+- A *data* fault always has an instruction in progress here: the microcode stalls
+  on `req_ack`, so the bus unit never runs ahead of the sequencer the way a real
+  MC68020's does -- which is how a real part produces a short frame for a data
+  access.
+- A *prefetch* fault is taken by the microword that needs the missing word -- in
+  practice the instruction's last microword, which writes the result and advances
+  the pipe. RTE re-executes it, and it reads the working registers, which only
+  the long frame carries. So even the fault that looks like it is at a boundary is
+  in the middle of an instruction as far as this core's state goes, and the
+  instruction's own address is the frame's program counter.
+
+**What could differ:** a handler that branches on the frame format rather than
+on the SSW will see `$B` where a real part might have given it `$A`. The long
+frame carries strictly more: the stage B address at +$24 is explicit rather than
+derived from the PC, which is also what a handler needs when the stage C word is
+not at the PC plus two. It is 30 words more stack per fault.
 
 The manual licenses this explicitly, UM 6.4: "The system software should not
 depend on a particular exception generating a particular stack frame. For
 compatibility with future devices, the software should be able to handle any type
 of stack frame for any type of exception."
 
-**How it is checked:** the fault testbenches of M9, which assert the frame format
-for each shape of fault.
+**How it was found:** SunOS 4.1.1, twice. A forked child whose first instruction
+faulted with the pipe empty ran its parent's RTE (the short frame had no stage D
+validity and a derived stage B address that was wrong after a flush); and `ps -U`
+died of a memory fault when a `MOVEA.L D7,A0` at the end of a page was re-executed
+after the page came in, with T0 -- where the MOVE family holds its source --
+reused by the kernel's fault handler. `doc/bugs-found.md` has both.
 
-### ... and only when the pipe is what the short frame says it is
-
-The short frame has no stage B address. UM 6.2: "when the short bus fault stack
-frame applies, the address of the pipe stage B word is the value in the PC plus
-four, and the address of the stage C word is the value in the PC plus two". A
-handler finds the page to bring in by that arithmetic, and RTE finds where to
-refill from by it.
-
-In this core a prefetch fault is taken by the microword that would move stage C
-into stage D, and the frame's program counter is the address of the word in stage
-D. Stage C is at that address plus two only when stage D holds a word and the
-instruction in it is one word long. After a flush -- a branch, an RTE -- stage D
-is empty and stage C is *at* the program counter; after a longer instruction it is
-further on. **In both of those cases the frame is format `$B`**, whose +$24 says
-where stage B is, and the address error, which is always taken after a flush,
-is always format `$B`. The same UM 6.4 sentence covers it.
-
-SunOS 4.1.1 found this: its forked child's first instruction, reached by an RTE,
-was on a page the fork had not mapped. See doc/bugs-found.md.
+**How it is checked:** `sim/tb/core_fault_tb.sv` -- prefetch faults behind one- and
+two-word instructions, on a branch target, and a CMPM as the last word of a page,
+each resumed after RTE and checked for the right result.
 
 ---
 
@@ -729,3 +725,31 @@ and checked by `sim/tb/core_insn_tb.sv` against the manual's own figures.
   on the same stack, granted with a change of stack and the argument copied —
   then RTM writing DAL and taking the old stack back from `+$14`. A bug shared
   between the model and the core would not show.
+
+---
+
+## The coprocessor interface
+
+`doc/coprocessor.md` has the protocol as built. What differs from a real MC68020, as far
+as the manual lets anyone know:
+
+- **Busy restarts the instruction through the decode arm** -- a pipe flush to the
+  operation word, then an ordinary decode. UM 7.4.3 says the processor services pending
+  interrupts with the four-word frame and restarts the instruction, which is what that
+  does; the cost is a refetch of the instruction's first long word.
+- **No bus/sequencer concurrency.** The processor waits for every CIR access, so it
+  never runs its own instructions while it has a primitive to serve. A coprocessor that
+  releases it with CA = 0 still runs on concurrently, which is the concurrency the
+  protocol is designed around (UM 7.1.2).
+- **Undefined-but-unlisted primitive encodings** -- $27, $2F and $3C–$3E in bits 13:8 --
+  are served as the primitive with the DR bit ignored. UM 7.6 lists the undefined codes
+  and these are not among them.
+- **The reserved word after a saved format word** is written as zero.
+- **The multiple main processor registers primitive transfers D0 first**
+  (`doc/manual-contradictions.md`).
+
+**How it is checked:** `make cpif` -- every primitive, every instruction form and every
+exception of `doc/coprocessor.md` against the scripted coprocessor, including the
+MC68881's sixteen-bit way of answering its word registers. **There is no oracle**:
+Musashi and TME both emulate a floating-point unit inline and never speak the protocol.
+

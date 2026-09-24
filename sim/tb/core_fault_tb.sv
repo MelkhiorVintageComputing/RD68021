@@ -210,8 +210,9 @@ module core_fault_tb;
     //
     // The program runs into a page that is not there. The words already in the
     // pipe execute; the exception is taken when the first word that is not
-    // there is wanted, which is an instruction BOUNDARY, so the frame is the
-    // short one -- UM table 6-5.
+    // there is wanted. UM table 6-5 would give that the short frame; this
+    // design gives every fault the long one, because the microword that takes
+    // it is re-executed and may need any working register -- doc/divergences.md.
     // ======================================================================
     base_setup();
     poke_l(32'h0000_0008, HAND);           // vector 2
@@ -238,13 +239,15 @@ module core_fault_tb;
           "prefetch fault: the one being decoded did not");
     check(dut.u_seq.dreg[3] === 32'h0000_0000,
           "prefetch fault: nor the one whose word was missing");
-    base = ISP0 - 32'h20;
+    base = ISP0 - 32'h5C;
     check(dut.u_seq.isp_q === base,
-          "prefetch fault: the frame is the SHORT one, sixteen words");
+          "prefetch fault: the frame is the long one, forty-six words");
     check(peek_l(base + 32'h02) === GONE - 2,
           "prefetch fault: +$02 the instruction that was being decoded");
-    check(peek_w(base + 32'h06) === 16'hA008,
-          "prefetch fault: +$06 format $A, vector offset $008");
+    check(peek_w(base + 32'h06) === 16'hB008,
+          "prefetch fault: +$06 format $B, vector offset $008");
+    check(peek_l(base + 32'h24) === GONE + 2,
+          "prefetch fault: +$24 stage B, so stage C is the missing word");
     // doc/ssw.md: a fault on the prefetch for stage C, so FC is set, and RC is
     // always set when FC is. DF is clear -- this was not a data cycle -- and
     // with it the whole low half.
@@ -256,7 +259,7 @@ module core_fault_tb;
 
 
     // ======================================================================
-    // ... and out again. The handler maps the page and RTEs; the short frame
+    // ... and out again. The handler maps the page and RTEs; the frame
     // is restored, the prefetch that faulted is rerun by the refill the queue
     // depth asks for, and the instruction that was being decoded runs.
     // ======================================================================
@@ -281,7 +284,7 @@ module core_fault_tb;
     check(dut.u_seq.dreg[3] === 32'h0000_0004,
           "prefetch rerun: and so did the one whose word had been missing");
     check(dut.u_seq.isp_q === ISP0,
-          "prefetch rerun: the short frame came off the stack");
+          "prefetch rerun: the frame came off the stack");
 
     // ======================================================================
     // The same fault with the pipe EMPTY: the first word after a flush. This
@@ -356,6 +359,37 @@ module core_fault_tb;
           "two-word: and the one whose word had been missing");
     check(dut.u_seq.isp_q === ISP0,
           "two-word: the long frame came off the stack");
+
+    // ======================================================================
+    // CMPM as the last word before the missing page -- libc's strcmp loop,
+    // which is how SunOS's ps -U died. The microword that compares also
+    // advances the pipe, so it is the one the prefetch fault re-executes after
+    // RTE, and the bus unit's read data is by then the last word RTE read.
+    // The compare has to be of the two operands, not of that.
+    // ======================================================================
+    base_setup();
+    poke_w(GONE - 6, 16'h7A00);            // MOVEQ #0,D5
+    poke_w(GONE - 4, 16'h4E71);            // NOP
+    poke_w(GONE - 2, 16'hB308);            // CMPM.B (A0)+,(A1)+
+    poke_w(GONE + 0, 16'h57C5);            // SEQ D5 -- the missing word
+    poke_w(GONE + 2, 16'h60FE);            // BRA *
+    poke_w(CODE + 0, 16'h4EF9);            // JMP (xxx).L
+    poke_l(CODE + 2, GONE - 6);
+    poke_w(HAND + 0, 16'h4E73);            // RTE
+    poke_w(32'h0000_3000, 16'h4142);       // the two operands: equal bytes
+    poke_w(32'h0000_3100, 16'h4143);
+    reset_dut();
+    dut.u_seq.areg[0] = 32'h0000_3000;
+    dut.u_seq.areg[1] = 32'h0000_3100;
+    run_until(HAND + 0, 3000, reached);
+    check(reached, "CMPM at a page end: the prefetch fault is taken");
+    berr_en = 1'b0;
+    run_until(GONE + 2, 3000, reached);
+    check(reached, "CMPM at a page end: RTE, and the program goes on");
+    check(dut.u_seq.dreg[5] === 32'h0000_00FF,
+          "CMPM at a page end: the compare re-run after RTE still sees them equal");
+    check(dut.u_seq.areg[0] === 32'h0000_3001 && dut.u_seq.areg[1] === 32'h0000_3101,
+          "CMPM at a page end: each register stepped once");
 
     // ======================================================================
     // An address error -- UM 6.1.3, "an address error exception occurs when

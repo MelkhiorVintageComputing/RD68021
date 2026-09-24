@@ -72,7 +72,7 @@ ROWS = [
     ('ABCD D0,D4',             [], [0xC900],                 4,  '4', 2),
     ('ABCD -(A1),-(A2)',       [], [0xC509],                 16, '16', 21),
     ('ADDX.L D0,D4',           [], [0xD980],                 2,  '2', 2),
-    ('CMPM.L (A0)+,(A1)+',     [], [0xB388],                 9,  '9', 16),
+    ('CMPM.L (A0)+,(A1)+',     [], [0xB388],                 9,  '9', 17),
     ('PACK D0,D4,#0',          [], [0x8940, 0x0000],         6,  '6', 4),
     ('UNPK D0,D4,#0',          [], [0x8980, 0x0000],         8,  '8', 4),
     # --- 8.2.11
@@ -136,7 +136,7 @@ ROWS = [
     ('MOVEM.L (A0),D4-D5',     [], [0x4CD0, 0x0030],         18, '8 + 4x2 + #.W,(An) 2', 70),
     ('MOVEP.L D4,(0,A2)',      [], [0x09CA, 0x0000],         17, '17', 31),
     ('MOVEP.L (0,A0),D4',      [], [0x0948, 0x0000],         18, '18', 31),
-    ('MOVES.L (A0),D4',        [], [0x0E90, 0x4000],         9,  '7 + #.W,(An) 2', 12),
+    ('MOVES.L (A0),D4',        [], [0x0E90, 0x4000],         9,  '7 + #.W,(An) 2', 13),
     # --- 8.2.6
     ('MOVE.L D0,D4',           [], [0x2800],                 2,  'Rn -> Dn', 2),
     ('MOVEA.L A0,A4',          [], [0x2848],                 2,  'Rn -> An', 3),
@@ -168,6 +168,14 @@ ROWS = [
                                                              10, '10', 14),
     ('RTE (format 0)',         [0x3F3C, 0x0000, 0x487A, 0x0008, 0x3F3C, 0x2700],
                                [0x4E73],                     21, '21', 35),
+    # A coprocessor midinstruction frame -- UM figure 7-43, built from the top:
+    # the effective address, the internal word and operation word ($F200, cpGEN
+    # to CpID 1), the program counter, format $9, the scanPC -- the landing pad
+    # -- and the status register. RTE ends by reading the response CIR, and
+    # sim/models/rd68021_cpmodel.sv answers "processing finished".
+    ('RTE (coprocessor)',      [0x4878, 0x0000, 0x2F3C, 0x0000, 0xF200, 0x4855,
+                                0x3F3C, 0x9000, 0x4855, 0x3F3C, 0x2700],
+                               [0x4E73],                     31, '31', 75),
     ('CHK.L D1,D4 (in range)', [], [0x4901],                 8,  '8 + Dn 0', 5),
     ('CHK2.L (A0),D4',         [], [0x04D0, 0x4800],         22, '18 + #.W,(An) 4', 25),
     ('CMP2.L (A0),D4',         [], [0x04D0, 0x4000],         22, '18 + #.W,(An) 4', 24),

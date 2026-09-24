@@ -156,8 +156,15 @@ module rd68021_ifu #(
   // what it did: the resumed instruction ran and the one after it was garbage.
   logic ckpt_busy_q;
 
+  // ... nor on the clock the coprocessor writes the scanPC, which empties the
+  // queue and moves the fill point: a word pushed or a fetch issued on that
+  // same edge would belong to the stream it is abandoning.
+  logic scan_now;
+  assign scan_now = ckpt_wr && (ckpt_sel == rd68021_pkg::CK_SCAN);
+
   logic room;
-  assign room = primed_q && (cnt_q != 2'd2) && !pf_odd && !ckpt_busy_q;
+  assign room = primed_q && (cnt_q != 2'd2) && !pf_odd && !ckpt_busy_q
+             && !scan_now;
 
   logic push;
   assign push = room && chr_hit;
@@ -354,6 +361,20 @@ module rd68021_ifu #(
           // restored, because CK_FLAGS comes first.
           rd68021_pkg::CK_FILL:
             fill_q <= ckpt_data - 32'd2 + {29'd0, cnt_q, 1'b0};
+          rd68021_pkg::CK_SCAN: begin
+            // UM 7.4.17: "the MC68020 discards any instruction words that have
+            // been prefetched beyond the current scanPC location ... then
+            // refills the instruction pipe from the scanPC address". A flush
+            // that leaves stage D alone, and a prefetch in flight is thrown
+            // away when it lands, as a flush does it.
+            cnt_q   <= 2'd0;
+            fill_q  <= ckpt_data;
+            d_v_q   <= 1'b1;
+            c_f_q   <= 1'b0;
+            b_f_q   <= 1'b0;
+            chr_v_q <= 1'b0;
+            if (fetch_pend_q && !fetch_ack) discard_q <= 1'b1;
+          end
           default: begin                       // CK_FLAGS
             // Only the rerun bits. UM 6.2.1 makes FC and FB a RECORD of what
             // went wrong, for the handler to read, and RC and RB the statement

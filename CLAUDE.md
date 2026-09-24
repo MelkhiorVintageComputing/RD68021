@@ -77,12 +77,12 @@ three, and they are not in `make check` for that reason.
 | `tools/` | microcode assembler, vector generator, test runners, timing solver, doc generators (Python) |
 | `sim/tb/` | testbenches |
 | `tools/vectors/` | the per-opcode sweep generator |
-| `sim/models/` | bus-slave and coprocessor models |
+| `sim/models/` | bus-slave models, and the scripted coprocessor `make cpif` talks to (doc/coprocessor.md) |
 | `sim/programs/` | real code, built by the cross-compiler and run on the core |
 | `sim/suska/` | harnesses that run the same code on the Suska VHDL core |
 | `sim/tme/` | the core as a CPU element of TME, for `make sun3` and `make sunos` -- doc/sun3.md |
 | `scripts/` | Vivado and Quartus synthesis, implementation and timing scripts |
-| `doc/` | pinout, coding standard, checkpoint, compliance, divergence and implementation reports |
+| `doc/` | pinout, coding standard, checkpoint, coprocessor, compliance, divergence and implementation reports |
 | `Inputs/doc/` | Motorola manuals, split by section, with machine-readable AC specs |
 | `Inputs/ref/` | reference implementations used as oracles (not as RTL sources) |
 
@@ -126,6 +126,8 @@ make lint     # elaborate every rtl module under the three always-available tool
 make audit    # prove no register initialises outside reset
 make ucode    # regenerate the microcode ROMs from tools/ucode/
 make sim      # directed testbenches (iverilog)
+make cpif     # the coprocessor interface against a scripted coprocessor (part of sim)
+make sim COPROCESSOR=1   # every core testbench with the coprocessor interface built
 make check    # the gate: ucode-check, lint, audit, sim, AC timing
 ```
 
@@ -142,6 +144,7 @@ make cycles           # instruction clock counts against UM section 8, each a re
 make suska            # the data cycles against a second core, the Suska WF68K30L under ghdl
 make sun3             # a Sun-3/160 boot PROM on the core, inside TME, to the monitor prompt
 make sunos            # SunOS 4.1.1 on that machine, to a single-user shell
+make sunos-disk       # an installed SunOS 4.1.1 from a disk image (SUNOS_IMG=), multi-user
 ```
 
 Implementation, each a vendor run of tens of minutes:

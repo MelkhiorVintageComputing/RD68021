@@ -32,6 +32,9 @@ module rd68021_seq #(
     output logic        req_rmc,
     output logic  [3:0] req_cpuspace,
     output logic  [7:0] req_cpuaddr,
+    // A bus error on this CPU-space cycle is a bus error -- UM 7.5.2.8. True
+    // for every coprocessor interface register access but the first.
+    output logic        req_cpfault,
     input  logic        req_ack,
     input  logic        req_last,
     input  logic [39:0] req_rdata,
@@ -109,6 +112,14 @@ module rd68021_seq #(
   logic [rd68021_ucode_pkg::UADDR-1:0] dec_entry;
   logic                                dec_illegal;
 
+  // The coprocessor response primitive being served -- UM 7.4. Held from the
+  // read of the response CIR to the end of the service, because the primitive
+  // decoder and the operand transfers read its fields, and checkpointed because
+  // a bus error can land in the middle of one.
+  logic [15:0] cprim_q;
+  logic [rd68021_ucode_pkg::UADDR-1:0] cp_entry;
+  logic [15:0] cp_int;
+
   rd68021_ucode_rom u_urom (
       .clk (clk), .rst_n (rst_n), .addr (upc_nxt), .uw (uw));
 
@@ -119,8 +130,23 @@ module rd68021_seq #(
   logic [15:0] dec_ir;
   assign dec_ir = (`UF(PF) == rd68021_ucode_pkg::U_PF_ADV) ? stg_c : stg_d;
 
+  logic [rd68021_ucode_pkg::UADDR-1:0] dec_rom_entry;
+
   rd68021_decode_rom u_decode (
-      .ir (dec_ir), .entry (dec_entry), .illegal (dec_illegal));
+      .ir (dec_ir), .entry (dec_rom_entry), .illegal (dec_illegal));
+
+  // With no coprocessor interface built, every F-line word is an F-line
+  // exception, which is also what a machine with no coprocessor attached wants
+  // -- UM 7.5.2.2. The decode table is the same either way; the parameter picks
+  // its output.
+  generate
+    if (COPROCESSOR) begin : g_cp_dec
+      assign dec_entry = dec_rom_entry;
+    end else begin : g_nocp_dec
+      assign dec_entry = (dec_ir[15:12] == 4'hF)
+                         ? rd68021_ucode_pkg::ENTRY_LINE_F : dec_rom_entry;
+    end
+  endgenerate
 
   // The extension-word decoder. It reads stage C -- the extension word, latched
   // but not yet consumed -- plus the microword's own bit saying whether the base
@@ -161,6 +187,18 @@ module rd68021_seq #(
   rd68021_eadec_rom u_eadec (
       .pc_base (ea_pc_base), .xw (stg_c),
       .entry (ea_entry), .reserved (ea_reserved));
+
+  // The response primitive decoder -- UM 7.4 and table 7-6. Its seventeenth bit
+  // is the instruction's category, because what a primitive is allowed to do
+  // depends on it: most of them with CA clear, and several at all, are protocol
+  // violations inside a conditional instruction. Bits 8:6 of stage D say which
+  // category it is -- 000 for cpGEN, anything else reaching the dialogue is a
+  // conditional (UM figures 7-6 to 7-13).
+  logic cp_cond;
+  assign cp_cond = (stg_d[8:6] != 3'b000);
+
+  rd68021_cpdec_rom u_cpdec (
+      .cond_cat (cp_cond), .prim (cprim_q), .entry (cp_entry));
 
   // ==========================================================================
   // Architectural state
@@ -208,6 +246,7 @@ module rd68021_seq #(
   logic retire;
   logic [15:0] xw_q;
   logic [31:0] ea_q;
+
 
   // The return address of an effective-address routine. One level, because such
   // a routine is called from an instruction and calls nothing itself.
@@ -367,6 +406,14 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_SZSEL_CHK:
         eff_size = stg_d[7] ? rd68021_ucode_pkg::U_SIZE_WORD
                             : rd68021_ucode_pkg::U_SIZE_LONG;
+      // UM 7.4.9: a register operand is one, two or four bytes. Anything else
+      // is refused before a microword with this selector is reached.
+      rd68021_ucode_pkg::U_SZSEL_CPLEN:
+        unique case (cprim_q[7:0])
+          8'd1:    eff_size = rd68021_ucode_pkg::U_SIZE_BYTE;
+          8'd2:    eff_size = rd68021_ucode_pkg::U_SIZE_WORD;
+          default: eff_size = rd68021_ucode_pkg::U_SIZE_LONG;
+        endcase
       default: eff_size = `UF(SIZE);
     endcase
   end
@@ -396,6 +443,7 @@ module rd68021_seq #(
   logic [31:0] regn_val, regnr_val;
   logic [31:0] creg_read;
   logic [31:0] xreg_read;
+  logic [31:0] cpreg_read;
   logic [63:0] mul_full;
   logic [31:0] div_q, div_r;
   logic [31:0] bit_mask;
@@ -535,6 +583,18 @@ module rd68021_seq #(
       // PRM 2.5: "the value of the PC is the address of the extension word".
       rd68021_ucode_pkg::U_ASRC_PC_C:  a_bus = stg_b_addr - 32'd2;
       rd68021_ucode_pkg::U_ASRC_EABASE: a_bus = ea_base;
+      // The coprocessor interface -- UM section 7.
+      rd68021_ucode_pkg::U_ASRC_CPLEN: a_bus = {24'd0, cprim_q[7:0]};
+      rd68021_ucode_pkg::U_ASRC_CPVEC: a_bus = {22'd0, cprim_q[7:0], 2'b00};
+      rd68021_ucode_pkg::U_ASRC_CPREG: a_bus = cpreg_read;
+      rd68021_ucode_pkg::U_ASRC_CPINT: a_bus = {16'd0, cp_int};
+      // UM figure 7-14: the format word, then a reserved word, at the head of
+      // a coprocessor state frame. The reserved word is written as zero.
+      rd68021_ucode_pkg::U_ASRC_FWLONG: a_bus = {t_q[0][15:0], 16'd0};
+      rd68021_ucode_pkg::U_ASRC_FWLEN:  a_bus = {24'd0, t_q[0][7:0]};
+      // The scanPC -- UM 7.4.1 -- is the address of stage C, "the word
+      // following" whatever the instruction has consumed so far.
+      rd68021_ucode_pkg::U_ASRC_PC_C_RAW: a_bus = stg_b_addr - 32'd2;
       default:                         a_bus = 32'd0;
     endcase
   end
@@ -583,6 +643,13 @@ module rd68021_seq #(
       // field means eight.
       rd68021_ucode_pkg::U_BSRC_IMMQ:    b_bus = (stg_d[11:9] == 3'd0)
                                                  ? 32'd8 : {29'd0, stg_d[11:9]};
+      rd68021_ucode_pkg::U_BSRC_THREE:   b_bus = 32'd3;
+      rd68021_ucode_pkg::U_BSRC_TWENTY:  b_bus = 32'd20;
+      rd68021_ucode_pkg::U_BSRC_CPLEN:   b_bus = {24'd0, cprim_q[7:0]};
+      // UM 7.4.9 and 7.4.12: a one-byte operand through A7 steps it by two.
+      rd68021_ucode_pkg::U_BSRC_CPSTEP:
+        b_bus = ((cprim_q[7:0] == 8'd1) && (rsel == 3'd7)) ? 32'd2
+                                                           : {24'd0, cprim_q[7:0]};
       default:                           b_bus = 32'd0;
     endcase
   end
@@ -716,8 +783,10 @@ module rd68021_seq #(
   //
   // "This is always a 32-bit transfer, even though the control register may be
   // implemented with fewer bits. Unimplemented bits are read as zeros." The
-  // codes are the ones PRM 6 lists for the MC68020; the MC68040's are not here,
-  // and an unimplemented code is a format error that M8 will raise.
+  // codes are the ones PRM 6 lists for the MC68020; the MC68040's are not here.
+  // Any other code is an illegal instruction -- UM 6.1.5, "a MOVEC instruction
+  // with an undefined register specification field" -- and, through the
+  // transfer-control-register primitive, a protocol violation (UM table 7-5).
   //
   // USP is the one that is NOT simply whichever stack pointer is active: MOVEC
   // names it explicitly, which is the whole point of the instruction in a
@@ -740,12 +809,41 @@ module rd68021_seq #(
     endcase
   end
 
+  logic creg_bad;
+  always_comb begin
+    unique case (creg_sel)
+      12'h000, 12'h001, 12'h002,
+      12'h800, 12'h801, 12'h802, 12'h803, 12'h804: creg_bad = 1'b0;
+      default:                                    creg_bad = 1'b1;
+    endcase
+  end
+
+  // The same test on stage C, for MOVEC: the extension word is latched into XW
+  // by the microword that tests it, and a condition reads a register as it
+  // stands, not as it is about to be.
+  logic creg_bad_c;
+  always_comb begin
+    unique case (stg_c[11:0])
+      12'h000, 12'h001, 12'h002,
+      12'h800, 12'h801, 12'h802, 12'h803, 12'h804: creg_bad_c = 1'b0;
+      default:                                    creg_bad_c = 1'b1;
+    endcase
+  end
+
   // The general register the extension word names: bit 15 says which file, bits
   // 14:12 which register.
   always_comb begin
     if (!xw_q[15])               xreg_read = dreg[xw_q[14:12]];
     else if (xw_q[14:12] == 3'd7) xreg_read = sp_read;
     else                         xreg_read = areg[xw_q[14:12]];
+  end
+
+  // ... and the one a transfer-single-register primitive names: D/A in bit 3,
+  // the number in bits 2:0 -- UM figure 7-33.
+  always_comb begin
+    if (!cprim_q[3])             cpreg_read = dreg[cprim_q[2:0]];
+    else if (cprim_q[2:0] == 3'd7) cpreg_read = sp_read;
+    else                         cpreg_read = areg[cprim_q[2:0]];
   end
 
   // ==========================================================================
@@ -1342,11 +1440,62 @@ module rd68021_seq #(
   // since the DECODE arm also clears it, one instruction late means never.
   assign flow_eff = flow_q
                  || (retire && ((`UF(PF) == rd68021_ucode_pkg::U_PF_FLUSH)
-                                || (`UF(DST) == rd68021_ucode_pkg::U_DST_SR)));
+                                || (`UF(DST) == rd68021_ucode_pkg::U_DST_SR)
+                                || (`UF(DST) == rd68021_ucode_pkg::U_DST_SCANPC)));
+
+  // The coprocessor midinstruction frame's internal word at +$0C -- UM figure
+  // 7-43. A coprocessor instruction interrupted in its dialogue resumes it
+  // after RTE, so what it had decided about tracing has to come back with it:
+  // UM 6.1.7 fixes the trace mode at the start of the instruction, and whether
+  // it has changed the flow yet is what trace-on-change-of-flow asks.
+  assign cp_int = {11'd0, notrace_q, pc_kept_q, flow_q, trace_mode_q};
 
   assign trace_take = !notrace_q
                    && ((trace_mode_q == 2'b10)
                        || ((trace_mode_q == 2'b01) && flow_eff));
+
+  // ==========================================================================
+  // The addressing-mode classes -- PRM 2.2 and table 2-4, for the coprocessor
+  // primitives that evaluate the effective address in the operation word and
+  // must first check it is one the primitive allows (UM table 7-4).
+  // ==========================================================================
+  logic ea_dn, ea_an, ea_ind, ea_post, ea_pre, ea_d16, ea_idx, ea_abs;
+  logic ea_pcrel, ea_imm, ea_valid;
+  logic ea_ctl, ea_ctlalt, ea_dataalt, ea_memalt, ea_alt, ea_data, ea_mem;
+  logic cp_ea_ok;
+  assign ea_dn    = (stg_d[5:3] == 3'b000);
+  assign ea_an    = (stg_d[5:3] == 3'b001);
+  assign ea_ind   = (stg_d[5:3] == 3'b010);
+  assign ea_post  = (stg_d[5:3] == 3'b011);
+  assign ea_pre   = (stg_d[5:3] == 3'b100);
+  assign ea_d16   = (stg_d[5:3] == 3'b101);
+  assign ea_idx   = (stg_d[5:3] == 3'b110);
+  assign ea_abs   = (stg_d[5:3] == 3'b111) && (stg_d[2:1] == 2'b00);
+  assign ea_pcrel = (stg_d[5:3] == 3'b111) && (stg_d[2:1] == 2'b01);
+  assign ea_imm   = (stg_d[5:0] == 6'b111100);
+  assign ea_valid = !((stg_d[5:3] == 3'b111) && (stg_d[2:0] > 3'b100));
+  assign ea_ctlalt  = ea_ind || ea_d16 || ea_idx || ea_abs;
+  assign ea_ctl     = ea_ctlalt || ea_pcrel;
+  assign ea_memalt  = ea_ctlalt || ea_post || ea_pre;
+  assign ea_dataalt = ea_memalt || ea_dn;
+  assign ea_alt     = ea_dataalt || ea_an;
+  assign ea_mem     = ea_valid && !ea_dn && !ea_an;
+  assign ea_data    = ea_valid && !ea_an;
+
+  // UM table 7-4, the valid-EA field of the evaluate-and-transfer-data
+  // primitive, bits 10:8.
+  always_comb begin
+    unique case (cprim_q[10:8])
+      3'b000:  cp_ea_ok = ea_ctlalt;
+      3'b001:  cp_ea_ok = ea_dataalt;
+      3'b010:  cp_ea_ok = ea_memalt;
+      3'b011:  cp_ea_ok = ea_alt;
+      3'b100:  cp_ea_ok = ea_ctl;
+      3'b101:  cp_ea_ok = ea_data;
+      3'b110:  cp_ea_ok = ea_mem;
+      default: cp_ea_ok = ea_valid;
+    endcase
+  end
 
   // ==========================================================================
   // The conditional tests -- PRM table 3-19
@@ -1400,6 +1549,7 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_COND_FMT2:  cond_true = (xw_q[15:12] == 4'h2);
       rd68021_ucode_pkg::U_COND_FMTA:  cond_true = (xw_q[15:12] == 4'hA);
       rd68021_ucode_pkg::U_COND_FMTB:  cond_true = (xw_q[15:12] == 4'hB);
+      rd68021_ucode_pkg::U_COND_FMT9:  cond_true = (xw_q[15:12] == 4'h9);
       // UM 6.2.2: "the only bits in the SSW that may be modified are DF, RB, and
       // RC", so these three are the whole of what a handler can tell RTE, and
       // doc/checkpoint.md's rule on bus-steering conditions admits them: every
@@ -1442,6 +1592,55 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_COND_GTZ:    cond_true = ~res_z & ~(res_n ^ alu_v);
       rd68021_ucode_pkg::U_COND_MDOVF: cond_true =
           (`UF(MDOP) == rd68021_ucode_pkg::U_MDOP_DIV) ? div_ovf : mul_ovf;
+      // ---- The coprocessor interface -- UM section 7 --------------------
+      // The primitive's own bits, figure 7-22.
+      rd68021_ucode_pkg::U_COND_CPCA:  cond_true = cprim_q[15];
+      rd68021_ucode_pkg::U_COND_CPPC:  cond_true = cprim_q[14];
+      rd68021_ucode_pkg::U_COND_CPDR:  cond_true = cprim_q[13];
+      rd68021_ucode_pkg::U_COND_CPB8:  cond_true = cprim_q[8];
+      rd68021_ucode_pkg::U_COND_CPPF:  cond_true = cprim_q[1];
+      rd68021_ucode_pkg::U_COND_CPTF:  cond_true = cprim_q[0];
+      // Which instruction -- figures 7-6 to 7-13.
+      rd68021_ucode_pkg::U_COND_CPGEN:  cond_true = !cp_cond;
+      rd68021_ucode_pkg::U_COND_CPBCC:  cond_true = stg_d[7];
+      rd68021_ucode_pkg::U_COND_CPDBCC: cond_true = (stg_d[5:3] == 3'b001);
+      rd68021_ucode_pkg::U_COND_CPTRAP: cond_true = (stg_d[5:3] == 3'b111);
+      rd68021_ucode_pkg::U_COND_IR0:    cond_true = stg_d[0];
+      rd68021_ucode_pkg::U_COND_IR1:    cond_true = stg_d[1];
+      rd68021_ucode_pkg::U_COND_IR6:    cond_true = stg_d[6];
+      // The byte counter of an operand transfer.
+      rd68021_ucode_pkg::U_COND_T1GE4:  cond_true = (t_q[1][31:2] != 30'd0);
+      rd68021_ucode_pkg::U_COND_T1B1:   cond_true = t_q[1][1];
+      rd68021_ucode_pkg::U_COND_T1B0:   cond_true = t_q[1][0];
+      rd68021_ucode_pkg::U_COND_T1ZERO: cond_true = (t_q[1] == 32'd0);
+      rd68021_ucode_pkg::U_COND_TRACEPEND: cond_true = trace_take;
+      // Against the mask as it stands: nothing in the dialogue writes it on
+      // the microword that asks.
+      rd68021_ucode_pkg::U_COND_IRQPEND:   cond_true = irq_ipend;
+      // The effective-address field of stage D.
+      rd68021_ucode_pkg::U_COND_EADN:     cond_true = ea_dn;
+      rd68021_ucode_pkg::U_COND_EAAN:     cond_true = ea_an;
+      rd68021_ucode_pkg::U_COND_EAPOST:   cond_true = ea_post;
+      rd68021_ucode_pkg::U_COND_EAPRE:    cond_true = ea_pre;
+      rd68021_ucode_pkg::U_COND_EAIMM:    cond_true = ea_imm;
+      rd68021_ucode_pkg::U_COND_EAUNALT:  cond_true = ea_imm || ea_pcrel;
+      rd68021_ucode_pkg::U_COND_CPEAOK:   cond_true = cp_ea_ok;
+      rd68021_ucode_pkg::U_COND_EACTLALT: cond_true = ea_ctlalt;
+      // UM 7.4.16: to the coprocessor, control or (An)+; from it, control
+      // alterable or -(An).
+      rd68021_ucode_pkg::U_COND_CPMEAOK:
+        cond_true = cprim_q[13] ? (ea_ctlalt || ea_pre) : (ea_ctl || ea_post);
+      rd68021_ucode_pkg::U_COND_CPLEN124:
+        cond_true = (cprim_q[7:0] == 8'd1) || (cprim_q[7:0] == 8'd2)
+                 || (cprim_q[7:0] == 8'd4);
+      // A coprocessor format word in T0 -- UM table 7-2.
+      rd68021_ucode_pkg::U_COND_FWNOTRDY: cond_true = (t_q[0][15:8] == 8'h01);
+      rd68021_ucode_pkg::U_COND_FWEMPTY:  cond_true = (t_q[0][15:8] == 8'h00);
+      rd68021_ucode_pkg::U_COND_FWBAD:
+        cond_true = (t_q[0][15:8] >= 8'h02) && (t_q[0][15:8] <= 8'h0F);
+      rd68021_ucode_pkg::U_COND_FWLEN:    cond_true = (t_q[0][1:0] != 2'b00);
+      rd68021_ucode_pkg::U_COND_CREGBAD:  cond_true = creg_bad;
+      rd68021_ucode_pkg::U_COND_CREGBADC: cond_true = creg_bad_c;
       default:                         cond_true = 1'b0;
     endcase
   end
@@ -1519,10 +1718,8 @@ module rd68021_seq #(
   // fetch address is odd and no cycle will be run at all. That one is the
   // address error as well, and the pipe says which.
   //
-  // `check_boundary` in the assembler is what makes the frame format follow
-  // from the microword: every ADV also decodes, and no DECODE reads stage C as
-  // data, so a DECODE that faults is always at an instruction boundary and
-  // anything else is always inside one.
+  // Either way the frame is the long one: the microword that could not have its
+  // word is re-executed after RTE, and it may depend on any working register.
   // ==========================================================================
   logic uses_c_word;
   assign uses_c_word = (`UF(PF)   == rd68021_ucode_pkg::U_PF_ADV)
@@ -1544,19 +1741,12 @@ module rd68021_seq #(
   assign pipe_fault = (retire && uses_c_word && stg_c_fault)
                    || (pipe_wait && pf_stuck);
 
-  // The short frame has no stage B address. UM 6.2: "when the short bus fault
-  // stack frame applies, the address of the pipe stage B word is the value in
-  // the PC plus four, and the address of the stage C word is the value in the
-  // PC plus two" -- and a handler finds the page to bring in by exactly that
-  // arithmetic, as RTE finds the fill point. It holds here only when stage D
-  // has a word and the instruction in it is one word long. After a flush stage
-  // D is empty and stage C is AT the program counter; after a longer
-  // instruction it is further on. Either way the frame is the long one, whose
-  // +$24 says where stage B is -- SunOS's forked child faulted on its very first
-  // word, with the pipe empty, and the short frame sent it back to the wrong
-  // place. doc/divergences.md.
-  logic pipe_short;
-  assign pipe_short = pf_dvalid && (stg_b_addr == pc_d + 32'd4);
+  // Every fault takes the long frame -- doc/divergences.md. In this design a
+  // prefetch fault is taken by the instruction's own last microword, which RTE
+  // re-executes, and that microword may read any of the working registers; the
+  // short frame carries none of them. A CMPM at the end of a page lost its
+  // source operand to RTE's own frame pointer, and SunOS's ps -U died of it.
+  // doc/bugs-found.md.
 
   // Any of the three, and only the data one sets DF.
   logic fault_now;
@@ -1682,7 +1872,8 @@ module rd68021_seq #(
   always_comb begin
     unique case (`UF(CPUSPACE))
       rd68021_ucode_pkg::U_CPUSPACE_BKPT:   req_cpuspace = rd68021_pkg::CPUS_BKPT;
-      rd68021_ucode_pkg::U_CPUSPACE_COPROC: req_cpuspace = rd68021_pkg::CPUS_COPROC;
+      rd68021_ucode_pkg::U_CPUSPACE_COPROC,
+      rd68021_ucode_pkg::U_CPUSPACE_CPINIT: req_cpuspace = rd68021_pkg::CPUS_COPROC;
       rd68021_ucode_pkg::U_CPUSPACE_ACCESS: req_cpuspace = rd68021_pkg::CPUS_ACCESS;
       default:                              req_cpuspace = rd68021_pkg::CPUS_IACK;
     endcase
@@ -1698,9 +1889,22 @@ module rd68021_seq #(
     unique case (`UF(CPUSPACE))
       rd68021_ucode_pkg::U_CPUSPACE_BKPT:   req_cpuaddr = {5'd0, stg_d[2:0]};
       rd68021_ucode_pkg::U_CPUSPACE_ACCESS: req_cpuaddr = `UF(VEC);
+      // UM figure 7-3: the CpID from bits 11:9 of the F-line operation word on
+      // A15-A13, and the interface register on A4-A0, out of `vec`.
+      rd68021_ucode_pkg::U_CPUSPACE_COPROC,
+      rd68021_ucode_pkg::U_CPUSPACE_CPINIT:
+        req_cpuaddr = {stg_d[11:9], uw[rd68021_ucode_pkg::U_VEC_LSB +: 5]};
       default:                              req_cpuaddr = {5'd0, irq_taking_q};
     endcase
   end
+
+  // UM 7.5.2.8: "if a bus error occurs during the CIR access that is used to
+  // initiate a coprocessor instruction, the main processor assumes that the
+  // coprocessor is not present and takes an F-line emulator exception", and on
+  // any other coprocessor access "the main processor performs bus error
+  // exception processing". The first is read off the end code, as the other
+  // CPU-space cycles are; the second has to raise the fault.
+  assign req_cpfault = (`UF(CPUSPACE) == rd68021_ucode_pkg::U_CPUSPACE_COPROC);
 
   // ==========================================================================
   // The instruction pipe
@@ -1724,12 +1928,7 @@ module rd68021_seq #(
     if (dbf_q) begin
       upc_nxt = upc;
     end else if (fault_now && !g0_q) begin
-      // UM table 6-5 picks the frame by where the exception was taken, and
-      // `check_boundary` makes that the same question as whether this microword
-      // decodes -- but only when the pipe is what the short frame says it is.
-      upc_nxt = (pipe_fault && at_decode && pipe_short)
-                ? rd68021_ucode_pkg::ENTRY_FAULT_SHORT
-                : rd68021_ucode_pkg::ENTRY_FAULT_LONG;
+      upc_nxt = rd68021_ucode_pkg::ENTRY_FAULT_LONG;
     end else if (stopped_q) begin
       upc_nxt = irq_pending ? rd68021_ucode_pkg::ENTRY_IRQ : upc;
     end else if (!retire) begin
@@ -1751,6 +1950,7 @@ module rd68021_seq #(
                                  : dec_entry;
         rd68021_ucode_pkg::U_SEQ_EADEC:  upc_nxt = ea_entry;
         rd68021_ucode_pkg::U_SEQ_EAMODE: upc_nxt = eam_entry;
+        rd68021_ucode_pkg::U_SEQ_CPDEC:  upc_nxt = cp_entry;
         rd68021_ucode_pkg::U_SEQ_RET:    upc_nxt = link_q;
         // doc/checkpoint.md rule 2 is what makes this a jump and nothing else:
         // the microword that faulted committed nothing, so re-executing it
@@ -1783,6 +1983,7 @@ module rd68021_seq #(
       msp_q  <= '0;
       xw_q   <= '0;
       ea_q   <= '0;
+      cprim_q <= '0;
       link_q <= '0;
       eapc_q  <= 1'b0;
       eadst_q <= 1'b0;
@@ -1869,7 +2070,8 @@ module rd68021_seq #(
             pc_kept_q <= 1'b1;
           end
           if (`UF(PF) == rd68021_ucode_pkg::U_PF_FLUSH
-              || `UF(DST) == rd68021_ucode_pkg::U_DST_SR) flow_q <= 1'b1;
+              || `UF(DST) == rd68021_ucode_pkg::U_DST_SR
+              || `UF(DST) == rd68021_ucode_pkg::U_DST_SCANPC) flow_q <= 1'b1;
           if (`UF(NOTRACE)) notrace_q <= 1'b1;
         end
 
@@ -1879,6 +2081,15 @@ module rd68021_seq #(
           rd68021_ucode_pkg::U_DST_T2: t_q[2] <= y;
           rd68021_ucode_pkg::U_DST_T3: t_q[3] <= y;
           rd68021_ucode_pkg::U_DST_XW: xw_q   <= y[15:0];
+          rd68021_ucode_pkg::U_DST_CPRIM: cprim_q <= y[15:0];
+          // The midinstruction frame's internal word, put back -- the same
+          // bits cp_int packs.
+          rd68021_ucode_pkg::U_DST_CPINT: begin
+            trace_mode_q <= y[1:0];
+            flow_q       <= y[2];
+            pc_kept_q    <= y[3];
+            notrace_q    <= y[4];
+          end
           // ------------------------------------------------------------------
           // RTE putting a fault frame back. The two packed words are unpacked
           // into exactly the registers they were packed from, and the positions
@@ -2047,6 +2258,31 @@ module rd68021_seq #(
               else                  isp_q <= y;
             end else begin
               areg[rsel] <= y;
+            end
+          end
+          // UM 7.4.13: a long word into the register the primitive names.
+          rd68021_ucode_pkg::U_DST_CPREG: begin
+            if (!cprim_q[3]) begin
+              dreg[cprim_q[2:0]] <= y;
+            end else if (cprim_q[2:0] == 3'd7) begin
+              if (!super_mode)      usp_q <= y;
+              else if (master_mode) msp_q <= y;
+              else                  isp_q <= y;
+            end else begin
+              areg[cprim_q[2:0]] <= y;
+            end
+          end
+          // UM 7.4.9: "the MC68020 sign-extends a byte or word-sized operand
+          // to a long-word value when it is transferred to an address register
+          // ... using this primitive with the register direct effective
+          // addressing mode" -- the register the effective-address field names.
+          rd68021_ucode_pkg::U_DST_AREG_R: begin
+            if (rsel == 3'd7) begin
+              if (!super_mode)      usp_q <= y_areg;
+              else if (master_mode) msp_q <= y_areg;
+              else                  isp_q <= y_areg;
+            end else begin
+              areg[rsel] <= y_areg;
             end
           end
           rd68021_ucode_pkg::U_DST_AREG_EA: begin
@@ -2264,8 +2500,12 @@ module rd68021_seq #(
   // microword would otherwise do once per clock with whatever the pins then
   // said.
   logic irq_enter;
-  assign irq_enter = (upc != rd68021_ucode_pkg::ENTRY_IRQ)
-                  && (upc_nxt == rd68021_ucode_pkg::ENTRY_IRQ);
+  // The coprocessor's midinstruction interrupt is the same acknowledge reached
+  // from inside an instruction -- UM 7.5.2.6 -- and latches the same way.
+  assign irq_enter = ((upc != rd68021_ucode_pkg::ENTRY_IRQ)
+                      && (upc_nxt == rd68021_ucode_pkg::ENTRY_IRQ))
+                  || ((upc != rd68021_ucode_pkg::ENTRY_CP_IRQ)
+                      && (upc_nxt == rd68021_ucode_pkg::ENTRY_CP_IRQ));
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n)          irq_taking_q <= 3'd0;
@@ -2304,6 +2544,7 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_DST_PC_D:   ckpt_sel = rd68021_pkg::CK_PC_D;
       rd68021_ucode_pkg::U_DST_FILL:   ckpt_sel = rd68021_pkg::CK_FILL;
       rd68021_ucode_pkg::U_DST_PIPE_F: ckpt_sel = rd68021_pkg::CK_FLAGS;
+      rd68021_ucode_pkg::U_DST_SCANPC: ckpt_sel = rd68021_pkg::CK_SCAN;
       default: begin
         ckpt_sel     = rd68021_pkg::CK_STG_D;
         ckpt_is_pipe = 1'b0;
@@ -2317,7 +2558,10 @@ module rd68021_seq #(
   // says the pipe is whole -- doc/ssw.md.
   // The pipe is whole when its last field has been written, which is the fill
   // point in both frame formats: the words and the depth all come before it.
-  assign ckpt_load = commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_FILL);
+  // ... and the coprocessor's scanPC, which is the last thing RTE puts back out
+  // of a midinstruction frame and which empties and refills the queue itself.
+  assign ckpt_load = commit && ((`UF(DST) == rd68021_ucode_pkg::U_DST_FILL)
+                                || (`UF(DST) == rd68021_ucode_pkg::U_DST_SCANPC));
   // {D valid, RB, RC}, as rd68021_ifu takes them -- the first out of the
   // internal word at +$08, the others out of the SSW, both read by now because
   // +$0A is where the walk puts the depth. FC and FB are not among them: they are

@@ -38,6 +38,9 @@ package rd68021_frame_pkg;
   localparam int OFF_PC            = 'h02;   // 2 words, program counter
   localparam int OFF_FMTVEC        = 'h06;   // 1 word, format and vector offset
   localparam int OFF_INSTR_ADDR    = 'h08;   // 2 words, instruction address
+  localparam int OFF_SCANPC        = 'h02;   // 2 words, scan program counter
+  localparam int OFF_OPWORD        = 'h0E;   // 1 word, operation word
+  localparam int OFF_EA            = 'h10;   // 2 words, effective address
   localparam int OFF_SSW           = 'h0A;   // 1 word, special status word
   localparam int OFF_STAGE_C       = 'h0C;   // 1 word, instruction pipe stage C
   localparam int OFF_STAGE_B       = 'h0E;   // 1 word, instruction pipe stage B
@@ -64,7 +67,7 @@ package rd68021_frame_pkg;
   // ==========================================================================
   // This design's own state, in the long frame's internal words
   //
-  // 492 bits available, 338 used, 9 words spare. Recompute this whenever
+  // 492 bits available, 354 used, 8 words spare. Recompute this whenever
   // something is added: doc/checkpoint.md carries the same table, printed from
   // the same source.
   // ==========================================================================
@@ -134,6 +137,9 @@ package rd68021_frame_pkg;
   localparam int OFF_I_LINK      = 'h44;   // 16 bits, the return address of the subroutine under way
   localparam int I_LINK_HI       = 15;
   localparam int I_LINK_LO       = 0;
+  localparam int OFF_I_CPRIM     = 'h4A;   // 16 bits, the coprocessor response primitive being served
+  localparam int I_CPRIM_HI      = 15;
+  localparam int I_CPRIM_LO      = 0;
 
 endpackage
 

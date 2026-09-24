@@ -1690,3 +1690,64 @@ done. The frame is format $A only when stage D is full and stage B is at the
 program counter plus four, and format $B otherwise -- doc/divergences.md.
 `core_fault_tb` gains a fault on a JMP target and one behind a two-word
 instruction; both fail on the old RTL.
+
+## M13 · MOVEC accepted a control register the MC68020 does not have
+
+**What:** `MOVEC` with a control register code outside the eight of the MC68020 --
+`$805`, say -- read as zero or wrote nowhere, and the program went on. UM 6.1.5 makes it
+an illegal instruction: "a MOVEC instruction with an undefined register specification
+field in the first extension word".
+
+**Found by:** reading UM table 7-5 for the coprocessor's transfer-main-processor-control-
+register primitive, which uses the same codes and makes any other one a protocol
+violation. Checking the primitive's select code raised the question of what MOVEC does
+with a bad one.
+
+**Why nothing found it sooner:** the vector sweep generates MOVEC only with the codes
+that exist, and no program uses another.
+
+**Fixed by:** a test of stage C's twelve bits on the microword that latches the extension
+word, so it costs no clock; `core_cpif_tb` checks it.
+
+## M13 · A prefetch fault resumed with the working registers of the fault handler
+
+**What:** a prefetch fault taken where the pipe looked like an instruction
+boundary -- a one-word instruction in stage D and the next word missing -- built
+the short frame, format $A. The short frame carries no working registers. But the
+microword that takes such a fault is the instruction's own last one, which RTE
+re-executes, and it may read T0-T3: MOVE holds its source in T0 and writes it to
+the destination on that last microword. So after RTE the instruction wrote
+whatever the page-fault handler had last left in T0.
+
+**Found by:** the installed SunOS 4.1.1 booting multi-user from disk on the core
+inside TME. `/etc/rc` printed `Memory fault` where TME's m68020 printed nothing,
+and `/etc/psdatabase` was never rewritten, so it was `ps -U`. The element's system
+call log gave the last system call `ps` made and the shell's write of the message,
+and the fault log between the two showed an instruction fetch faulting at the
+start of a page of the shared C library and, 17,000 clocks later, a read of
+address $42 from the first instruction on that page. The bus trace showed
+`MOVEA.L D7,A0` as the last word of the previous page.
+
+**Why nothing found it sooner:** every prefetch-fault test ran MOVEQs up to the
+missing page, and MOVEQ writes its register from the opcode's own bits.
+
+**Fixed by:** every fault takes the long frame -- `doc/divergences.md`. The short
+frame's builder is gone.
+
+## M13 · CMPM and MOVES re-ran on stale read data after a fault
+
+**What:** CMPM's last microword compared the bus unit's read data with the other
+operand and advanced the pipe; MOVES's wrote a register from the read data and
+advanced the pipe. Read data is not in the checkpoint set. A prefetch fault on
+that microword re-executes it after RTE, when the read data is the last word RTE
+read out of the frame. A CMPM -- libc's `strcmp` loop -- as the last word of a
+page would compare against a word of the fault frame.
+
+**Found by:** looking for the cause of the `ps -U` fault above. It was not that
+fault, but it is the same shape, and `core_fault_tb`'s CMPM-at-a-page-end test
+failed on both at once.
+
+**Fixed by:** both hold the read data in a working register first, one clock each,
+and `check_rdata_restart` in the assembler refuses any microword that can fault
+and takes a value from RDATA.
+

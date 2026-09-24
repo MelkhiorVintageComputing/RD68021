@@ -104,6 +104,7 @@ module rd68021_top #(
   logic        req_rmc;
   logic  [3:0] req_cpuspace;
   logic  [7:0] req_cpuaddr;
+  logic        req_cpfault;
 
   logic        req_ack;
   logic        req_last;
@@ -206,6 +207,7 @@ module rd68021_top #(
       .req_rmc        (req_rmc),
       .req_cpuspace   (req_cpuspace),
       .req_cpuaddr    (req_cpuaddr),
+      .req_cpfault    (req_cpfault),
       .req_ack        (req_ack),
       .req_last       (req_last),
       .req_rdata      (req_rdata),
@@ -322,6 +324,7 @@ module rd68021_top #(
       .req_rmc        (req_rmc),
       .req_cpuspace   (req_cpuspace),
       .req_cpuaddr    (req_cpuaddr),
+      .req_cpfault    (req_cpfault),
       .req_ack        (req_ack),
       .req_last       (req_last),
       .req_rdata      (req_rdata),

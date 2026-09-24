@@ -87,7 +87,17 @@ assign dbus = d_oe ? d_o : 32'bz;
 `define TB_ICACHE_ENTRIES 64
 `endif
 
-rd68021_top #(.ICACHE_ENTRIES (`TB_ICACHE_ENTRIES)) dut (
+// The coprocessor interface is built only when a testbench asks for it, and a
+// testbench that does gets the scripted coprocessor of sim/models/rd68021_cpmodel.sv
+// at CpID 1 as well.
+`ifdef TB_COPROCESSOR
+localparam bit TB_CP = 1'b1;
+`else
+localparam bit TB_CP = 1'b0;
+`endif
+
+rd68021_top #(.ICACHE_ENTRIES (`TB_ICACHE_ENTRIES),
+              .COPROCESSOR (TB_CP)) dut (
     .clk (clk), .rst_n (rst_n),
     .fc_o (fc_o), .fc_oe (fc_oe),
     .a_o (a_o), .a_oe (a_oe),
@@ -129,7 +139,19 @@ assign dbus = oe32 ? d32 : 32'bz;
 assign dbus = oe16 ? d16 : 32'bz;
 assign dbus = oe8  ? d8  : 32'bz;
 assign dbus = oe_ext ? d_ext : 32'bz;
-assign dsack_n_i = dsack32 & dsack16 & dsack8 & dsack_ext;
+wire  [1:0] dsack_cp;
+`ifdef TB_COPROCESSOR
+wire [31:0] d_cp;
+wire        oe_cp;
+assign dbus = oe_cp ? d_cp : 32'bz;
+rd68021_cpmodel #(.CPID (3'd1)) cp (
+    .clk (clk), .rst_n (rst_n), .a_i (a_o), .fc_i (fc_o), .siz_i (siz_o),
+    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus),
+    .d_o (d_cp), .d_oe (oe_cp), .dsack_n_o (dsack_cp));
+`else
+assign dsack_cp = 2'b11;
+`endif
+assign dsack_n_i = dsack32 & dsack16 & dsack8 & dsack_ext & dsack_cp;
 
 rd68021_slave #(.PORT_BYTES (4), .WAITS (0), .BASE (32'h0000_0000),
                 .MASK (32'hF000_0000), .ABITS (16)) s32 (
