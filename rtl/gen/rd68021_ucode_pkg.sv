@@ -14,7 +14,7 @@
 
 package rd68021_ucode_pkg;
 
-  localparam int UW    = 102;   // microword width
+  localparam int UW    = 103;   // microword width
   localparam int UADDR = 12;   // micro-address width
 
   localparam int U_SEQ_LSB = 0;
@@ -79,6 +79,8 @@ package rd68021_ucode_pkg;
   localparam int U_EADST_W   = 1;
   localparam int U_EAPC_LSB = 101;
   localparam int U_EAPC_W   = 1;
+  localparam int U_EARLY_LSB = 102;
+  localparam int U_EARLY_W   = 1;
 
   localparam logic [2:0] U_SEQ_NEXT = 3'd0;
   localparam logic [2:0] U_SEQ_DECODE = 3'd1;

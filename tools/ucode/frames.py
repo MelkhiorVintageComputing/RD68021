@@ -289,6 +289,9 @@ EXEMPT = [
     ('biu', 'rdata_q',      'the result of the last read, held for the sequencer'),
     ('biu', 'frdata_q',     '... and of the last prefetch'),
     ('biu', 'req_ack',      'the handshake back to the sequencer'),
+    ('biu', 'early_q',      '... and its half-clock early form, for one S5'),
+    ('seq', 'early_q',      'the last microword retired early; lives one clock, '
+                            'and no fault is taken in it from its own bus cycle'),
     ('biu', 'fetch_ack',    '... and to the fetch unit'),
     ('biu', 'req_fault',    'a fault is being reported this clock'),
     ('biu', 'req_fault_wr', '... on a write'),

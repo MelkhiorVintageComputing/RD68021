@@ -758,6 +758,12 @@ FIELDS = OrderedDict([
     # extension-word decoder cannot see it: this bit is prepended to the word it
     # decodes, which is why its patterns are seventeen characters and not sixteen.
     ('eapc',  (1,  None,  0)),
+    # Retire the bus microword on the rising edge that ends S5, when the bus
+    # unit has seen the operand finish cleanly, rather than a clock later on the
+    # registered acknowledge. Only for a microword that does not take the read
+    # data itself: that is latched on the same edge. Set by assemble.py, never
+    # by hand -- mark_early.
+    ('early', (1,  None,  0)),
 ])
 
 

@@ -12,8 +12,8 @@ and a change to it in either direction fails the target until someone looks at
 it and writes the new number down. The table at the end is generated from the
 measurement.
 
-Summary, RESET aside: **20 exact, 64 faster, 41 slower; 1225 clocks where the
-manual's cache case adds up to 1332** -- 8 % fewer over this mix, from 1499
+Summary, RESET aside: **20 exact, 65 faster, 40 slower; 1182 clocks where the
+manual's cache case adds up to 1332** -- 11 % fewer over this mix, from 1499
 (12.5 % more) before the work in "Catching up" below. The mix is one of each instruction,
 not a program; weighted by what compiled code executes, the memory-operand rows
 dominate, and there this design is still slower than the part.
@@ -33,17 +33,20 @@ rather than a thing to be maintained alongside it, and it is why
 `doc/checkpoint.md`'s restart rules are expressible at all.
 
 What it costs is measured in the table, and it has one shape: **an operand
-costs five clocks here and the manual charges three or four.** A bus microword
-is the three-clock bus cycle, one clock for the request to reach the bus unit's
-S0, and one because the acknowledge is registered. The MC68020 overlaps all of
+costs four or five clocks here and the manual charges three or four.** A bus
+microword is the three-clock bus cycle, one clock for the request to reach the
+bus unit's S0, and -- for a read whose data the same microword takes -- one
+because the read data is latched on the edge that ends S5 and the microword can
+only retire after it. Every other bus microword retires on that edge: the early
+retire, below. The MC68020 overlaps all of
 that with the instruction around it (UM 8.1.3, bus/sequencer concurrency) and
 this design does not: the prefetch queue refills on its own, but an OPERAND
-cycle is always waited for. `MOVE.L D0,(A2)` is the cleanest example -- 6 clocks
-against 4: five on the write, and the pipe advance folded into it.
+cycle is always waited for. `MOVE.L D0,(A2)` is the cleanest example -- 5 clocks
+against 4: four on the write, with the pipe advance folded into it.
 
 ### Catching up
 
-Six changes took the mix from 1499 clocks to 1225, and each is a rule the
+Seven changes took the mix from 1499 clocks to 1182, and each is a rule the
 microcode now follows rather than a special case:
 
 - **No wait for stage C at the effective-address dispatch.** The mode decoder
@@ -80,6 +83,18 @@ microcode now follows rather than a special case:
   after a flush the first word goes straight into stage D rather than through
   stage C a clock later. One clock off every taken branch, jump, call and return,
   and off most instructions with extension words -- 60 rows, 1286 to 1225.
+- **The early retire.** The bus unit decides, on the falling edge entering S5
+  where UM Table 5-8's second sample is taken, whether the data operand is
+  finishing cleanly -- no bus error, no retry, nothing left of it -- and a
+  microword the assembler marks `early` retires on the rising edge that ends S5
+  instead of a clock later on the registered acknowledge, which the sequencer
+  then discards. The assembler marks every bus microword that does not take the
+  read data itself (writes, and reads whose data the next microword takes) and
+  is not in interrupt-acknowledge or breakpoint CPU space: 234 of them. A cycle
+  that ends in a bus error or a retry never retires early, so the restart rules
+  are untouched; `core_fault_tb` proves it with a bus error that arrives only at
+  the second sample. One clock off every write: 26 rows, 1225 to 1182 --
+  `MOVEM.L D0-D3,(A2)` 29 to 25, the exception entries 4 each.
 
 ---
 
@@ -87,13 +102,13 @@ microcode now follows rather than a special case:
 
 | What | Measured | Direction | Why |
 |---|---|---|---|
-| **Every memory operand** | exact to +2 on the fast modes; +2 to +4 on the others; `MOVE.L (A0),(A2)` +3 | slower | The shape above. What is left on the fast modes is the two clocks of handshake around each bus cycle, and on the other modes the effective-address call as well. Overlapping operand cycles with microcode needs the bus unit to accept a request before the microword that wants the data -- a queue, and a second outstanding request in `doc/checkpoint.md`'s restart rules. |
-| **MOVEM** | +11 storing four registers; -1 loading two | slower on stores | Two microwords per register -- the transfer and the address step -- and a prologue; the write's five clocks against the part's four are the rest. |
-| **MOVEP** | +13 storing, +8 loading | slower | Four byte transfers, each an operand at five clocks. |
-| **Exceptions** | TRAP +17, ILLEGAL and line A +22 | slower | A four-word frame is four operand writes and a vector read at five clocks each, plus the pipe refill at the handler. |
+| **Every memory operand** | exact to +2 on the fast modes; +2 to +4 on the others; `MOVE.L (A0),(A2)` +2 | slower | The shape above. What is left on the fast modes is the clock that gets a request to S0 and, on a read, the clock after S5 that its data needs; on the other modes the effective-address call as well. Overlapping operand cycles with microcode needs the bus unit to accept a request before the microword that wants the data -- a queue, and a second outstanding request in `doc/checkpoint.md`'s restart rules. |
+| **MOVEM** | +7 storing four registers; -1 loading two | slower on stores | Two microwords per register -- the transfer and the address step -- and a prologue. |
+| **MOVEP** | +9 storing, +8 loading | slower | Four byte transfers, each an operand at five clocks. |
+| **Exceptions** | TRAP +13, ILLEGAL and line A +18 | slower | A four-word frame is four operand writes at four clocks and a vector read at five, plus the pipe refill at the handler. |
 | **RTE** | +10 | slower | Four reads, and the format word is decoded in microcode. |
 | **RTE out of a coprocessor frame** | +36 | slower | Six frame reads, the format word tested against five other formats first, and the response CIR read that resumes the dialogue -- a bus cycle to the coprocessor that the manual's 31 may not include. The only coprocessor count UM 8 gives. |
-| **Control flow** | BRA.S/W exact, BRA.L +2, JSR +5, BSR +5; RTS -2 | slower, RTS faster | A flush abandons the prefetch in flight, and the queue needs a clock to load the holding register from the cache before the first word reaches stage D. JSR and BSR also write the return address, five clocks against the part's overlapped push. |
+| **Control flow** | BRA.S/W exact, BRA.L +2, JSR +4, BSR +4; RTS -2 | slower, RTS faster | A flush abandons the prefetch in flight, and the queue needs a clock to load the holding register from the cache before the first word reaches stage D. JSR and BSR also write the return address, four clocks against the part's overlapped push. |
 | **The shifts and rotates** | 1 clock, every count | **faster** (-3 to -11) | `rd68021_shifter.sv` is a barrel. UM 8 charges ROXL 12. |
 | **The multiply** | MULU.W 4, MULU.L 6 | **faster** (-23, -39) | 32 by 32 combinationally in four DSP blocks. It is not on the critical path (`doc/critical-path.md`). |
 | **The divide** | 44 for .W, 45 for .L | exact for DIVU.W, **faster** otherwise | One quotient bit per clock, restoring, no early termination: DIVU.W matches exactly and the signed and long forms are up to 47 clocks faster. |
@@ -138,15 +153,15 @@ overlap with the prefetch of the next instruction, but it is close.
 | `MOVEQ #1,D4` | 2 | 2 | 1 | -1 | 7 |
 | `ADD.L D0,D4` | 2 | 2 + Dn 0 | 2 |  | 7 |
 | `ADD.L (A0),D4` | 6 | 2 + (An) 4 | 6 |  | 10 |
-| `ADD.L (A0)+,D4` | 6 | 2 + (An)+ 4 | 7 | **+1** | 10 |
-| `ADD.L -(A1),D4` | 7 | 2 + -(An) 5 | 7 |  | 10 |
+| `ADD.L (A0)+,D4` | 6 | 2 + (An)+ 4 | 6 |  | 10 |
+| `ADD.L -(A1),D4` | 7 | 2 + -(An) 5 | 6 | -1 | 10 |
 | `ADD.L (8,A0),D4` | 7 | 2 + (d16,An) 5 | 7 |  | 13 |
 | `ADD.L ($2000).W,D4` | 6 | 2 + (xxx).W 4 | 8 | **+2** | 13 |
 | `ADD.L ($2000).L,D4` | 6 | 2 + (xxx).L 4 | 9 | **+3** | 18 |
 | `ADD.L #imm,D4` | 6 | 2 + #.L 4 | 4 | -2 | 15 |
 | `ADD.L (4,A0,D3.L),D4` | 9 | 2 + (d8,An,Xn) 7 | 13 | **+4** | 18 |
 | `ADD.L ([A0]),D4` | 14 | 2 + ([B],I) 12 | 20 | **+6** | 27 |
-| `ADD.L D4,(A0)` | 8 | 4 + (An) 4 | 12 | **+4** | 13 |
+| `ADD.L D4,(A0)` | 8 | 4 + (An) 4 | 11 | **+3** | 12 |
 | `CMP.L D0,D4` | 2 | 2 | 2 |  | 7 |
 | `CMPA.L A0,A2` | 4 | 4 | 3 | -1 | 7 |
 | `MULU.W D1,D4` | 27 | 27 | 4 | -23 | 7 |
@@ -156,17 +171,17 @@ overlap with the prefetch of the next instruction, but it is close.
 | `DIVU.L D1,D4` | 80 | 78 + #.W,Dn 2 | 44 | -36 | 50 |
 | `DIVS.L D1,D4` | 92 | 90 + #.W,Dn 2 | 44 | -48 | 50 |
 | `ADDQ.L #1,D4` | 2 | 2 | 1 | -1 | 7 |
-| `ADDQ.L #1,(A0)` | 8 | 4 + (An) 4 | 10 | **+2** | 14 |
+| `ADDQ.L #1,(A0)` | 8 | 4 + (An) 4 | 9 | **+1** | 13 |
 | `ADDI.L #imm,D4` | 6 | 2 + #.L,Dn 4 | 4 | -2 | 15 |
-| `ADDI.W #1,(A0)` | 8 | 4 + #.W,(An) 4 | 13 | **+5** | 21 |
+| `ADDI.W #1,(A0)` | 8 | 4 + #.W,(An) 4 | 12 | **+4** | 20 |
 | `ABCD D0,D4` | 4 | 4 | 1 | -3 | 7 |
-| `ABCD -(A1),-(A2)` | 16 | 16 | 19 | **+3** | 20 |
+| `ABCD -(A1),-(A2)` | 16 | 16 | 18 | **+2** | 19 |
 | `ADDX.L D0,D4` | 2 | 2 | 1 | -1 | 7 |
 | `CMPM.L (A0)+,(A1)+` | 9 | 9 | 15 | **+6** | 16 |
 | `PACK D0,D4,#0` | 6 | 6 | 3 | -3 | 9 |
 | `UNPK D0,D4,#0` | 8 | 8 | 3 | -5 | 9 |
 | `CLR.L D4` | 2 | 2 | 2 |  | 7 |
-| `CLR.L (A0)` | 6 | 4 + calc (An) 2 | 5 | -1 | 11 |
+| `CLR.L (A0)` | 6 | 4 + calc (An) 2 | 4 | -2 | 10 |
 | `NEG.L D4` | 2 | 2 | 2 |  | 7 |
 | `EXT.L D4` | 4 | 4 | 1 | -3 | 7 |
 | `NBCD D4` | 6 | 6 | 2 | -4 | 7 |
@@ -181,21 +196,21 @@ overlap with the prefetch of the next instruction, but it is close.
 | `ASR.L #1,D4` | 6 | 6 | 1 | -5 | 7 |
 | `ROL.L #1,D4` | 8 | 8 | 1 | -7 | 7 |
 | `ROXL.L #1,D4` | 12 | 12 | 1 | -11 | 7 |
-| `LSL.W (A0)` | 9 | 5 + (An) 4 | 13 | **+4** | 14 |
+| `LSL.W (A0)` | 9 | 5 + (An) 4 | 11 | **+2** | 12 |
 | `BTST #3,D4` | 4 | 4 | 3 | -1 | 9 |
 | `BTST D1,D4` | 4 | 4 | 2 | -2 | 7 |
 | `BSET D1,D4` | 4 | 4 | 2 | -2 | 7 |
 | `BTST D1,(A0)` | 8 | 4 + (An) 4 | 9 | **+1** | 10 |
-| `BSET D1,(A0)` | 8 | 4 + (An) 4 | 14 | **+6** | 15 |
+| `BSET D1,(A0)` | 8 | 4 + (An) 4 | 13 | **+5** | 14 |
 | `BTST #3,(A0)` | 8 | 4 + #.W,(An) 4 | 11 | **+3** | 18 |
 | `BFTST D4{0:8}` | 6 | 6 | 2 | -4 | 8 |
 | `BFEXTU D4{0:8},D5` | 8 | 8 | 3 | -5 | 9 |
 | `BFINS D5,D4{0:8}` | 10 | 10 | 4 | -6 | 10 |
 | `BFFFO D4{0:8},D5` | 18 | 18 | 3 | -15 | 9 |
 | `BFCHG D4{0:8}` | 12 | 12 | 4 | -8 | 10 |
-| `BFEXTU (A0){0:8},D5` | 15 | 13 + #.W,(An) 2 | 13 | -2 | 19 |
-| `BFINS D5,(A0){0:8}` | 16 | 14 + #.W,(An) 2 | 18 | **+2** | 24 |
-| `BFTST (A0){4:32}` | 17 | 15 (5 bytes) + #.W,(An) 2 | 15 | -2 | 21 |
+| `BFEXTU (A0){0:8},D5` | 15 | 13 + #.W,(An) 2 | 12 | -3 | 18 |
+| `BFINS D5,(A0){0:8}` | 16 | 14 + #.W,(An) 2 | 17 | **+1** | 23 |
+| `BFTST (A0){4:32}` | 17 | 15 (5 bytes) + #.W,(An) 2 | 14 | -3 | 20 |
 | `BRA.S (taken)` | 6 | 6 | 6 |  | 13 |
 | `BRA.W (taken)` | 6 | 6 | 6 |  | 15 |
 | `BRA.L (taken)` | 6 | 6 | 8 | **+2** | 21 |
@@ -213,33 +228,33 @@ overlap with the prefetch of the next instruction, but it is close.
 | `MOVE A0,USP` | 2 | 2 | 2 |  | 7 |
 | `MOVEC CACR,D4` | 6 | 6 | 3 | -3 | 8 |
 | `MOVEC D4,SFC` | 12 | 12 | 3 | -9 | 8 |
-| `MOVEM.L D0-D3,(A2)` | 18 | 4 + 3x4 + #.W,(An) 2 | 29 | **+11** | 36 |
+| `MOVEM.L D0-D3,(A2)` | 18 | 4 + 3x4 + #.W,(An) 2 | 25 | **+7** | 32 |
 | `MOVEM.L (A0),D4-D5` | 18 | 8 + 4x2 + #.W,(An) 2 | 17 | -1 | 24 |
-| `MOVEP.L D4,(0,A2)` | 17 | 17 | 30 | **+13** | 38 |
+| `MOVEP.L D4,(0,A2)` | 17 | 17 | 26 | **+9** | 34 |
 | `MOVEP.L (0,A0),D4` | 18 | 18 | 26 | **+8** | 32 |
 | `MOVES.L (A0),D4` | 9 | 7 + #.W,(An) 2 | 12 | **+3** | 17 |
 | `MOVE.L D0,D4` | 2 | Rn -> Dn | 2 |  | 7 |
 | `MOVEA.L A0,A4` | 2 | Rn -> An | 3 | **+1** | 7 |
 | `MOVE.W #1,D4` | 4 | #.W -> Dn | 2 | -2 | 8 |
 | `MOVE.L #imm,D4` | 6 | #.L -> Dn | 4 | -2 | 15 |
-| `MOVE.L D0,(A2)` | 4 | Rn -> (An) | 6 | **+2** | 11 |
-| `MOVE.L D0,-(A2)` | 5 | Rn -> -(An) | 7 | **+2** | 9 |
+| `MOVE.L D0,(A2)` | 4 | Rn -> (An) | 5 | **+1** | 10 |
+| `MOVE.L D0,-(A2)` | 5 | Rn -> -(An) | 6 | **+1** | 8 |
 | `MOVE.L (A0),D4` | 6 | (An) -> Dn | 6 |  | 10 |
 | `MOVE.L (8,A0),D4` | 7 | (d16,An) -> Dn | 7 |  | 13 |
 | `MOVE.L (4,A0,D3.L),D4` | 9 | (d8,An,Xn) -> Dn | 13 | **+4** | 18 |
-| `MOVE.L (A0),(A2)` | 7 | (An) -> (An) | 10 | **+3** | 14 |
-| `MOVE.L (A0)+,(A2)+` | 7 | (An)+ -> (An)+ | 12 | **+5** | 12 |
+| `MOVE.L (A0),(A2)` | 7 | (An) -> (An) | 9 | **+2** | 13 |
+| `MOVE.L (A0)+,(A2)+` | 7 | (An)+ -> (An)+ | 10 | **+3** | 11 |
 | `ORI #0,CCR` | 12 | 12 | 2 | -10 | 8 |
 | `ANDI #$FFFF,SR` | 12 | 12 | 3 | -9 | 8 |
 | `LEA (A0),A4` | 4 | 2 + calc (An) 2 | 3 | -1 | 7 |
 | `LEA (8,A0),A4` | 4 | 2 + calc (d16,An) 2 | 3 | -1 | 8 |
-| `PEA (A0)` | 7 | 5 + calc (An) 2 | 9 | **+2** | 11 |
-| `LINK.W A4,#-8` | 5 | 5 | 9 | **+4** | 11 |
-| `LINK.L A4,#-8` | 6 | 6 | 11 | **+5** | 18 |
+| `PEA (A0)` | 7 | 5 + calc (An) 2 | 8 | **+1** | 10 |
+| `LINK.W A4,#-8` | 5 | 5 | 8 | **+3** | 10 |
+| `LINK.L A4,#-8` | 6 | 6 | 10 | **+4** | 17 |
 | `UNLK A4` | 6 | 6 | 7 | **+1** | 9 |
 | `JMP (A5)` | 6 | 4 + jump (An) 2 | 6 |  | 13 |
-| `JSR (A3)` | 7 | 5 + jump (An) 2 | 12 | **+5** | 20 |
-| `BSR.S` | 7 | 7 | 12 | **+5** | 15 |
+| `JSR (A3)` | 7 | 5 + jump (An) 2 | 11 | **+4** | 19 |
+| `BSR.S` | 7 | 7 | 11 | **+4** | 14 |
 | `RTS` | 10 | 10 | 8 | -2 | 8 |
 | `RTR` | 14 | 14 | 17 | **+3** | 17 |
 | `RTD #4` | 10 | 10 | 12 | **+2** | 12 |
@@ -250,14 +265,14 @@ overlap with the prefetch of the next instruction, but it is close.
 | `CMP2.L (A0),D4` | 22 | 18 + #.W,(An) 4 | 21 | -1 | 28 |
 | `CAS.L (unsuccessful)` | 14 | 12 + #.W,(An) 2 | 13 | -1 | 20 |
 | `CAS.L (successful)` | 17 | 15 + #.W,(An) 2 | 17 |  | 17 |
-| `CAS2.L (successful)` | 25 | 25 | 38 | **+13** | 43 |
+| `CAS2.L (successful)` | 25 | 25 | 38 | **+13** | 44 |
 | `TRAPV (no trap)` | 4 | 4 | 2 | -2 | 7 |
 | `TRAPF` | 4 | 4 | 2 | -2 | 7 |
 | `TRAPF.W` | 6 | 6 | 3 | -3 | 9 |
 | `TRAPF.L` | 8 | 8 | 4 | -4 | 15 |
-| `TRAP #0` | 20 | 20 | 37 | **+17** | 47 |
-| `ILLEGAL` | 20 | 20 | 42 | **+22** | 42 |
-| `line A` | 20 | 20 | 42 | **+22** | 42 |
+| `TRAP #0` | 20 | 20 | 33 | **+13** | 43 |
+| `ILLEGAL` | 20 | 20 | 38 | **+18** | 38 |
+| `line A` | 20 | 20 | 38 | **+18** | 38 |
 | `RESET` | 518 | 518 | 515 | -3 | 515 |
 <!-- cycles:end -->
 

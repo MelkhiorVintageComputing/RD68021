@@ -119,10 +119,14 @@ module core_fetch_tb;
     // whenever the fetch has not kept up, and after every flush -- stage B's
     // address is the word at PC plus two rather than plus four. The number is
     // printed so that a regression to zero is visible, which is the failure that
-    // would make this test vacuous.
+    // would make this test vacuous. How many are checkable depends on where the
+    // cold fetches fall against the instructions, which moves whenever the
+    // sequencer gets faster: 12 of 24 with the refill of Phase 3, 9 once the
+    // reset vector read retired early (doc/timing-divergences.md). The floor is
+    // there to catch zero, not to pin a schedule.
     $sformat(what, "the pipe invariant was checked at %0d of %0d boundaries",
              pipe_checks, instructions);
-    check(pipe_checks >= 10, what);
+    check(pipe_checks >= 8, what);
     check(pipe_fails == 0, "the pipe was sequential at every boundary");
 
     $display("core_fetch_tb: %0d checks, %0d failures; %0d instructions, %0d pipe checks",

@@ -37,6 +37,7 @@ module rd68021_seq #(
     output logic        req_cpfault,
     input  logic        req_ack,
     input  logic        req_last,
+    input  logic        req_early,
     input  logic [39:0] req_rdata,
     input  logic  [2:0] req_end,
     input  logic        req_fault,
@@ -1712,7 +1713,17 @@ module rd68021_seq #(
                         && (`UF(PF) != rd68021_ucode_pkg::U_PF_ADV)
                         && !pf_dvalid);
 
-  assign stall = (bus_req && !req_ack) || other_stall;
+  // The early retire. A microword the assembler marked `early` retires on the
+  // edge that ends S5, when the bus unit has seen its operand finish cleanly,
+  // instead of a clock later on the registered acknowledge -- which then arrives
+  // in the NEXT microword's first clock and belongs to nothing, so early_q
+  // discards it. A fault never retires early: the operand ends with a bus error
+  // or a retry, req_early stays low, and the ordinary handshake takes it.
+  logic early_hit, early_q, bus_done;
+  assign early_hit = `UF(EARLY) && req_early;
+  assign bus_done  = (req_ack && !early_q) || early_hit;
+
+  assign stall = (bus_req && !bus_done) || other_stall;
 
   assign retire = !stall;
 
@@ -1850,7 +1861,8 @@ module rd68021_seq #(
   // more clock after the operand completes, with req_last back low: without the
   // second term the same read runs twice, which is how the reset vectors came
   // back as the stack pointer twice over.
-  assign req_valid    = bus_req && !other_stall && !req_last && !req_ack;
+  assign req_valid    = bus_req && !other_stall && !req_last
+                     && !(req_ack && !early_q);
   assign req_kind     = (`UF(BUS) == rd68021_ucode_pkg::U_BUS_WRITE)
                         ? rd68021_pkg::CT_WRITE : rd68021_pkg::CT_READ;
   assign req_addr     = req_addr_sel;
@@ -2455,6 +2467,13 @@ module rd68021_seq #(
         endcase
       end
     end
+  end
+
+  // A microword retired early, so the acknowledge the bus unit registers on the
+  // same edge is its, not the next one's.
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) early_q <= 1'b0;
+    else        early_q <= retire && bus_req && early_hit;
   end
 
   // Entered by the decode arm, once the trace and the interrupt have had their

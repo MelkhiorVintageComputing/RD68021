@@ -40,6 +40,9 @@ module rd68021_biu #(
     input  logic        req_cpfault,
     output logic        req_ack,
     output logic        req_last,
+    // The data operand finishes cleanly at the rising edge that ends S5 -- no
+    // bus error, no retry. A falling-edge register, valid for that half clock.
+    output logic        req_early,
     output logic [39:0] req_rdata,
     output logic  [2:0] req_end,
     output logic        req_fault,
@@ -918,6 +921,7 @@ module rd68021_biu #(
   // simply not taken. Here the late sample writes term_err and term_rty, which is
   // the same place the early sample writes them.
   logic berr_s, halt_s, avec_s;
+  logic early_q;
   assign berr_s = ~berr_n_i;
   // AVEC is active low and is sampled on the same edge as DSACK. Only an
   // interrupt acknowledge cycle means anything by it -- UM 6.1.9.
@@ -935,8 +939,16 @@ module rd68021_biu #(
       term_hlt  <= 1'b0;
       d_latched <= '0;
       bg_n_o    <= 1'b1;
+      early_q   <= 1'b0;
     end else begin
       st_n <= st_n_nxt;
+
+      // Decided on the edge entering S5, which is where Table 5-8's second
+      // sample is taken: after it nothing can turn this cycle into a bus error
+      // or a retry, and the residual after it is known. Everything the sequencer
+      // does with it is a half clock -- the early retire, doc/timing-divergences.md.
+      early_q <= (st_n_nxt == rd68021_pkg::ST_S5) && op_active && !op_isfetch
+              && !term_err && !term_rty && !berr_s && (op_rem == xfer_n);
 
       // "The BG signal transitions on the falling edge of the clock after a state
       // is reached during which G changes" -- UM 5.7.1.4.
@@ -1093,6 +1105,7 @@ module rd68021_biu #(
   // Back to the sequencer
   // ==========================================================================
   assign req_rdata   = rdata_q;
+  assign req_early   = early_q;
   assign fetch_rdata = frdata_q;
 
   // How the cycle ended, as the samples of Table 5-8 leave it. This is the live

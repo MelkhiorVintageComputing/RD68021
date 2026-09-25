@@ -57,6 +57,7 @@ module core_cycles_tb;
   // that begins is there one clock later. So a boundary is noted, and whether it
   // began X is read at the next falling edge.
   always @(negedge clk) begin
+    #(SETTLE);
     if (rst_n) begin
       if (pending) begin
         pending = 1'b0;

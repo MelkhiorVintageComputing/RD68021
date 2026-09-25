@@ -106,6 +106,38 @@ module core_fault_tb;
           "write fault: +$46 the instruction before this one");
 
     // ======================================================================
+    // The same write, but the bus error comes late: DSACK first, and BERR only
+    // at the second sample, entering S5 -- UM Table 5-8 case 4. The write is a
+    // microword that may retire early, on the edge that ends S5, and it must
+    // not: the instruction after it must not have run, and the frame must be
+    // the same as for an ordinary bus error.
+    // ======================================================================
+    base_setup();
+    berr_late = 1'b1;
+    poke_w(CODE + 0, 16'h207C);            // MOVEA.L #GONE,A0
+    poke_l(CODE + 2, GONE);
+    poke_w(CODE + 6, 16'h7255);            // MOVEQ #$55,D1
+    poke_w(CODE + 8, 16'h2080);            // MOVE.L D0,(A0)  -- faults late
+    poke_w(CODE + 10, 16'h7677);           // MOVEQ #$77,D3   -- must not run
+    poke_w(CODE + 12, 16'h60FE);
+    poke_w(HAND + 0, 16'h7433);            // MOVEQ #$33,D2
+    poke_w(HAND + 2, 16'h60FE);
+    reset_dut();
+    dut.u_seq.dreg[0] = 32'h1234_5678;
+    dut.u_seq.dreg[3] = 32'h0;
+    run_until(HAND + 2, 3000, reached);
+    check(reached, "late write fault: the bus error handler runs");
+    check(dut.u_seq.dreg[3] === 32'h0, "late write fault: the instruction after it did not run");
+    base = ISP0 - 32'h5C;
+    check(dut.u_seq.isp_q === base, "late write fault: a 46-word frame");
+    check(peek_l(base + 32'h02) === CODE + 8,
+          "late write fault: +$02 the instruction that was executing");
+    check((peek_w(base + 32'h0A) & 16'h0FFF) === 12'h105,
+          "late write fault: +$0A the special status word");
+    check(peek_l(base + 32'h10) === GONE, "late write fault: +$10 the fault address");
+    berr_late = 1'b0;
+
+    // ======================================================================
     // A read fault. Same frame, but the data input buffer is the field that
     // matters and RW says so.
     // ======================================================================

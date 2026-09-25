@@ -863,6 +863,28 @@ def reads_rdata(f):
             or f.get('asrc') == 'IRQVEC' or bfmem)
 
 
+# The early retire (isa.py `early`): a bus microword retires on the edge that
+# ends S5, half a clock after the bus unit has seen the operand finish with no
+# bus error and no retry. The read data is latched on that same edge, so a
+# microword that takes it cannot retire then; one that does not -- a write, or a
+# read whose data the NEXT microword takes -- can. CPU space other than the
+# coprocessor's is left alone: an interrupt acknowledge or a breakpoint cycle is
+# read by its end code, and the microcode wants the ordinary handshake there.
+def mark_early():
+    n = 0
+    for f, _c in program.WORDS:
+        if (f.get('bus') in ('READ', 'WRITE')
+                and f.get('cpuspace', 'NONE') in ('NONE', 'COPROC')
+                and not any(f.get(k) for k in ('rmc', 'rstop', 'rsto', 'stop'))
+                and not reads_rdata(f)):
+            f['early'] = 1
+            n += 1
+    return n
+
+
+EARLY = None
+
+
 def uses_pipe(f):
     return (f.get('pf') in ('ADV', 'CONSUME')
             or f.get('asrc') in ('STG_C', 'STG_C_HI', 'PC_C', 'EABASE')
@@ -993,6 +1015,9 @@ def main():
                     help='fail if the checked-in files are stale')
     args = ap.parse_args()
 
+    global EARLY
+    EARLY = mark_early()
+
     bad = (frames.check() + isa.check() + check_cond_dst() + check_live_cond() + check_shift_src()
            + check_ea_live() + check_ea_set() + check_rdata_restart() + check_read_no_pipe()
            + check_areg_size() + check_restore_order())
@@ -1047,10 +1072,10 @@ def main():
     else:
         have, use, spare = frames.budget()
         _lay, uww = isa.layout()
-        print('  ucode: %d files; %d microwords of %d bits, %d opcode patterns, '
-              '%d of %d checkpoint bits used, %d words spare'
-              % (len(OUTPUTS), len(program.WORDS), uww, len(program.PATTERNS),
-                 use, have, len(spare)))
+        print('  ucode: %d files; %d microwords of %d bits (%d retire early), '
+              '%d opcode patterns, %d of %d checkpoint bits used, %d words spare'
+              % (len(OUTPUTS), len(program.WORDS), uww, EARLY,
+                 len(program.PATTERNS), use, have, len(spare)))
     return 0
 
 

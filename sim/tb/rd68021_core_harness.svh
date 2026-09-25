@@ -60,22 +60,32 @@ end
 // cycle can use, because there is no such address: the first attempt parked it
 // at $FFFF_FFFF, which is exactly where a level 7 interrupt acknowledge goes --
 // UM figure 5-31 puts the level on A3-A1 with every bit above them set.
+//
+//   `berr_late`   the region answers with DSACK and THEN a bus error, after the
+//                 bus unit's first sample -- UM Table 5-8 case 4, which only the
+//                 second sample, entering S5, sees. That is the one fault an
+//                 early retire has to see coming.
 logic        berr_n_i;
 logic        berr_force;
 logic        berr_en;
+logic        berr_late;
 logic [31:0] berr_base;
 logic [31:0] berr_mask;
 initial begin
   berr_force = 1'b0;
   berr_en    = 1'b0;
+  berr_late  = 1'b0;
   berr_base  = 32'd0;
   berr_mask  = 32'hFFFF_FFFF;
 end
 
-wire berr_hit = berr_en && rst_n && !as_n_o && as_oe
-             && ((a_o & berr_mask) == (berr_base & berr_mask));
+wire berr_region = berr_en && rst_n && as_oe
+                && ((a_o & berr_mask) == (berr_base & berr_mask));
+wire berr_hit    = berr_region && !berr_late && !as_n_o;
+wire berr_late_hit = berr_region && berr_late
+                  && (dut.u_biu.st_n == rd68021_pkg::ST_S3);
 
-assign berr_n_i = ~(berr_force | berr_hit);
+assign berr_n_i = ~(berr_force | berr_hit | berr_late_hit);
 
 wire [31:0] dbus;
 assign dbus = d_oe ? d_o : 32'bz;
@@ -257,6 +267,13 @@ wire seq_is_decode =
      == rd68021_ucode_pkg::U_SEQ_DECODE);
 wire boundary = dut.u_seq.retire && seq_is_decode;
 
+// When to look at it. A microword normally retires on a clock decided at the
+// rising edge, but one the assembler marks `early` retires on the bus unit's
+// word that the operand finished cleanly, which is a falling-edge register --
+// so `retire` can rise at the falling edge itself. Sampling just after it sees
+// both kinds, and both hold until the rising edge.
+localparam real SETTLE = CLK_PERIOD / 8.0;
+
 int unsigned instructions;
 int unsigned pipe_checks;
 int unsigned pipe_fails;
@@ -270,6 +287,7 @@ initial begin
 end
 
 always @(negedge clk) begin
+  #(SETTLE);
   if (rst_n) begin
     if (boundary) instructions = instructions + 1;
     // One clock after a boundary, stage D holds the new opcode.
@@ -301,6 +319,7 @@ task automatic step_one(input int limit, output bit ok);
   n  = 0;
   while (!ok && n < limit) begin
     @(negedge clk);
+    #(SETTLE);
     if (boundary) ok = 1'b1;
     n = n + 1;
   end
