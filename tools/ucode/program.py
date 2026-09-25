@@ -417,8 +417,106 @@ for _m, _r, _w in [
 # point is the part that has to be read against PRM section 8 by a person.
 # ==========================================================================
 
+# ==========================================================================
+# The fast effective-address paths
+#
+# (An), (An)+, -(An) and (d16,An) are most of the memory operands compiled code
+# names, and the general path spends an EAMODE dispatch and a routine on each
+# before the bus cycle can start. For the common instruction families the opcode
+# decoder picks the mode instead -- a pattern per mode -- and the bus microword
+# addresses through the register itself: asel = AREG, or AREG_PRE for -(An),
+# which is the register less the operand size.
+#
+# A read steps (An)+ and -(An) on its own microword, as its `dst`: the step is
+# committed only if the read completes, so a faulted read leaves the register
+# as it was and RTE re-runs the microword whole. A write cannot, because its
+# data is the ALU output, so the step is a microword after it.
+#
+# None of these touches the EA buffer, so an instruction whose tail reads EA
+# cannot have them. assemble.py's check_ea_set holds every opcode entry to that.
+#
+# `eadst` is MOVE's destination: the register in bits 11:9, which the
+# microword's own eadst bit selects -- rd68021_seq's rsel.
+# ==========================================================================
+FAST_MODES = (('ai', '010'), ('pi', '011'), ('pd', '100'), ('di', '101'))
+
+
+def fast_read(mode, eadst=0, **sz):
+    """Read the operand the mode names. It is in RDATA for the next microword,
+    which must not use the pipe -- check_rdata_restart."""
+    if mode == 'ai':
+        u('read through the address register',
+          bus='READ', fc='DATA', asel='AREG', eadst=eadst, **sz)
+    elif mode == 'pi':
+        u('read through the address register, and step it on by the operand '
+          'size -- committed only if the read completes. The register takes an '
+          'ADDRESS, so it is written whole',
+          bus='READ', fc='DATA', asel='AREG', asrc='AREG', bsrc='OPSIZE',
+          alu='ADD', dst='AREG_EA_ADDR', eadst=eadst, **sz)
+    elif mode == 'pd':
+        u('read through the address register less the operand size, which is '
+          'what it becomes if the read completes',
+          bus='READ', fc='DATA', asel='AREG_PRE', asrc='AREG', bsrc='OPSIZE',
+          alu='SUB', dst='AREG_EA_ADDR', eadst=eadst, **sz)
+    else:
+        u('the address register plus the word that follows',
+          asrc='AREG', bsrc='STG_C_S', alu='ADD', dst='EA', pf='CONSUME',
+          eadst=eadst, **sz)
+        u('read what it names',
+          bus='READ', fc='DATA', asel='EA', eadst=eadst, **sz)
+
+
+def fast_write(mode, src, eadst=0, ccr='NONE', stepped=False, **sz):
+    """Write `src` where the mode names, and end the instruction.
+
+    `stepped` says a fast_read has already stepped (An)+ or -(An): the write
+    goes back where the read was, and the register is left alone."""
+    last = dict(pf='ADV', seq='DECODE')
+    if mode == 'di':
+        if not stepped:
+            u('the address register plus the word that follows',
+              asrc='AREG', bsrc='STG_C_S', alu='ADD', dst='EA', pf='CONSUME',
+              eadst=eadst, **sz)
+        u('the write',
+          bus='WRITE', fc='DATA', asel='EA', asrc=src, alu='A', ccr=ccr,
+          eadst=eadst, **last, **sz)
+        return
+    if stepped:
+        u('the write, back where the read was',
+          bus='WRITE', fc='DATA', asel=('AREG_PRE' if mode == 'pi' else 'AREG'),
+          asrc=src, alu='A', ccr=ccr, eadst=eadst, **last, **sz)
+        return
+    asel = 'AREG_PRE' if mode == 'pd' else 'AREG'
+    if mode == 'ai':
+        u('the write, through the address register',
+          bus='WRITE', fc='DATA', asel=asel, asrc=src, alu='A', ccr=ccr,
+          eadst=eadst, **last, **sz)
+        return
+    u('the write, through the address register' +
+      (' less the operand size' if mode == 'pd' else ''),
+      bus='WRITE', fc='DATA', asel=asel, asrc=src, alu='A', ccr=ccr,
+      eadst=eadst, **sz)
+    u('... and the register stepped, now that the write has completed. It '
+      'takes an ADDRESS, so it is written whole',
+      asrc='AREG', bsrc='OPSIZE', alu=('ADD' if mode == 'pi' else 'SUB'),
+      dst='AREG_EA_ADDR', eadst=eadst, **last, **sz)
+
+
+def fast_rmw(stem, op, szsel, write=True):
+    """A read-modify-write <ea> through each fast mode: `op` emits the
+    microword that takes RDATA into T1 (and the codes), with no pipe use."""
+    for mode, _bits in FAST_MODES:
+        label(stem + '_' + mode)
+        fast_read(mode, szsel=szsel)
+        op()
+        if write:
+            fast_write(mode, 'T1', stepped=True, szsel=szsel)
+        else:
+            u('nothing is written back', pf='ADV', seq='DECODE')
+
+
 def src_prologues(stem, szsel, an_ok=True, imm_ok=True, size='LONG',
-                  prelude=None, before_ea=None, after_ea=None):
+                  prelude=None, before_ea=None, after_ea=None, fast=False):
     """Leave the <ea> source operand in T0, then fall into `stem`_go.
 
     `size` matters only when szsel is FIXED -- the instructions whose operand
@@ -466,6 +564,15 @@ def src_prologues(stem, szsel, an_ok=True, imm_ok=True, size='LONG',
           asrc='T0', bsrc='STG_C_U', alu='OR', dst='T0', pf='CONSUME')
         goto(stem + '_go')
 
+    if fast:
+        assert prelude is None and before_ea is None and after_ea is None
+        for mode, _bits in FAST_MODES:
+            label(stem + '_' + mode)
+            fast_read(mode, szsel=szsel, size=size)
+            u('... into the working register',
+              asrc='RDATA', alu='A', dst='T0', szsel=szsel, size=size)
+            goto(stem + '_go')
+
     label(stem + '_mem')
     pre()
     if before_ea is not None:
@@ -481,13 +588,22 @@ def src_prologues(stem, szsel, an_ok=True, imm_ok=True, size='LONG',
     label(stem + '_go')
 
 
-def src_patterns(pats, stem, mnem, an_ok=True, imm=None, mem=True):
+def fast_patterns(pats, stem, mnem):
+    """The fast-path modes' patterns, which must come before the <ea> one."""
+    for mode, bits in FAST_MODES:
+        opcode(pats.replace('##', bits + '---'), stem + '_' + mode,
+               '%s (%s)' % (mnem, mode))
+
+
+def src_patterns(pats, stem, mnem, an_ok=True, imm=None, mem=True, fast=False):
     """The opcode patterns that reach one set of prologues.
 
     `pats` is a template with `##` where the six mode and register bits go.
     `imm` is None, 'W' or 'L': how many words an immediate source occupies at
     this instruction's size, which the pattern has already fixed.
     """
+    if fast:
+        fast_patterns(pats, stem, mnem + ' <ea>')
     opcode(pats.replace('##', '000---'), stem + '_dn', mnem + ' Dn')
     if an_ok:
         opcode(pats.replace('##', '001---'), stem + '_an', mnem + ' An')
@@ -514,7 +630,7 @@ def src_patterns(pats, stem, mnem, an_ok=True, imm=None, mem=True):
 # fields through the eadst mux.
 # ==========================================================================
 def move_family(stem, tail):
-    src_prologues(stem, 'MOVE')
+    src_prologues(stem, 'MOVE', fast=True)
     tail()
 
 
@@ -547,6 +663,12 @@ def _move_to_mem():
 move_family('move_dn',  _move_to_dn)
 move_family('move_an',  _move_to_an)
 move_family('move_mem', _move_to_mem)
+# ... and the fast destinations, where the write itself sets the codes: a write
+# that faults commits nothing, codes included, and RTE runs it again whole.
+for _mode, _bits in FAST_MODES:
+    move_family('move_' + _mode,
+                lambda m=_mode: fast_write(m, 'T0', eadst=1, ccr='LOGIC',
+                                           szsel='MOVE'))
 
 # The patterns. `ss` is 01 byte, 11 word, 10 long, and a byte operation may not
 # name an address register at either end -- PRM 4.
@@ -555,14 +677,22 @@ for _ss, _szname, _immwords, _an in (('01', 'B', 'W', False),
                                      ('10', 'L', 'L', True)):
     # A data register destination.
     src_patterns('00' + _ss + '---000##', 'move_dn',
-                 'MOVE.%s <ea>,Dn <-' % _szname, an_ok=_an, imm=_immwords)
+                 'MOVE.%s <ea>,Dn <-' % _szname, an_ok=_an, imm=_immwords,
+                 fast=True)
     # An address register destination is MOVEA, and only at word and long.
     if _an:
         src_patterns('00' + _ss + '---001##', 'move_an',
-                     'MOVEA.%s <ea>,An <-' % _szname, an_ok=True, imm=_immwords)
-    # Everything else. This pattern is written last so that the two above win.
+                     'MOVEA.%s <ea>,An <-' % _szname, an_ok=True, imm=_immwords,
+                     fast=True)
+    # The fast destinations.
+    for _mode, _bits in FAST_MODES:
+        src_patterns('00' + _ss + '---' + _bits + '##', 'move_' + _mode,
+                     'MOVE.%s <ea>,(%s) <-' % (_szname, _mode), an_ok=_an,
+                     imm=_immwords, fast=True)
+    # Everything else. This pattern is written last so that the ones above win.
     src_patterns('00' + _ss + '------##', 'move_mem',
-                 'MOVE.%s <ea>,<ea> <-' % _szname, an_ok=_an, imm=_immwords)
+                 'MOVE.%s <ea>,<ea> <-' % _szname, an_ok=_an, imm=_immwords,
+                 fast=True)
 
 
 # ==========================================================================
@@ -597,6 +727,15 @@ def unary(stem, body, ccr, reads=True, writes=True):
     else:
         u('nothing is written back', pf='ADV', seq='DECODE')
 
+
+# TST and CLR, the two compiled code names memory with most, have the fast
+# paths too. CLR reads nothing, so its write sets the codes itself.
+fast_rmw('tst', lambda: u('the operand itself, for its condition codes alone',
+                          asrc='RDATA', alu='A', ccr='LOGIC', szsel='IR76'),
+         'IR76', write=False)
+for _mode, _bits in FAST_MODES:
+    label('clr_' + _mode)
+    fast_write(_mode, 'ZERO', ccr='LOGIC', szsel='IR76')
 
 unary('clr',  lambda src: u('zero, without reading what was there',
                             asrc='ZERO', alu='A', dst='T1', ccr='LOGIC',
@@ -651,6 +790,8 @@ for _op, _stem, _mnem in (('0100001000', 'clr',  'CLR'),
         _pat = _op[:8] + _sz + '##'
         opcode(_pat.replace('##', '000---'), _stem + '_dn',
                '%s.%s Dn' % (_mnem, _n))
+        if _stem in ('tst', 'clr'):
+            fast_patterns(_pat, _stem, '%s.%s <ea>' % (_mnem, _n))
         opcode(_pat.replace('##', '------'), _stem + '_mem',
                '%s.%s <ea>' % (_mnem, _n))
 
@@ -815,7 +956,7 @@ opcode('1100---110001---', 'exg_da',  'EXG Dx,Ay')
 
 def ea_to_dn(stem, alu, ccr, szsel='IR86', an_ok=True, rev=False, write=True):
     """op <ea>,Dn."""
-    src_prologues(stem, szsel, an_ok=an_ok)
+    src_prologues(stem, szsel, an_ok=an_ok, fast=True)
     if rev:
         # PRM 4 defines SUB and CMP as destination minus source, and the adder
         # is not commutative.
@@ -835,7 +976,7 @@ def ea_to_an(stem, alu, rev, write):
     on all of them whatever the size in the opcode. ADDA and SUBA touch no
     condition code at all; CMPA sets them from a long-word comparison.
     """
-    src_prologues(stem, 'IR8')
+    src_prologues(stem, 'IR8', fast=True)
     u('sign extend the source to the whole register',
       asrc='T0', alu='SX', dst='T0', szsel='IR8')
     if rev:
@@ -914,6 +1055,7 @@ def alu_patterns(line, stem, mnem, an_ok=True):
     opcode(line + '---000111100', stem + '_immw', mnem + '.B #imm,Dn')
     opcode(line + '---001111100', stem + '_immw', mnem + '.W #imm,Dn')
     opcode(line + '---010111100', stem + '_imml', mnem + '.L #imm,Dn')
+    fast_patterns(line + '---0--##', stem, mnem + ' <ea>,Dn')
     opcode(line + '---0--------', stem + '_mem',  mnem + ' <ea>,Dn')
 
 
@@ -977,6 +1119,8 @@ for _line, _stem in (('1101', 'adda'), ('1001', 'suba'), ('1011', 'cmpa')):
                '%s.%s An,An' % (_M, _n))
         opcode(_line + '---' + _opm + '111100', _stem + _imm,
                '%s.%s #imm,An' % (_M, _n))
+        fast_patterns(_line + '---' + _opm + '##', _stem,
+                      '%s.%s <ea>,An' % (_M, _n))
         opcode(_line + '---' + _opm + '------', _stem + '_mem',
                '%s.%s <ea>,An' % (_M, _n))
 
@@ -1045,7 +1189,7 @@ for _line, _stem in (('1101', 'add_to'), ('1001', 'sub_to'),
 # work on all thirty-two bits whatever the size -- PRM 4.
 # ==========================================================================
 
-def imm_to_ea(stem, alu, ccr, rev=False, write=True):
+def imm_to_ea(stem, alu, ccr, rev=False, write=True, fast=False):
     for _w, _long in (('immw', False), ('imml', True)):
         for _dest in ('dn', 'mem'):
             label('%s_%s_%s' % (stem, _w, _dest))
@@ -1059,6 +1203,27 @@ def imm_to_ea(stem, alu, ccr, rev=False, write=True):
                   'bottom of',
                   asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
             goto('%s_%s' % (stem, _dest))
+
+    if fast:
+        for _w, _long in (('immw', False), ('imml', True)):
+            for mode, _bits in FAST_MODES:
+                label('%s_%s_%s' % (stem, _w, mode))
+                if _long:
+                    u('the high half of the immediate',
+                      asrc='STG_C_HI', alu='A', dst='T0', pf='CONSUME')
+                    u('... and the low',
+                      asrc='T0', bsrc='STG_C_U', alu='OR', dst='T0',
+                      pf='CONSUME')
+                else:
+                    u('one word of immediate',
+                      asrc='STG_C', alu='A', dst='T0', size='WORD',
+                      pf='CONSUME')
+                goto('%s_%s' % (stem, mode))
+        fast_rmw(stem, lambda: u('... and the operation',
+                                 asrc=('RDATA' if rev else 'T0'),
+                                 bsrc=('T0' if rev else 'RDATA'),
+                                 alu=alu, dst='T1', ccr=ccr, szsel='IR76'),
+                 'IR76', write=write)
 
     label(stem + '_dn')
     u('the operation, on the register the mode names',
@@ -1089,7 +1254,7 @@ for _bits, _stem, _alu, _ccr, _rev, _wr in (
         ('0110', 'addi', 'ADD', 'ADD',   False, True),
         ('1010', 'eori', 'EOR', 'LOGIC', False, True),
         ('1100', 'cmpi', 'SUB', 'CMP',   True,  False)):
-    imm_to_ea(_stem, _alu, _ccr, rev=_rev, write=_wr)
+    imm_to_ea(_stem, _alu, _ccr, rev=_rev, write=_wr, fast=(_stem == 'cmpi'))
     _M = _stem.upper()
     # ANDI, ORI and EORI to CCR are byte operations in the immediate slot of
     # their own line, so they have to be claimed before the line is -- PRM 8.
@@ -1107,6 +1272,11 @@ for _bits, _stem, _alu, _ccr, _rev, _wr in (
                         ('10', 'L', 'imml')):
         opcode('0000' + _bits + _sz + '000---', '%s_%s_dn' % (_stem, _w),
                '%s.%s #imm,Dn' % (_M, _n))
+        if _stem == 'cmpi':
+            for _mode, _mb in FAST_MODES:
+                opcode('0000' + _bits + _sz + _mb + '---',
+                       '%s_%s_%s' % (_stem, _w, _mode),
+                       '%s.%s #imm,(%s)' % (_M, _n, _mode))
         opcode('0000' + _bits + _sz + '------', '%s_%s_mem' % (_stem, _w),
                '%s.%s #imm,<ea>' % (_M, _n))
 
@@ -1139,6 +1309,10 @@ def quick(stem, alu, ccr):
 
 quick('addq', 'ADD', 'ADD')
 quick('subq', 'SUB', 'SUB')
+for _stem, _alu in (('addq', 'ADD'), ('subq', 'SUB')):
+    fast_rmw(_stem, lambda a=_alu: u('the operation',
+                                     asrc='RDATA', bsrc='IMMQ', alu=a, dst='T1',
+                                     ccr=a, szsel='IR76'), 'IR76')
 
 # Size 11 of this line is Scc and DBcc, so the three sizes are written out
 # rather than wildcarded.
@@ -1148,6 +1322,8 @@ for _d, _stem in (('0', 'addq'), ('1', 'subq')):
                '%s.%s #q,An' % (_stem.upper(), _n))
         opcode('0101---' + _d + _sz + '000---', _stem + '_dn',
                '%s.%s #q,Dn' % (_stem.upper(), _n))
+        fast_patterns('0101---' + _d + _sz + '##', _stem,
+                      '%s.%s #q,<ea>' % (_stem.upper(), _n))
         opcode('0101---' + _d + _sz + '------', _stem + '_mem',
                '%s.%s #q,<ea>' % (_stem.upper(), _n))
 
@@ -4538,6 +4714,74 @@ def _merge_reads():
 
 
 MERGED_READS = _merge_reads()
+
+
+# Identical microwords that end a path -- DECODE, RET, or an explicit `next` --
+# behave identically wherever they sit, so all but the first are removed and
+# their predecessors jump to it instead. A word is kept if the one before it
+# reaches it by falling through in a way that cannot be redirected: a COND's
+# not-taken arm, or the return from a call. The fast effective-address paths
+# spend about a hundred words on copies of the same few tails, and this is what
+# keeps the micro-ROM within 2048 words.
+def _terminal(f):
+    return (f.get('seq') in ('DECODE', 'RET')
+            or ('next' in f and f.get('seq', 'NEXT') == 'NEXT'
+                and not f.get('call')))
+
+
+def _merge_tails():
+    def key(f):
+        return tuple(sorted((k, repr(v)) for k, v in f.items()))
+
+    first = {}
+    drop = {}                        # removed index -> the index it becomes
+    redirect = set()                 # predecessors that now need a `next`
+    for i, (f, _c) in enumerate(WORDS):
+        if not _terminal(f):
+            continue
+        k = key(f)
+        if k not in first:
+            first[k] = i
+            continue
+        if i > 0:
+            p = WORDS[i - 1][0]
+            # a call -- EAMODE's included -- returns to the word after it
+            falls = bool(p.get('call')) or (
+                not _terminal(p) and p.get('seq', 'NEXT') not in (
+                    'EADEC', 'EAMODE', 'CPDEC', 'RESUME'))
+            if falls:
+                if (p.get('seq', 'NEXT') != 'NEXT' or 'next' in p
+                        or p.get('call') or (i - 1) in drop):
+                    continue
+                redirect.add(i - 1)
+        drop[i] = first[k]
+    if not drop:
+        return 0
+    keep = [i for i in range(len(WORDS)) if i not in drop]
+    where = {old: new for new, old in enumerate(keep)}
+    for old, tgt in drop.items():
+        where[old] = where[tgt]
+
+    def fix(n):
+        if isinstance(n, int):
+            return where[n]
+        return n
+    out = []
+    for i in keep:
+        f, c = WORDS[i]
+        f = dict(f)
+        if i in redirect:
+            f['next'] = where[i + 1] if (i + 1) not in drop else where[drop[i + 1]]
+        elif 'next' in f:
+            f['next'] = fix(f['next'])
+        out.append((f, c))
+    for name in list(LABELS):
+        LABELS[name] = where[LABELS[name]]
+    WORDS[:] = out
+    return len(drop)
+
+
+MERGED_TAILS = _merge_tails()
 
 
 # ==========================================================================

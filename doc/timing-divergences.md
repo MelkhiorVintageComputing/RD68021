@@ -12,9 +12,9 @@ and a change to it in either direction fails the target until someone looks at
 it and writes the new number down. The table at the end is generated from the
 measurement.
 
-Summary, RESET aside: **17 exact, 55 faster, 53 slower; 1316 clocks where the
-manual's cache case adds up to 1332** -- 1 % fewer over this mix, from 1499 (12.5 %
-more) before the work in "Catching up" below. The mix is one of each instruction,
+Summary, RESET aside: **22 exact, 55 faster, 48 slower; 1286 clocks where the
+manual's cache case adds up to 1332** -- 3.5 % fewer over this mix, from 1499
+(12.5 % more) before the work in "Catching up" below. The mix is one of each instruction,
 not a program; weighted by what compiled code executes, the memory-operand rows
 dominate, and there this design is still slower than the part.
 
@@ -38,13 +38,12 @@ is the three-clock bus cycle, one clock for the request to reach the bus unit's
 S0, and one because the acknowledge is registered. The MC68020 overlaps all of
 that with the instruction around it (UM 8.1.3, bus/sequencer concurrency) and
 this design does not: the prefetch queue refills on its own, but an OPERAND
-cycle is always waited for. `ADD.L (A0),D4` is the cleanest example -- 8 clocks
-against 6: the effective-address dispatch, the `(An)` routine, five on the read,
-and the add.
+cycle is always waited for. `MOVE.L D0,(A2)` is the cleanest example -- 6 clocks
+against 4: five on the write, and the pipe advance folded into it.
 
 ### Catching up
 
-Four changes took the mix from 1499 clocks to 1316, and each is a rule the
+Five changes took the mix from 1499 clocks to 1286, and each is a rule the
 microcode now follows rather than a special case:
 
 - **No wait for stage C at the effective-address dispatch.** The mode decoder
@@ -63,6 +62,16 @@ microcode now follows rather than a special case:
 - **The call and return path.** LINK, JSR and BSR push through the stack pointer
   instead of a working register, one clock each; RTS reads its return address and
   jumps in one microword, 12 to 9, a clock faster than the part.
+- **Fast effective-address paths.** For `(An)`, `(An)+`, `-(An)` and
+  `(d16,An)` in MOVE (both ends), the `<ea>,Dn` and `<ea>,An` ALU forms, TST,
+  CLR, ADDQ, SUBQ and CMPI, the opcode decoder picks the mode and the bus
+  microword addresses through the register itself -- no EAMODE dispatch, no
+  address routine. A read steps `(An)+`/`-(An)` as its own commit-gated
+  destination. `ADD.L (A0),D4` 8 to 6 and `MOVE.L (A0),D4` 8 to 6, the manual's
+  counts; `MOVE.L (A0),(A2)` 15 to 10. `check_ea_set` in the assembler proves no
+  path reaches a microword that reads the EA buffer before something has set it,
+  and a tail-merging pass shares the identical last microwords the new paths
+  repeat, which keeps the micro-ROM at 1906 words, under 2048.
 
 ---
 
@@ -70,7 +79,7 @@ microcode now follows rather than a special case:
 
 | What | Measured | Direction | Why |
 |---|---|---|---|
-| **Every memory operand** | +2 to +4 per instruction; `MOVE.L (A0),(A2)` +8 | slower | The shape above. What is left is the effective-address call and the two clocks of handshake around each bus cycle. Overlapping operand cycles with microcode needs the bus unit to accept a request before the microword that wants the data -- a queue, and a second outstanding request in `doc/checkpoint.md`'s restart rules. |
+| **Every memory operand** | exact to +2 on the fast modes; +2 to +4 on the others; `MOVE.L (A0),(A2)` +3 | slower | The shape above. What is left on the fast modes is the two clocks of handshake around each bus cycle, and on the other modes the effective-address call as well. Overlapping operand cycles with microcode needs the bus unit to accept a request before the microword that wants the data -- a queue, and a second outstanding request in `doc/checkpoint.md`'s restart rules. |
 | **MOVEM** | +12 storing four registers; exact loading two | slower on stores | Two microwords per register -- the transfer and the address step -- and a prologue; the write's five clocks against the part's four are the rest. |
 | **MOVEP** | +13 and +14 | slower | Four byte transfers, each an operand at five clocks. |
 | **Exceptions** | TRAP +18, ILLEGAL and line A +23 | slower | A four-word frame is four operand writes and a vector read at five clocks each, plus the pipe refill at the handler. |
@@ -120,9 +129,9 @@ overlap with the prefetch of the next instruction, but it is close.
 | `NOP` | 2 | 2 | 2 |  | 7 |
 | `MOVEQ #1,D4` | 2 | 2 | 2 |  | 7 |
 | `ADD.L D0,D4` | 2 | 2 + Dn 0 | 2 |  | 7 |
-| `ADD.L (A0),D4` | 6 | 2 + (An) 4 | 8 | **+2** | 9 |
-| `ADD.L (A0)+,D4` | 6 | 2 + (An)+ 4 | 9 | **+3** | 9 |
-| `ADD.L -(A1),D4` | 7 | 2 + -(An) 5 | 9 | **+2** | 9 |
+| `ADD.L (A0),D4` | 6 | 2 + (An) 4 | 6 |  | 10 |
+| `ADD.L (A0)+,D4` | 6 | 2 + (An)+ 4 | 7 | **+1** | 10 |
+| `ADD.L -(A1),D4` | 7 | 2 + -(An) 5 | 7 |  | 10 |
 | `ADD.L (8,A0),D4` | 7 | 2 + (d16,An) 5 | 8 | **+1** | 13 |
 | `ADD.L ($2000).W,D4` | 6 | 2 + (xxx).W 4 | 8 | **+2** | 13 |
 | `ADD.L ($2000).L,D4` | 6 | 2 + (xxx).L 4 | 9 | **+3** | 18 |
@@ -139,7 +148,7 @@ overlap with the prefetch of the next instruction, but it is close.
 | `DIVU.L D1,D4` | 80 | 78 + #.W,Dn 2 | 45 | -35 | 50 |
 | `DIVS.L D1,D4` | 92 | 90 + #.W,Dn 2 | 45 | -47 | 50 |
 | `ADDQ.L #1,D4` | 2 | 2 | 2 |  | 7 |
-| `ADDQ.L #1,(A0)` | 8 | 4 + (An) 4 | 12 | **+4** | 13 |
+| `ADDQ.L #1,(A0)` | 8 | 4 + (An) 4 | 10 | **+2** | 14 |
 | `ADDI.L #imm,D4` | 6 | 2 + #.L,Dn 4 | 5 | -1 | 15 |
 | `ADDI.W #1,(A0)` | 8 | 4 + #.W,(An) 4 | 14 | **+6** | 21 |
 | `ABCD D0,D4` | 4 | 4 | 2 | -2 | 7 |
@@ -149,7 +158,7 @@ overlap with the prefetch of the next instruction, but it is close.
 | `PACK D0,D4,#0` | 6 | 6 | 4 | -2 | 9 |
 | `UNPK D0,D4,#0` | 8 | 8 | 4 | -4 | 9 |
 | `CLR.L D4` | 2 | 2 | 2 |  | 7 |
-| `CLR.L (A0)` | 6 | 4 + calc (An) 2 | 8 | **+2** | 11 |
+| `CLR.L (A0)` | 6 | 4 + calc (An) 2 | 6 |  | 11 |
 | `NEG.L D4` | 2 | 2 | 2 |  | 7 |
 | `EXT.L D4` | 4 | 4 | 2 | -2 | 7 |
 | `NBCD D4` | 6 | 6 | 2 | -4 | 7 |
@@ -157,7 +166,7 @@ overlap with the prefetch of the next instruction, but it is close.
 | `TAS D4` | 4 | 4 | 2 | -2 | 7 |
 | `TAS (A0)` | 14 | 12 + calc (An) 2 | 13 | -1 | 14 |
 | `TST.L D4` | 2 | 2 + Dn 0 | 2 |  | 7 |
-| `TST.L (A0)` | 6 | 2 + (An) 4 | 8 | **+2** | 9 |
+| `TST.L (A0)` | 6 | 2 + (An) 4 | 6 |  | 10 |
 | `LSL.L #1,D4` | 4 | 4 | 2 | -2 | 7 |
 | `LSL.L D1,D4` | 6 | 6 | 2 | -4 | 7 |
 | `ASL.L #1,D4` | 8 | 8 | 2 | -6 | 7 |
@@ -205,13 +214,13 @@ overlap with the prefetch of the next instruction, but it is close.
 | `MOVEA.L A0,A4` | 2 | Rn -> An | 3 | **+1** | 7 |
 | `MOVE.W #1,D4` | 4 | #.W -> Dn | 3 | -1 | 8 |
 | `MOVE.L #imm,D4` | 6 | #.L -> Dn | 5 | -1 | 15 |
-| `MOVE.L D0,(A2)` | 4 | Rn -> (An) | 9 | **+5** | 11 |
-| `MOVE.L D0,-(A2)` | 5 | Rn -> -(An) | 10 | **+5** | 11 |
-| `MOVE.L (A0),D4` | 6 | (An) -> Dn | 8 | **+2** | 9 |
+| `MOVE.L D0,(A2)` | 4 | Rn -> (An) | 6 | **+2** | 11 |
+| `MOVE.L D0,-(A2)` | 5 | Rn -> -(An) | 7 | **+2** | 9 |
+| `MOVE.L (A0),D4` | 6 | (An) -> Dn | 6 |  | 10 |
 | `MOVE.L (8,A0),D4` | 7 | (d16,An) -> Dn | 8 | **+1** | 13 |
 | `MOVE.L (4,A0,D3.L),D4` | 9 | (d8,An,Xn) -> Dn | 13 | **+4** | 18 |
-| `MOVE.L (A0),(A2)` | 7 | (An) -> (An) | 15 | **+8** | 16 |
-| `MOVE.L (A0)+,(A2)+` | 7 | (An)+ -> (An)+ | 17 | **+10** | 17 |
+| `MOVE.L (A0),(A2)` | 7 | (An) -> (An) | 10 | **+3** | 14 |
+| `MOVE.L (A0)+,(A2)+` | 7 | (An)+ -> (An)+ | 12 | **+5** | 12 |
 | `ORI #0,CCR` | 12 | 12 | 3 | -9 | 8 |
 | `ANDI #$FFFF,SR` | 12 | 12 | 3 | -9 | 8 |
 | `LEA (A0),A4` | 4 | 2 + calc (An) 2 | 3 | -1 | 7 |
@@ -233,7 +242,7 @@ overlap with the prefetch of the next instruction, but it is close.
 | `CMP2.L (A0),D4` | 22 | 18 + #.W,(An) 4 | 22 |  | 28 |
 | `CAS.L (unsuccessful)` | 14 | 12 + #.W,(An) 2 | 14 |  | 20 |
 | `CAS.L (successful)` | 17 | 15 + #.W,(An) 2 | 17 |  | 17 |
-| `CAS2.L (successful)` | 25 | 25 | 38 | **+13** | 39 |
+| `CAS2.L (successful)` | 25 | 25 | 38 | **+13** | 43 |
 | `TRAPV (no trap)` | 4 | 4 | 2 | -2 | 7 |
 | `TRAPF` | 4 | 4 | 2 | -2 | 7 |
 | `TRAPF.W` | 6 | 6 | 4 | -2 | 9 |

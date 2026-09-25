@@ -900,6 +900,47 @@ def check_read_no_pipe():
             if f.get('bus') == 'READ' and uses_pipe(f)]
 
 
+# The fast effective-address paths (program.py, FAST_MODES) address through the
+# register and leave the EA buffer as the last instruction left it. So from
+# every opcode entry, no microword may read EA -- as an operand or as the bus
+# address -- before something on the same path has written it or called the
+# mode decoder, which writes it.
+def check_ea_set():
+    W = program.WORDS
+    bad = []
+
+    def reads_ea(f):
+        return 'EA' in (f.get('asrc'), f.get('bsrc'), f.get('asel'))
+
+    for pat, tgt, mnem in program.PATTERNS:
+        stack, seen = [program.entry(tgt)], set()
+        while stack:
+            j = stack.pop()
+            if j in seen or j >= len(W):
+                continue
+            seen.add(j)
+            f, c = W[j]
+            if reads_ea(f):
+                bad.append('%s (%s) reaches microword %d, which reads EA before '
+                           'anything has set it -- %s' % (mnem, pat, j, c))
+                break
+            if f.get('dst') == 'EA' or f.get('seq') == 'EAMODE':
+                continue
+            seq = f.get('seq', 'NEXT')
+            if seq in ('DECODE', 'RESUME', 'RET', 'EADEC', 'CPDEC'):
+                continue
+            nxt = f.get('next')
+            tgt_j = program.entry(nxt) if isinstance(nxt, str) else \
+                (nxt if nxt is not None else j + 1)
+            if seq == 'COND':
+                stack += [j + 1, tgt_j]
+            elif f.get('call'):
+                stack += [tgt_j, j + 1]
+            else:
+                stack.append(tgt_j)
+    return bad
+
+
 def check_ea_live():
     W = program.WORDS
     bad = []
@@ -953,7 +994,7 @@ def main():
     args = ap.parse_args()
 
     bad = (frames.check() + isa.check() + check_cond_dst() + check_live_cond() + check_shift_src()
-           + check_ea_live() + check_rdata_restart() + check_read_no_pipe()
+           + check_ea_live() + check_ea_set() + check_rdata_restart() + check_read_no_pipe()
            + check_areg_size() + check_restore_order())
     if bad:
         print('FAIL: the tables are not self-consistent')

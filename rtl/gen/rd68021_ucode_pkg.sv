@@ -176,6 +176,8 @@ package rd68021_ucode_pkg;
   localparam logic [3:0] U_ASEL_EA = 4'd7;
   localparam logic [3:0] U_ASEL_EA_SAVE = 4'd8;
   localparam logic [3:0] U_ASEL_PC_D = 4'd9;
+  localparam logic [3:0] U_ASEL_AREG = 4'd10;
+  localparam logic [3:0] U_ASEL_AREG_PRE = 4'd11;
 
   localparam logic [2:0] U_FC_PROG = 3'd0;
   localparam logic [2:0] U_FC_DATA = 3'd1;
@@ -451,11 +453,11 @@ package rd68021_ucode_pkg;
   // Named entry points.
   localparam logic [UADDR-1:0] ENTRY_RESET = 12'd0;
   localparam logic [UADDR-1:0] ENTRY_ILLEGAL = 12'd4;
-  localparam logic [UADDR-1:0] ENTRY_TRACE = 12'd1269;
-  localparam logic [UADDR-1:0] ENTRY_IRQ = 12'd1272;
-  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 12'd1300;
-  localparam logic [UADDR-1:0] ENTRY_LINE_F = 12'd1105;
-  localparam logic [UADDR-1:0] ENTRY_CP_IRQ = 12'd1795;
+  localparam logic [UADDR-1:0] ENTRY_TRACE = 12'd1341;
+  localparam logic [UADDR-1:0] ENTRY_IRQ = 12'd1344;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 12'd1372;
+  localparam logic [UADDR-1:0] ENTRY_LINE_F = 12'd1184;
+  localparam logic [UADDR-1:0] ENTRY_CP_IRQ = 12'd1841;
 
 endpackage
 

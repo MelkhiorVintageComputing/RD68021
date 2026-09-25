@@ -728,6 +728,51 @@ module core_insn_tb;
     check(dut.u_seq.areg[2] === 32'h0000_0022, "RTM type $01: the caller ran on");
     acc_status = 8'h01;
 
+    // ======================================================================
+    // The fast effective-address paths -- doc/timing-divergences.md. Each of
+    // (An), (An)+, -(An) and (d16,An) as a MOVE source and destination and
+    // under the read-modify-write forms, and A7 stepping by two at byte size.
+    // ======================================================================
+    setup();
+    poke_l(DATA + 0, 32'h1111_1111);
+    poke_l(DATA + 4, 32'h2222_2222);
+    poke_l(DATA + 16, 32'h0);
+    poke_l(DATA + 20, 32'hFFFF_FFFF);
+    poke_w(CODE + 0, 16'h207C);            // MOVEA.L #DATA,A0
+    poke_l(CODE + 2, DATA);
+    poke_w(CODE + 6, 16'h227C);            // MOVEA.L #DATA+16,A1
+    poke_l(CODE + 8, DATA + 16);
+    poke_w(CODE + 12, 16'h22D8);           // MOVE.L (A0)+,(A1)+
+    poke_w(CODE + 14, 16'h22D8);           // MOVE.L (A0)+,(A1)+
+    poke_w(CODE + 16, 16'h1F3C);           // MOVE.B #$5A,-(A7)
+    poke_w(CODE + 18, 16'h005A);
+    poke_w(CODE + 20, 16'h161F);           // MOVE.B (A7)+,D3
+    poke_w(CODE + 22, 16'h42A1);           // CLR.L -(A1)
+    poke_w(CODE + 24, 16'h5699);           // ADDQ.L #3,(A1)+
+    poke_w(CODE + 26, 16'h4AA1);           // TST.L -(A1)
+    poke_w(CODE + 28, 16'h3129);           // MOVE.W (2,A1),-(A0)
+    poke_w(CODE + 30, 16'h0002);
+    poke_w(CODE + 32, 16'h0C69);           // CMPI.W #3,(2,A1)
+    poke_w(CODE + 34, 16'h0003);
+    poke_w(CODE + 36, 16'h0002);
+    poke_w(CODE + 38, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 38, 2000, reached);
+    check(reached, "fast EA: the program finishes");
+    check(peek_l(DATA + 16) === 32'h1111_1111, "fast EA: MOVE.L (A0)+,(A1)+, first");
+    check(peek_l(DATA + 20) === 32'h0000_0003,
+          "fast EA: the second, cleared by CLR -(A1) and ADDQ #3 into (A1)+");
+    got = peek_w(ISP0 - 2);
+    check(got[15:8] === 8'h5A,
+          "fast EA: MOVE.B to -(A7) wrote the byte at the even address");
+    check(dut.u_seq.dreg[3][7:0] === 8'h5A, "fast EA: and (A7)+ read it back");
+    check(dut.u_seq.isp_q === ISP0, "fast EA: A7 stepped by two each way");
+    check(dut.u_seq.areg[1] === DATA + 20, "fast EA: A1 after (A1)+ and -(A1)");
+    check(dut.u_seq.areg[0] === DATA + 6, "fast EA: A0 after two (A0)+ and -(A0)");
+    check(peek_l(DATA + 4) === 32'h2222_0003,
+          "fast EA: MOVE.W (d16,A1),-(A0) moved the word");
+    check(dut.u_seq.sr_q[2] === 1'b1, "fast EA: CMPI.W #3,(d16,A1) found it equal");
+
     if (pipe_fails != 0)
       $display("  FAIL: the pipe invariant broke %0d times", pipe_fails);
     $display("core_insn_tb: %0d checks, %0d failed", checks, fails);

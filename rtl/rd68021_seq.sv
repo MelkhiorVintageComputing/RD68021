@@ -303,8 +303,12 @@ module rd68021_seq #(
   // bits 11:9, so it follows the same mux the decoder does -- otherwise (An)+
   // as a MOVE destination would step whichever register bits 2:0 happened to
   // name, which is the source's.
+  //
+  // A fast effective-address path (tools/ucode/program.py, Phase 2 of
+  // doc/timing-divergences.md) addresses MOVE's destination without an EAMODE
+  // dispatch to latch eadst_q, so its own microword's EADST bit steers too.
   logic [2:0] rsel, wsel;
-  assign rsel = eadst_q ? stg_d[11:9] : stg_d[2:0];
+  assign rsel = (eadst_q || `UF(EADST)) ? stg_d[11:9] : stg_d[2:0];
   assign wsel = stg_d[11:9];
 
   // The index register an extension word names, sized and scaled -- PRM 2.5 and
@@ -1781,6 +1785,12 @@ module rd68021_seq #(
   // ==========================================================================
   // The bus request
   // ==========================================================================
+  // The fast paths' addresses: the register the effective address names, and
+  // that register stepped back by the operand size for -(An), which is what the
+  // same microword writes back into it.
+  logic [31:0] areg_ea;
+  assign areg_ea = (rsel == 3'd7) ? sp_read : areg[rsel];
+
   logic [31:0] req_addr_sel;
   always_comb begin
     unique case (`UF(ASEL))
@@ -1797,6 +1807,8 @@ module rd68021_seq #(
       // it is frame field +$38 and RTE puts it back.
       rd68021_ucode_pkg::U_ASEL_EA_SAVE: req_addr_sel = ea_save;
       rd68021_ucode_pkg::U_ASEL_PC_D: req_addr_sel = pc_d;
+      rd68021_ucode_pkg::U_ASEL_AREG: req_addr_sel = areg_ea;
+      rd68021_ucode_pkg::U_ASEL_AREG_PRE: req_addr_sel = areg_ea - opsize_bytes;
       default:                        req_addr_sel = 32'd0;
     endcase
   end

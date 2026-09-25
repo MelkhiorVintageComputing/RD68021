@@ -449,6 +449,49 @@ module core_fault_tb;
     check(dut.u_seq.usp_q === GONE + 32'h14, "RTS from a missing page: the stack stepped once");
 
     // ======================================================================
+    // The fast effective-address paths step (An)+ and -(An) on the bus
+    // microword itself, for a read, and on the one after it, for a write. A
+    // fault must leave the register as it was either way, and RTE's rerun must
+    // step it exactly once.
+    // ======================================================================
+    base_setup();
+    poke_w(CODE + 0,  16'h207C);           // MOVEA.L #GONE,A0
+    poke_l(CODE + 2,  GONE);
+    poke_w(CODE + 6,  16'h5698);           // ADDQ.L #3,(A0)+ -- the read faults
+    poke_w(CODE + 8,  16'h60FE);
+    poke_w(HAND + 0,  16'h4E73);           // RTE
+    poke_l(GONE, 32'h0000_0005);
+    reset_dut();
+    run_until(HAND + 0, 3000, reached);
+    check(reached, "fast (An)+ read fault: the bus error is taken");
+    check(dut.u_seq.areg[0] === GONE, "fast (An)+ read fault: A0 has not moved");
+    berr_en = 1'b0;
+    run_until(CODE + 8, 3000, reached);
+    check(reached, "fast (An)+ read fault: RTE reruns it");
+    check(peek_l(GONE) === 32'h0000_0008, "fast (An)+ read fault: added once, back where it was read");
+    check(dut.u_seq.areg[0] === GONE + 4, "fast (An)+ read fault: A0 stepped once");
+
+    base_setup();
+    poke_w(CODE + 0,  16'h227C);           // MOVEA.L #GONE+8,A1
+    poke_l(CODE + 2,  GONE + 8);
+    poke_w(CODE + 6,  16'h2300);           // MOVE.L D0,-(A1) -- the write faults
+    poke_w(CODE + 8,  16'h60FE);
+    poke_w(HAND + 0,  16'h4E73);           // RTE
+    poke_l(GONE + 4, 32'h0);
+    reset_dut();
+    dut.u_seq.dreg[0] = 32'hCAFE_F00D;
+    run_until(HAND + 0, 3000, reached);
+    check(reached, "fast -(An) write fault: the bus error is taken");
+    check(dut.u_seq.areg[1] === GONE + 8, "fast -(An) write fault: A1 has not moved");
+    check(peek_l(ISP0 - 32'h5C + 32'h10) === GONE + 4,
+          "fast -(An) write fault: +$10 the address it wrote to");
+    berr_en = 1'b0;
+    run_until(CODE + 8, 3000, reached);
+    check(reached, "fast -(An) write fault: RTE reruns it");
+    check(peek_l(GONE + 4) === 32'hCAFE_F00D, "fast -(An) write fault: the long word written");
+    check(dut.u_seq.areg[1] === GONE + 4, "fast -(An) write fault: A1 stepped once");
+
+    // ======================================================================
     // An address error -- UM 6.1.3, "an address error exception occurs when
     // the processor attempts to prefetch an instruction from an odd address
     // ... a bus cycle is not executed". Vector 3, and UM 6.2.1: the fault bits

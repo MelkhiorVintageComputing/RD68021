@@ -213,6 +213,11 @@ ASEL = enc(
                  # fault is taken MID-INSTRUCTION, and the address buffer the
                  # instruction was using is frame field +$38.
     'PC_D',
+    # The fast effective-address paths: the register the EA field names -- bits
+    # 11:9 when the microword's own eadst bit is set -- and that register less
+    # the operand size, for -(An). No EAMODE dispatch and no EA buffer.
+    'AREG',
+    'AREG_PRE',
 )
 
 # Which address space. UM Table 2-1.
