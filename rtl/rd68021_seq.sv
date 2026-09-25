@@ -655,17 +655,27 @@ module rd68021_seq #(
   end
 
   // ==========================================================================
-  // MOVEM's register counter
+  // MOVEM's register list
   //
-  // Sixteen registers walked once, with the mask shifted a place each time.
-  // REGN names them in the order D0..D7, A0..A7; REGNR the other way, because
-  // PRM 4 reverses the mask for the predecrement form -- "bit 0 selects A7".
+  // The register a transfer moves is the lowest set bit of what is left of the
+  // list in T0, and the transfer clears it (cnt = CLRLOW) -- so the loop visits
+  // the registers in the list and no others. REGN names them in the order
+  // D0..D7, A0..A7; REGNR the other way, because PRM 4 reverses the mask for
+  // the predecrement form -- "bit 0 selects A7".
+  //
+  // A priority encoder in the DATAPATH -- the register-file select -- and not
+  // in the micro-address path: the loop branches on EMPTY and NOTEMPTY, a
+  // sixteen-bit zero test on a register.
   // ==========================================================================
-  logic  [4:0] cnt_q;
   logic  [3:0] regn, regnr;
 
-  assign regn  = cnt_q[3:0];
-  assign regnr = 4'd15 - cnt_q[3:0];
+  always_comb begin
+    regn = 4'd0;
+    for (int i = 15; i >= 0; i--) begin
+      if (t_q[0][i]) regn = 4'(i);
+    end
+  end
+  assign regnr = 4'd15 - regn;
 
   // Written out twice rather than as a function called from two continuous
   // assignments. doc/coding-standard.md's rule: a function that reads module
@@ -1417,7 +1427,6 @@ module rd68021_seq #(
     int08[rd68021_frame_pkg::I_EAPC_LO       +: 1] = eapc_q;
     int08[rd68021_frame_pkg::I_OPSIZE_LO     +: 2] = size_q;
     int08[rd68021_frame_pkg::I_EADST_LO      +: 1] = eadst_q;
-    int08[rd68021_frame_pkg::I_REGCNT_LO     +: 5] = cnt_q;
     int08[rd68021_frame_pkg::I_DVALID_LO     +: 1] = pf_dvalid;
   end
 
@@ -1538,8 +1547,8 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_COND_CC:    cond_true = cc_true;
       rd68021_ucode_pkg::U_COND_NCC:   cond_true = ~cc_true;
       rd68021_ucode_pkg::U_COND_RESM1: cond_true = (y[15:0] == 16'hFFFF);
-      rd68021_ucode_pkg::U_COND_MASK0: cond_true = t_q[0][0];
-      rd68021_ucode_pkg::U_COND_CNT16: cond_true = (cnt_q == 5'd16);
+      rd68021_ucode_pkg::U_COND_EMPTY:    cond_true = (t_q[0][15:0] == 16'd0);
+      rd68021_ucode_pkg::U_COND_NOTEMPTY: cond_true = (t_q[0][15:0] != 16'd0);
       // Bit 10 of the extension word: the long forms' 64-bit selector.
       rd68021_ucode_pkg::U_COND_XW10:  cond_true = xw_q[10];
       // RTE's format word. Its only source is read data, which is what
@@ -1671,8 +1680,12 @@ module rd68021_seq #(
                 || (`UF(ASRC) == rd68021_ucode_pkg::U_ASRC_EABASE)
                 || (`UF(BSRC) == rd68021_ucode_pkg::U_BSRC_STG_C_U)
                 || (`UF(BSRC) == rd68021_ucode_pkg::U_BSRC_STG_C_S)
-                || (`UF(SEQ)  == rd68021_ucode_pkg::U_SEQ_EADEC)
-                || (`UF(SEQ)  == rd68021_ucode_pkg::U_SEQ_EAMODE);
+                || (`UF(SEQ)  == rd68021_ucode_pkg::U_SEQ_EADEC);
+  // Not EAMODE: the addressing-mode decoder reads stage D alone, and every
+  // effective-address routine that takes a word from stage C asks for it on its
+  // own microword -- and takes its prefetch fault there. Waiting at the dispatch
+  // cost a clock on every memory operand whenever the last pipe advance had left
+  // the queue empty. doc/timing-divergences.md.
 
   // Everything a microword waits for EXCEPT the bus. The distinction matters:
   // the bus request may not be presented while any of these holds, because the
@@ -1987,7 +2000,6 @@ module rd68021_seq #(
       link_q <= '0;
       eapc_q  <= 1'b0;
       eadst_q <= 1'b0;
-      cnt_q   <= 5'd0;
       trace_mode_q <= 2'b00;
       flow_q       <= 1'b0;
       notrace_q    <= 1'b0;
@@ -2019,11 +2031,10 @@ module rd68021_seq #(
         // comes back to.
         if (`UF(CALL)) link_q <= upc + 1'b1;
 
-        unique case (`UF(CNT))
-          rd68021_ucode_pkg::U_CNT_ZERO: cnt_q <= 5'd0;
-          rd68021_ucode_pkg::U_CNT_INC:  cnt_q <= cnt_q + 5'd1;
-          default: ;
-        endcase
+        // MOVEM's list: the register just named leaves it. The assembler
+        // refuses CLRLOW on a microword that also writes T0 -- check_cond_dst.
+        if (`UF(CNT) == rd68021_ucode_pkg::U_CNT_CLRLOW)
+          t_q[0] <= t_q[0] & (t_q[0] - 32'd1);
 
         // The dispatch into an extension-word routine is the one place the base
         // is still known.
@@ -2100,7 +2111,6 @@ module rd68021_seq #(
             eapc_q       <= y[rd68021_frame_pkg::I_EAPC_LO];
             size_q       <= y[rd68021_frame_pkg::I_OPSIZE_LO +: 2];
             eadst_q      <= y[rd68021_frame_pkg::I_EADST_LO];
-            cnt_q        <= y[rd68021_frame_pkg::I_REGCNT_LO +: 5];
             // The residual byte count, which UM table 5-2's SIZE field in the
             // special status word cannot hold when it is five -- doc/ssw.md.
             rst_bytes_q  <= y[rd68021_frame_pkg::I_BYTES_LO +: 3];

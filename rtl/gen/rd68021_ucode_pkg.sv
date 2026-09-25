@@ -93,8 +93,8 @@ package rd68021_ucode_pkg;
   localparam logic [6:0] U_COND_CC = 7'd1;
   localparam logic [6:0] U_COND_NCC = 7'd2;
   localparam logic [6:0] U_COND_RESM1 = 7'd3;
-  localparam logic [6:0] U_COND_MASK0 = 7'd4;
-  localparam logic [6:0] U_COND_CNT16 = 7'd5;
+  localparam logic [6:0] U_COND_EMPTY = 7'd4;
+  localparam logic [6:0] U_COND_NOTEMPTY = 7'd5;
   localparam logic [6:0] U_COND_MDOVF = 7'd6;
   localparam logic [6:0] U_COND_XW10 = 7'd7;
   localparam logic [6:0] U_COND_XW11 = 7'd8;
@@ -428,8 +428,7 @@ package rd68021_ucode_pkg;
   localparam logic [1:0] U_SHOP_MEM = 2'd2;
 
   localparam logic [1:0] U_CNT_NONE = 2'd0;
-  localparam logic [1:0] U_CNT_ZERO = 2'd1;
-  localparam logic [1:0] U_CNT_INC = 2'd2;
+  localparam logic [1:0] U_CNT_CLRLOW = 2'd1;
 
   localparam logic [1:0] U_MDOP_NONE = 2'd0;
   localparam logic [1:0] U_MDOP_MUL = 2'd1;
@@ -451,12 +450,12 @@ package rd68021_ucode_pkg;
 
   // Named entry points.
   localparam logic [UADDR-1:0] ENTRY_RESET = 12'd0;
-  localparam logic [UADDR-1:0] ENTRY_ILLEGAL = 12'd5;
-  localparam logic [UADDR-1:0] ENTRY_TRACE = 12'd1427;
-  localparam logic [UADDR-1:0] ENTRY_IRQ = 12'd1430;
-  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 12'd1458;
-  localparam logic [UADDR-1:0] ENTRY_LINE_F = 12'd1227;
-  localparam logic [UADDR-1:0] ENTRY_CP_IRQ = 12'd1969;
+  localparam logic [UADDR-1:0] ENTRY_ILLEGAL = 12'd4;
+  localparam logic [UADDR-1:0] ENTRY_TRACE = 12'd1269;
+  localparam logic [UADDR-1:0] ENTRY_IRQ = 12'd1272;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 12'd1300;
+  localparam logic [UADDR-1:0] ENTRY_LINE_F = 12'd1105;
+  localparam logic [UADDR-1:0] ENTRY_CP_IRQ = 12'd1795;
 
 endpackage
 

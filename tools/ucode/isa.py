@@ -91,11 +91,12 @@ COND = enc(
     'NCC',       # ... negated, for the instructions that branch the other way
     'RESM1',     # the ALU result is $FFFF at sixteen bits: DBcc's counter,
                  # which PRM 4 stops on when the decrement reaches -1
-    # MOVEM's two. The mask bit is a single bit of a register whose only source
-    # is the extension-word latch, which is exactly what doc/checkpoint.md's
-    # rule on bus-steering conditions admits.
-    'MASK0',     # bit 0 of T0: this register is in MOVEM's list
-    'CNT16',     # the counter has been round all sixteen
+    # MOVEM's two, on what is left of its register list in T0 -- REGN and
+    # REGNR are a priority encoder on the same bits, and cnt = CLRLOW takes the
+    # lowest one away. Both polarities, because COND falls through when the
+    # condition does not hold.
+    'EMPTY',     # T0[15:0] is zero: no register left in the list
+    'NOTEMPTY',  # ... and at least one is
     'MDOVF',     # the multiply or divide overflowed
     'XW10',      # bit 10 of the extension word: the long forms' 64-bit selector
     'XW11',      # bit 11 of it: CHK2 rather than CMP2 -- PRM 4
@@ -650,8 +651,10 @@ CPUSPACE = enc('NONE', 'IACK', 'BKPT', 'COPROC',
 # of the format word at +$06.
 FRAME = enc('F0', 'F1', 'F2', 'F9', 'FA', 'FB')
 
-# MOVEM's register counter: sixteen registers, walked once.
-CNT = enc('NONE', 'ZERO', 'INC')
+# MOVEM's register list: CLRLOW clears the lowest set bit of T0, which is the
+# register REGN and REGNR have just named -- a side effect of the microword, so
+# that the transfer and the step to the next register are one microword.
+CNT = enc('NONE', 'CLRLOW')
 
 # How the shifter is driven.
 SHOP = enc(
@@ -706,7 +709,7 @@ FIELDS = OrderedDict([
     # Where a bit instruction's bit number comes from: the word after the
     # opcode when it is static, a data register when it is dynamic.
     ('bitimm', (1, None,  0)),
-    # MOVEM's register counter.
+    # MOVEM's register list.
     ('cnt',   (2,  CNT,   'NONE')),
     ('mdop',  (2,  MDOP,  'NONE')),
     # Where the signedness and the register numbers come from. The word forms

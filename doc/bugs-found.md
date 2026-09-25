@@ -1751,3 +1751,40 @@ failed on both at once.
 and `check_rdata_restart` in the assembler refuses any microword that can fault
 and takes a value from RDATA.
 
+## Post-M13 · The memory bit fields re-ran their result on stale read data after a fault
+
+**What:** BFEXTU, BFEXTS, BFFFO and BFTST on memory computed their result, or
+their condition codes, from the bit-field unit's window, and the window is the read
+data. They did it on the microword that also advanced the pipe. BFCHG, BFCLR, BFSET
+and BFINS wrote their merged bytes back on a microword that advanced the pipe too.
+A prefetch fault on that microword -- a bit-field instruction as the last one on a
+page -- re-executes it after RTE, when the read data is the last word RTE read, so
+the register got a field of the fault frame and the write-back put the frame's bytes
+into memory. The same shape as CMPM (M13).
+
+**Found by:** `check_rdata_restart`, reworked for the read-merging work to count the
+units that read the read data implicitly -- the bit-field window in the result
+sources, the condition codes and the write-back data -- rather than only RDATA by
+name.
+
+**Why nothing found it sooner:** no test ran a bit field at the end of a page, and
+SunOS's boot does not happen to put one there.
+
+**Fixed by:** the pipe advance of the memory forms is a microword of its own, one
+clock each. `core_fault_tb` runs a BFEXTU as the last instruction before a missing
+page and checks the field.
+
+## Post-M13 · A short read kept the upper bytes of the microword's own ALU result
+
+**What:** the bus unit starts every operand's data register from the request's write
+data, and gathers read bytes into its low end. A read of one, two or three bytes left
+the upper bytes as they started -- the ALU output of the microword that asked. A
+plain read microword computes nothing, so that was zero, always, and nothing
+noticed.
+
+**Found by:** RTM, once reads began to take their own data: the merged microword that
+reads the argument count also adds it to the frame base, so its ALU output was that
+sum, and the count came back as $D0000004.
+
+**Fixed by:** a read's data register starts at zero in `rd68021_biu.sv`.
+

@@ -85,7 +85,9 @@ FORBIDDEN = [
      "`initial` block -- ASIC has no power-on state"),
     (re.compile(r'^\s*always_latch\b'),
      "`always_latch` -- a latch has no reset"),
-    (re.compile(r'^\s*(?:logic|reg|bit)\s*(?:\[[^]]*\]\s*)*[A-Za-z_]\w*\s*='),
+    # \b after the keyword: without it `regn = ...` inside a process reads as
+    # `reg n = ...`, a declaration with an initialiser.
+    (re.compile(r'^\s*(?:logic|reg|bit)\b\s*(?:\[[^]]*\]\s*)*[A-Za-z_]\w*\s*='),
      "declaration-site initialiser -- give it a value in the reset branch instead"),
 ]
 

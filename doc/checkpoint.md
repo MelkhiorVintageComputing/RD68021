@@ -150,7 +150,6 @@ This is a cycle-count divergence, measured and justified in
 | `+$36` | 3 | `flow` | this instruction has changed the flow |
 | `+$36` | 4 | `pc_kept` | pc_prev was taken at a flush, not at the decode |
 | `+$46` | 31:0 | `pc_prev` | the address of the instruction before this one |
-| `+$08` | 14:10 | `regcnt` | MOVEM's register counter |
 | `+$08` | 15 | `dvalid` | stage D holds an instruction word |
 | `+$14` | 15:0 | `upc` | the micro-address to resume at |
 | `+$16` | 15:0 | `stage_d` | the instruction word being decoded |
@@ -165,7 +164,7 @@ This is a cycle-count divergence, measured and justified in
 | `+$44` | 15:0 | `link` | the return address of the subroutine under way |
 | `+$4A` | 15:0 | `cprim` | the coprocessor response primitive being served |
 
-**492 bits available, 354 used, 8 words spare** (`+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
+**492 bits available, 349 used, 8 words spare** (`+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
 
 ### The frozen set
 
@@ -205,7 +204,6 @@ This is a cycle-count divergence, measured and justified in
 | `seq` | `eapc_q` | 1 | `eapc` | seq = EADEC latches it; EABASE reads it |
 | `seq` | `size_q` | 2 | `opsize` | seq = EAMODE latches it; the shared EA routines read it |
 | `seq` | `eadst_q` | 1 | `eadst` | likewise, and rsel reads it |
-| `seq` | `cnt_q` | 5 | `regcnt` | MOVEM is restarted where it stopped |
 | `seq` | `trace_mode_q` | 2 | `trmode` | UM 6.1.7 fixes it at the start of the instruction, so a fault may not lose it |
 | `seq` | `flow_q` | 1 | `flow` | likewise: whether the instruction had changed the flow before it faulted |
 | `seq` | `pc_prev_q` | 32 | `pc_prev` | a trace frame carries it at +$08 |

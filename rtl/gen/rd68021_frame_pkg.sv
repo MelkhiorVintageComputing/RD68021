@@ -67,7 +67,7 @@ package rd68021_frame_pkg;
   // ==========================================================================
   // This design's own state, in the long frame's internal words
   //
-  // 492 bits available, 354 used, 8 words spare. Recompute this whenever
+  // 492 bits available, 349 used, 8 words spare. Recompute this whenever
   // something is added: doc/checkpoint.md carries the same table, printed from
   // the same source.
   // ==========================================================================
@@ -98,9 +98,6 @@ package rd68021_frame_pkg;
   localparam int OFF_I_PC_PREV   = 'h46;   // 32 bits, the address of the instruction before this one
   localparam int I_PC_PREV_HI    = 31;
   localparam int I_PC_PREV_LO    = 0;
-  localparam int OFF_I_REGCNT    = 'h08;   //  5 bits, MOVEM's register counter
-  localparam int I_REGCNT_HI     = 14;
-  localparam int I_REGCNT_LO     = 10;
   localparam int OFF_I_DVALID    = 'h08;   //  1 bits, stage D holds an instruction word
   localparam int I_DVALID_HI     = 15;
   localparam int I_DVALID_LO     = 15;

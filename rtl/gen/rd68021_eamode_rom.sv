@@ -20,15 +20,15 @@ module rd68021_eamode_rom (
     illegal = 1'b0;
     casez (mr)
 
-      6'b010???: entry = 12'd8;   // (An)
-      6'b011???: entry = 12'd9;   // (An)+
-      6'b100???: entry = 12'd11;   // -(An)
-      6'b101???: entry = 12'd13;   // (d16,An)
-      6'b110???: entry = 12'd18;   // (An,Xn)
-      6'b111000: entry = 12'd14;   // (xxx).W
-      6'b111001: entry = 12'd15;   // (xxx).L
-      6'b111010: entry = 12'd17;   // (d16,PC)
-      6'b111011: entry = 12'd19;   // (PC,Xn)
+      6'b010???: entry = 12'd7;   // (An)
+      6'b011???: entry = 12'd8;   // (An)+
+      6'b100???: entry = 12'd10;   // -(An)
+      6'b101???: entry = 12'd12;   // (d16,An)
+      6'b110???: entry = 12'd17;   // (An,Xn)
+      6'b111000: entry = 12'd13;   // (xxx).W
+      6'b111001: entry = 12'd14;   // (xxx).L
+      6'b111010: entry = 12'd16;   // (d16,PC)
+      6'b111011: entry = 12'd18;   // (PC,Xn)
       default: begin
         entry   = rd68021_ucode_pkg::ENTRY_ILLEGAL;
         illegal = 1'b1;

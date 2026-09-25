@@ -622,7 +622,8 @@ OUTPUTS = {
 COND_READS = {
     'FMT0': 'XW', 'FMT1': 'XW', 'FMT2': 'XW', 'FMTA': 'XW', 'FMTB': 'XW', 'FMT9': 'XW',
     'XW10': 'XW', 'XW11': 'XW', 'XW15': 'XW',
-    'MASK0': 'T0', 'MODBAD': 'T0', 'MODTYPE1': 'T0', 'MODOPT4': 'T0',
+    'EMPTY': 'T0', 'NOTEMPTY': 'T0',
+    'MODBAD': 'T0', 'MODTYPE1': 'T0', 'MODOPT4': 'T0',
     'ASTAT_BAD': 'T2', 'ASTAT_STACK': 'T2', 'T3ZERO': 'T3',
     'USER': 'SR', 'MASTER': 'SR',
     'CPCA': 'CPRIM', 'CPPC': 'CPRIM', 'CPDR': 'CPRIM', 'CPB8': 'CPRIM',
@@ -699,10 +700,16 @@ def check_restore_order():
 def check_cond_dst():
     bad = []
     for i, (f, c) in enumerate(program.WORDS):
+        # cnt = CLRLOW writes T0 as well, beside whatever `dst` writes; the two
+        # on one microword would be two writes to one register.
+        if f.get('cnt') == 'CLRLOW' and f.get('dst') == 'T0':
+            bad.append('microword %d clears a bit of T0 and writes T0 -- %s'
+                       % (i, c))
         if f.get('seq') != 'COND':
             continue
         reads = COND_READS.get(f.get('cond'))
-        if reads is not None and f.get('dst') == reads:
+        if reads is not None and (f.get('dst') == reads
+                                  or (reads == 'T0' and f.get('cnt') == 'CLRLOW')):
             bad.append('microword %d writes %s and branches on %s, which reads '
                        'the value it is replacing -- %s'
                        % (i, reads, f.get('cond'), c))
@@ -818,43 +825,79 @@ def _ea_reads(f):
 
 
 # --------------------------------------------------------------------------
-# Read data does not survive a fault
+# Read data does not survive a fault -- except into the read that fetched it
 #
-# The bus unit's read data is not in the checkpoint set: it is whatever the
-# last read returned, and after a fault and RTE that is the last word RTE read
-# out of the frame. doc/checkpoint.md rule 2 makes a faulted microword
-# re-executable -- but only if everything it reads is still what it was. So a
-# microword that can fault may not take a VALUE from RDATA read by an earlier
-# microword:
+# The bus unit's read data is not in the checkpoint set: after a fault and RTE
+# it is whatever the last read returned. doc/checkpoint.md rule 2 makes a
+# faulted microword re-executable, but only if everything it reads is still what
+# it was. A microword can take a fault if it has a bus request (a data fault) or
+# uses the pipe (a prefetch fault), and either is re-executed after RTE.
 #
-#   - a microword that uses stage C or advances the pipe can take a prefetch
-#     fault, and
-#   - a microword with a bus request can take a data fault,
+# One case is safe, and it is the common one: a bus READ taking the value it is
+# itself reading. If that read faults it commits nothing; RTE hands the operand
+# back to the bus unit (rstop), which reruns what is left of it -- DF set -- or
+# satisfies it from the frame's data input buffer -- DF clear -- and loads the
+# read data on the same edge as the acknowledge either way. So the re-executed
+# microword sees exactly the data it would have seen. Not if it could also take
+# a PREFETCH fault: DF is then clear and the frame's buffer is stale, and RTE
+# would satisfy the read from it. check_read_no_pipe keeps reads off the pipe.
 #
-# and either is re-executed after RTE. The one exception is a write whose data
-# is RDATA and which changes nothing else: RTE finishes that write out of the
-# frame's data output buffer, and the value on the ALU is never looked at.
+# Not either for the CPU-space reads whose bus error is an answer and not a
+# fault -- the interrupt and breakpoint acknowledges, and the access that starts
+# a coprocessor instruction: they complete, and commit, whatever came back.
 #
-# SunOS found it: libc's strcmp loop is CMPM, whose last microword compared the
-# read data and advanced the pipe. At the end of a page the prefetch of the next
-# one faulted, RTE re-ran the compare against a stale word, and ps -U died of a
-# memory fault. doc/bugs-found.md.
+# SunOS found the rule's first form: libc's strcmp loop is CMPM, whose last
+# microword compared the read data and advanced the pipe. doc/bugs-found.md.
 # --------------------------------------------------------------------------
+def reads_rdata(f):
+    """The microword reads the bus unit's read data, directly or through a unit
+    whose input it is."""
+    # A memory bit field is read into a window the bit-field unit works on, so
+    # its results, its condition codes and the merged bytes it writes back are
+    # all functions of the read data.
+    bfmem = f.get('szsel') == 'BFMEM' and (
+        any(str(f.get(k, '')).startswith('BF_') for k in ('asrc', 'bsrc'))
+        or f.get('ccr') in ('BF', 'BFINS')
+        or f.get('bus') == 'WRITE')
+    return (f.get('asrc') == 'RDATA' or f.get('bsrc') == 'RDATA'
+            or f.get('asrc') == 'IRQVEC' or bfmem)
+
+
+def uses_pipe(f):
+    return (f.get('pf') in ('ADV', 'CONSUME')
+            or f.get('asrc') in ('STG_C', 'STG_C_HI', 'PC_C', 'EABASE')
+            or f.get('bsrc') in ('STG_C_U', 'STG_C_S')
+            or f.get('seq') == 'EADEC')
+
+
 def check_rdata_restart():
     bad = []
     for i, (f, c) in enumerate(program.WORDS):
-        if not (f.get('asrc') == 'RDATA' or f.get('bsrc') == 'RDATA'):
+        if not reads_rdata(f):
             continue
-        pipe = (f.get('pf') in ('ADV', 'CONSUME')
-                or f.get('asrc') in ('STG_C', 'STG_C_HI')
-                or f.get('bsrc') in ('STG_C_U', 'STG_C_S')
-                or f.get('seq') == 'EADEC')
-        bus = f.get('bus', 'NONE') != 'NONE'
+        bus = f.get('bus', 'NONE')
         effect = f.get('dst', 'NONE') != 'NONE' or f.get('ccr', 'NONE') != 'NONE'
-        if pipe or (bus and effect):
-            bad.append('microword %d takes a value from RDATA and can fault, so '
-                       'RTE would re-run it on stale read data -- %s' % (i, c))
+        own_read = (bus == 'READ'
+                    and f.get('cpuspace', 'NONE') in ('NONE', 'COPROC')
+                    and f.get('mdop', 'NONE') == 'NONE')
+        if uses_pipe(f):
+            why = 'uses the pipe'
+        elif bus == 'NONE' or (bus == 'WRITE' and not effect) or own_read:
+            continue
+        else:
+            why = 'has a bus request that is not a plain read of what it takes'
+        bad.append('microword %d takes a value from RDATA and %s, so RTE would '
+                   're-run it on stale read data -- %s' % (i, why, c))
     return bad
+
+
+# A bus READ never uses the pipe. If it did, a prefetch fault on it would leave
+# DF clear, and RTE's hand-back would satisfy the read from a stale frame
+# buffer without running a cycle -- see check_rdata_restart.
+def check_read_no_pipe():
+    return ['microword %d is a bus read that also uses the pipe -- %s' % (i, c)
+            for i, (f, c) in enumerate(program.WORDS)
+            if f.get('bus') == 'READ' and uses_pipe(f)]
 
 
 def check_ea_live():
@@ -910,7 +953,7 @@ def main():
     args = ap.parse_args()
 
     bad = (frames.check() + isa.check() + check_cond_dst() + check_live_cond() + check_shift_src()
-           + check_ea_live() + check_rdata_restart()
+           + check_ea_live() + check_rdata_restart() + check_read_no_pipe()
            + check_areg_size() + check_restore_order())
     if bad:
         print('FAIL: the tables are not self-consistent')

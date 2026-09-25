@@ -868,8 +868,14 @@ module rd68021_biu #(
           op_cpflt   <= take_rst ? 1'b1 : (take_req && req_cpfault);
           // A restarted operand keeps what it had already transferred: the
           // residual says how much is left, and the buffer holds the rest.
+          // A read starts from nothing. Its bytes are gathered right justified
+          // into this register, and a read of fewer than four bytes leaves the
+          // rest as they started -- which, taken from the request's write data,
+          // was whatever the requesting microword's ALU was producing. That was
+          // always zero until a read began to compute its own result.
           if (take_rst)        op_data <= {8'd0, rst_dob};
           else if (take_fetch) op_data <= '0;
+          else if (next_rw)    op_data <= '0;
           else                 op_data <= req_wdata;
         end
       end else if ((st_p_nxt == rd68021_pkg::ST_IDLE) && !req_rmc) begin

@@ -392,6 +392,63 @@ module core_fault_tb;
           "CMPM at a page end: each register stepped once");
 
     // ======================================================================
+    // A memory bit field as the last instruction before the missing page.
+    // Everything the bit-field unit produces comes from the read data, which
+    // does not survive a fault, so the microword that writes the result may
+    // not be the one that advances the pipe -- check_rdata_restart found that
+    // it was. The result has to be the field, not something made from RTE's
+    // last read.
+    // ======================================================================
+    base_setup();
+    poke_w(GONE - 6, 16'h7A00);            // MOVEQ #0,D5
+    poke_w(GONE - 4, 16'hE9D0);            // BFEXTU (A0){0:8},D5
+    poke_w(GONE - 2, 16'h5008);
+    poke_w(GONE + 0, 16'h7601);            // MOVEQ #1,D3 -- the missing word
+    poke_w(GONE + 2, 16'h60FE);
+    poke_w(CODE + 0, 16'h4EF9);            // JMP (xxx).L
+    poke_l(CODE + 2, GONE - 6);
+    poke_w(HAND + 0, 16'h4E73);            // RTE
+    poke_l(32'h0000_3000, 32'hA5C3_0000);
+    reset_dut();
+    dut.u_seq.areg[0] = 32'h0000_3000;
+    run_until(HAND + 0, 3000, reached);
+    check(reached, "BFEXTU at a page end: the prefetch fault is taken");
+    berr_en = 1'b0;
+    run_until(GONE + 2, 3000, reached);
+    check(reached, "BFEXTU at a page end: RTE, and the program goes on");
+    check(dut.u_seq.dreg[5] === 32'h0000_00A5,
+          "BFEXTU at a page end: the field, as it was read");
+    check(dut.u_seq.dreg[3] === 32'h0000_0001,
+          "BFEXTU at a page end: and the instruction on the new page ran");
+
+    // ======================================================================
+    // RTS whose return address is on a page that is not there. The read and
+    // the jump are one microword now: a faulted read must neither jump nor
+    // move the stack, and RTE's rerun must do both.
+    // ======================================================================
+    base_setup();
+    poke_w(CODE + 0,  16'h207C);           // MOVEA.L #GONE+$10,A0
+    poke_l(CODE + 2,  GONE + 32'h10);
+    poke_w(CODE + 6,  16'h4E60);           // MOVE A0,USP
+    poke_w(CODE + 8,  16'h027C);           // ANDI #$DFFF,SR: to user mode
+    poke_w(CODE + 10, 16'hDFFF);
+    poke_w(CODE + 12, 16'h4E75);           // RTS, with SP on the missing page
+    poke_w(CODE + 14, 16'h60FE);
+    poke_w(HAND + 0,  16'h4E73);           // RTE
+    poke_w(32'h0000_0480, 16'h7C07);       // MOVEQ #7,D6 -- where it returns
+    poke_w(32'h0000_0482, 16'h60FE);
+    poke_l(GONE + 32'h10, 32'h0000_0480);  // the return address
+    reset_dut();
+    run_until(HAND + 0, 3000, reached);
+    check(reached, "RTS from a missing page: the bus error is taken");
+    check(dut.u_seq.usp_q === GONE + 32'h10, "RTS from a missing page: the stack did not move");
+    berr_en = 1'b0;
+    run_until(32'h0000_0482, 3000, reached);
+    check(reached, "RTS from a missing page: RTE reruns the read and returns");
+    check(dut.u_seq.dreg[6] === 32'h0000_0007, "RTS from a missing page: to the right place");
+    check(dut.u_seq.usp_q === GONE + 32'h14, "RTS from a missing page: the stack stepped once");
+
+    // ======================================================================
     // An address error -- UM 6.1.3, "an address error exception occurs when
     // the processor attempts to prefetch an instruction from an odd address
     // ... a bus cycle is not executed". Vector 3, and UM 6.2.1: the fault bits

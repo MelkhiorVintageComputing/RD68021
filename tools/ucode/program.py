@@ -712,14 +712,15 @@ u('and the address goes there',
 # pointer AFTER the decrement.
 def link(name, long_disp):
     label(name)
+    # PRM 4: "SP - 4 -> SP; An -> (SP); SP -> An; SP + d -> SP". The stack
+    # pointer is stepped first and the push goes through it, so LINK A7 pushes
+    # the decremented stack pointer, as the operation says.
     u('the stack pointer, four lower',
-      asrc='SP', bsrc='FOUR', alu='SUB', dst='T1', size='LONG')
-    u('... is the new stack pointer',
-      asrc='T1', alu='A', dst='SP', size='LONG')
+      asrc='SP', bsrc='FOUR', alu='SUB', dst='SP', size='LONG')
     u('push the address register',
-      bus='WRITE', fc='DATA', asel='T1', asrc='AREG', alu='A', bytes=4)
+      bus='WRITE', fc='DATA', asel='SP', asrc='AREG', alu='A', bytes=4)
     u('the frame pointer is the new stack pointer',
-      asrc='T1', alu='A', dst='AREG_EA', size='LONG')
+      asrc='SP', alu='A', dst='AREG_EA', size='LONG')
     if long_disp:
         u('the high half of the displacement',
           asrc='STG_C_HI', alu='A', dst='T0', pf='CONSUME')
@@ -727,10 +728,10 @@ def link(name, long_disp):
           asrc='T0', bsrc='STG_C_U', alu='OR', dst='T0', pf='CONSUME')
         u('and the displacement, which is signed and usually negative, makes '
           'room on the stack',
-          asrc='T1', bsrc='T0', alu='ADD', dst='SP', size='LONG')
+          asrc='SP', bsrc='T0', alu='ADD', dst='SP', size='LONG')
     else:
         u('the displacement, sign extended, makes room on the stack',
-          asrc='T1', bsrc='STG_C_S', alu='ADD', dst='SP', size='LONG',
+          asrc='SP', bsrc='STG_C_S', alu='ADD', dst='SP', size='LONG',
           pf='CONSUME')
     u('done',
       pf='ADV', seq='DECODE')
@@ -1231,11 +1232,9 @@ def branch(stem, disp, sub):
           asrc='T0', bsrc='T2', alu='ADD', dst='T2')
     if sub:
         u('the stack pointer, four lower',
-          asrc='SP', bsrc='FOUR', alu='SUB', dst='T1', size='LONG')
-        u('... is the new stack pointer',
-          asrc='T1', alu='A', dst='SP', size='LONG')
+          asrc='SP', bsrc='FOUR', alu='SUB', dst='SP', size='LONG')
         u('push the address of the next instruction',
-          bus='WRITE', fc='DATA', asel='T1', asrc='PC_C', alu='A', bytes=4)
+          bus='WRITE', fc='DATA', asel='SP', asrc='PC_C', alu='A', bytes=4)
     u('and the target is the new program counter',
       asrc='T2', alu='A', pf='FLUSH')
     u('... then wait for the pipe and decode',
@@ -1281,13 +1280,11 @@ label('jsr')
 u('the effective address',
   call=1, seq='EAMODE', size='LONG')
 u('the stack pointer, four lower',
-  asrc='SP', bsrc='FOUR', alu='SUB', dst='T1', size='LONG')
-u('... is the new stack pointer',
-  asrc='T1', alu='A', dst='SP', size='LONG')
+  asrc='SP', bsrc='FOUR', alu='SUB', dst='SP', size='LONG')
 # The effective address has consumed its extension words, so PC_C now names the
 # word after the instruction -- which is the return address.
 u('push the address of the next instruction',
-  bus='WRITE', fc='DATA', asel='T1', asrc='PC_C', alu='A', bytes=4)
+  bus='WRITE', fc='DATA', asel='SP', asrc='PC_C', alu='A', bytes=4)
 u('and the effective address is the new program counter',
   asrc='EA', alu='A', pf='FLUSH')
 u('... then wait for the pipe and decode',
@@ -1295,6 +1292,18 @@ u('... then wait for the pipe and decode',
 
 def ret(stem, restore_ccr, extra_disp):
     label(stem)
+    if not restore_ccr and not extra_disp:
+        # RTS: the return address read and flushed to in one microword -- a
+        # read taking its own data (MERGED_READS), and a flush is gated on the
+        # microword committing, so a faulted read neither jumps nor moves the
+        # stack. Then the stack pointer, on the microword that waits to decode.
+        u('the return address, read and made the new program counter',
+          bus='READ', fc='DATA', asel='SP', bytes=4, asrc='RDATA', alu='A',
+          pf='FLUSH')
+        u('the stack pointer, four past it -- and wait for the pipe and decode',
+          asrc='SP', bsrc='FOUR', alu='ADD', dst='SP', size='LONG',
+          seq='DECODE')
+        return
     u('the stack pointer',
       asrc='SP', alu='A', dst='T1', size='LONG')
     if restore_ccr:
@@ -1539,7 +1548,21 @@ opcode('0100010011------', 'mtccr_mem',         'MOVE <ea>,CCR')
 # instruction set where that is true of a data register.
 # ==========================================================================
 def movem(stem, to_mem, step_before, reverse, ctl):
-    """One of MOVEM's four shapes."""
+    """One of MOVEM's four shapes.
+
+    The register each transfer moves is the lowest set bit of what is left of
+    the mask in T0 -- REGN and REGNR are a priority encoder on it, not a counter
+    -- and the transfer clears that bit (cnt = CLRLOW). So the loop visits only
+    the registers in the list: two microwords each, the transfer and the step of
+    the address, and none for a register that is not there. It used to walk all
+    sixteen positions at three microwords each, which made MOVEM the slowest row
+    in doc/timing-divergences.md.
+
+    The predecrement form walks down from one operand below An, so that the
+    address is stepped after the transfer as in the other forms, and puts back
+    the last address it wrote -- PRM 4, "the address register is decremented by
+    the operand size ... the final address is written to the register".
+    """
     src = 'REGNR' if reverse else 'REGN'
     label(stem)
     u('the register mask, which is the word after the opcode',
@@ -1547,48 +1570,44 @@ def movem(stem, to_mem, step_before, reverse, ctl):
     if ctl:
         u('the address the mode names',
           call=1, seq='EAMODE', szsel='IR6')
-        u('... which the loop walks from',
-          asrc='EA', alu='A', dst='T1', size='LONG')
+        u('... which the loop walks from -- if there is anything to move',
+          asrc='EA', alu='A', dst='T1', size='LONG',
+          seq='COND', cond='EMPTY', next=stem + '_done')
+    elif step_before:
+        u('one operand below the address register is where the first goes -- '
+          'if there is anything to move',
+          asrc='AREG', bsrc='OPSIZE', alu='SUB', dst='T1', szsel='IR6',
+          seq='COND', cond='EMPTY', next=stem + '_done')
     else:
-        u('the address register the loop walks from',
-          asrc='AREG', alu='A', dst='T1', size='LONG')
-    u('start at the first register',
-      cnt='ZERO')
-
-    label(stem + '_loop')
-    u('all sixteen looked at?',
-      seq='COND', cond='CNT16', next=stem + '_done')
-    u('is this one in the list?',
-      seq='COND', cond='MASK0', next=stem + '_xfer')
-
-    label(stem + '_next')
-    u('shift the mask along and step the register number',
-      asrc='T0', alu='LSR1', dst='T0', size='WORD', cnt='INC',
-      next=stem + '_loop')
+        u('the address register the loop walks from -- if there is anything to '
+          'move',
+          asrc='AREG', alu='A', dst='T1', size='LONG',
+          seq='COND', cond='EMPTY', next=stem + '_done')
 
     label(stem + '_xfer')
-    if step_before:
-        u('the address steps back BEFORE the transfer',
-          asrc='T1', bsrc='OPSIZE', alu='SUB', dst='T1', szsel='IR6')
     if to_mem:
-        u('and the register goes there',
+        u('the lowest register left in the list goes to the address, and leaves '
+          'the list',
           bus='WRITE', fc='DATA', asel='T1', asrc=src, alu='A', szsel='IR6',
-          next=stem + ('_next' if step_before else '_after'))
+          cnt='CLRLOW')
     else:
-        u('read what is there',
-          bus='READ', fc='EASP', asel='T1', szsel='IR6')
-        u('... sign extended into the whole register',
-          asrc='RDATA', alu='SX', dst=src, szsel='IR6',
-          next=stem + ('_next' if step_before else '_after'))
-    if not step_before:
-        label(stem + '_after')
-        u('the address steps on AFTER the transfer',
-          asrc='T1', bsrc='OPSIZE', alu='ADD', dst='T1', szsel='IR6',
-          next=stem + '_next')
+        u('what is at the address goes into the lowest register left in the '
+          'list, sign extended, and it leaves the list',
+          bus='READ', fc='EASP', asel='T1', asrc='RDATA', alu='SX', dst=src,
+          szsel='IR6', cnt='CLRLOW')
+    u('the address steps on, and round again while any register is left',
+      asrc='T1', bsrc='OPSIZE', alu='SUB' if step_before else 'ADD', dst='T1',
+      szsel='IR6', seq='COND', cond='NOTEMPTY', next=stem + '_xfer')
 
     label(stem + '_done')
     if ctl:
         u('a control mode leaves no register to put back',
+          pf='ADV', seq='DECODE')
+    elif step_before:
+        u('the address register is left on the last operand written -- an '
+          'address, so written whole',
+          asrc='T1', bsrc='OPSIZE', alu='ADD', dst='AREG_EA_ADDR', szsel='IR6')
+        u('done',
           pf='ADV', seq='DECODE')
     else:
         u('the address register is left where the loop stopped',
@@ -2190,16 +2209,25 @@ def bitfield(stem, ttt, ins=None, result=None, ccr='BF'):
             u('the extension word: the field, and where its offset comes from',
               asrc='STG_C', alu='A', dst='XW', size='WORD', pf='CONSUME')
 
+        # In the memory form everything the bit-field unit produces is a
+        # function of the read data, which does not survive a fault -- so no
+        # microword that uses it may also advance the pipe, where a prefetch
+        # fault would re-run it after RTE on whatever RTE last read.
+        # check_rdata_restart; the register form has no such constraint.
         last = (ins is None and result is None)
+        end = {'pf': 'ADV', 'seq': 'DECODE'} if not mem else {}
         if ccr == 'BF':
             u('the codes come from the field as it was found -- PRM 3.1.6',
-              ccr='BF', szsel=sz,
-              **({'pf': 'ADV', 'seq': 'DECODE'} if last else {}))
+              ccr='BF', szsel=sz, **(end if last else {}))
+            if last and mem:
+                u('... and on', pf='ADV', seq='DECODE')
 
         if result is not None:
             u('and the result goes to the register the extension word names',
               asrc=result, alu='A', dst='DREG_XQ', size='LONG', szsel=sz,
-              pf='ADV', seq='DECODE')
+              **end)
+            if mem:
+                u('... and on', pf='ADV', seq='DECODE')
 
         if ins is not None:
             u('what goes back into the field',
@@ -2209,8 +2237,8 @@ def bitfield(stem, ttt, ins=None, result=None, ccr='BF'):
                   ccr='BFINS', szsel=sz)
             if mem:
                 u('the bytes back, with only the field changed',
-                  bus='WRITE', fc='DATA', asel='EA', szsel=sz,
-                  pf='ADV', seq='DECODE')
+                  bus='WRITE', fc='DATA', asel='EA', szsel=sz)
+                u('... and on', pf='ADV', seq='DECODE')
             else:
                 u('the register back, with only the field changed',
                   asrc='BF_MERGED', alu='A', dst='DREG_R', size='LONG',
@@ -3925,22 +3953,19 @@ u('... into the control register', asrc='RDATA', alu='A', dst='CREG',
 label('cp_mreg')
 cir_read('the register select mask', CIR_REGSEL, 2)
 u('... into T0', asrc='RDATA', alu='A', dst='T0', size='WORD')
-u('from the first register', cnt='ZERO')
-label('cp_mreg_loop')
-u('all sixteen looked at?', seq='COND', cond='CNT16', next='cp_next')
-u('is this one selected?', seq='COND', cond='MASK0', next='cp_mreg_x')
-label('cp_mreg_nx')
-u('shift the mask along and step the register number',
-  asrc='T0', alu='LSR1', dst='T0', size='WORD', cnt='INC',
-  next='cp_mreg_loop')
+u('none selected?', seq='COND', cond='EMPTY', next='cp_next')
 label('cp_mreg_x')
 u('which way?', seq='COND', cond='CPDR', next='cp_mreg_in')
-cir_write('the register to the operand CIR', CIR_OPERAND, 4, asrc='REGN',
+cir_write('the lowest register left in the mask to the operand CIR, and it '
+          'leaves the mask', CIR_OPERAND, 4, asrc='REGN', cnt='CLRLOW',
           next='cp_mreg_nx')
 label('cp_mreg_in')
-cir_read('the operand CIR ...', CIR_OPERAND, 4)
-u('... into the register', asrc='RDATA', alu='A', dst='REGN',
-  next='cp_mreg_nx')
+cir_read('the operand CIR into the lowest register left, which leaves the '
+         'mask', CIR_OPERAND, 4, asrc='RDATA', alu='A', dst='REGN',
+         cnt='CLRLOW')
+label('cp_mreg_nx')
+u('any left?', seq='COND', cond='NOTEMPTY', next='cp_mreg_x')
+u('no', next='cp_next')
 
 # ---- Transfer multiple coprocessor registers -- UM 7.4.16 ---------------------
 # One operand for every set bit of the mask, each LENGTH bytes. The address
@@ -3963,13 +3988,7 @@ label('cp_mcreg_mask')
 cir_read('the register select mask', CIR_REGSEL, 2)
 u('... into T0 -- its ones count the operands', asrc='RDATA', alu='A',
   dst='T0', size='WORD')
-u('from the first bit', cnt='ZERO')
-label('cp_mcreg_loop')
-u('all sixteen looked at?', seq='COND', cond='CNT16', next='cp_next')
-u('an operand?', seq='COND', cond='MASK0', next='cp_mcreg_op')
-label('cp_mcreg_nx')
-u('shift the mask along', asrc='T0', alu='LSR1', dst='T0', size='WORD',
-  cnt='INC', next='cp_mcreg_loop')
+u('none?', seq='COND', cond='EMPTY', next='cp_next')
 label('cp_mcreg_op')
 u('one operand\'s worth', asrc='CPLEN', alu='A', dst='T1')
 u('-(An)?', seq='COND', cond='EAPRE', next='cp_mcreg_pre')
@@ -3983,8 +4002,11 @@ label('cp_mcreg_post')
 u('(An)+?', seq='COND', cond='EAPOST', next='cp_mcreg_upd')
 u('no', next='cp_mcreg_nx')
 label('cp_mcreg_upd')
-u('the address register follows', asrc='T2', alu='A', dst='AREG_EA_ADDR',
-  next='cp_mcreg_nx')
+u('the address register follows', asrc='T2', alu='A', dst='AREG_EA_ADDR')
+label('cp_mcreg_nx')
+u('one operand fewer to go', cnt='CLRLOW')
+u('any left?', seq='COND', cond='NOTEMPTY', next='cp_mcreg_op')
+u('no', next='cp_next')
 # -(An): "the processor decrements the address register by the size of an
 # operand before the operand is transferred", and then writes its bytes upwards.
 label('cp_mcreg_pre')
@@ -4440,6 +4462,82 @@ u('the stack pointer, past the frame, while it is still this stack',
 u('the status register', asrc='T3', alu='A', dst='SR', size='WORD')
 u('the queue refills from the scanPC', asrc='T0', alu='A', dst='SCANPC')
 u('and the dialogue goes on where it stopped', next='cp_resp')
+
+
+# ==========================================================================
+# A read takes its own data
+#
+# Written the plain way, a memory operand is two microwords: the read, and then
+# a microword that takes the read data somewhere. The bus microword already
+# costs its bus cycle and one clock more for the acknowledge, and the read data
+# is valid in that last clock -- so the second microword is a clock thrown away
+# on every operand read. This pass folds each such pair into the read, where
+# that is safe; check_rdata_restart in the assembler is what says it is, and
+# refuses the result otherwise. doc/timing-divergences.md.
+#
+# Folded only when the read is a plain memory or coprocessor read with no other
+# work of its own, the consumer uses no bus, no pipe and nothing but the
+# datapath, both agree on the operand size, and nothing jumps to the consumer --
+# so that removing it changes no path through the program.
+# ==========================================================================
+_PLAIN_READ = {'bus', 'fc', 'asel', 'bytes', 'szsel', 'size', 'cpuspace', 'vec',
+               'rmc', 'eadst', 'eapc'}
+_CONSUMER = {'asrc', 'bsrc', 'alu', 'dst', 'size', 'szsel', 'ccr', 'seq', 'cond',
+             'next', 'cnt', 'notrace', 'frame', 'call'}
+
+
+def _reads_rdata(f):
+    return f.get('asrc') == 'RDATA' or f.get('bsrc') == 'RDATA'
+
+
+def _merge_reads():
+    targets = set(LABELS.values())
+    for f, _c in WORDS:
+        n = f.get('next')
+        if isinstance(n, str):
+            targets.add(LABELS[n])
+        elif isinstance(n, int):
+            targets.add(n)
+    keep, merged = [], 0
+    i = 0
+    while i < len(WORDS):
+        f, c = WORDS[i]
+        if (i + 1 < len(WORDS) and i + 1 not in targets
+                and f.get('bus') == 'READ'
+                and f.get('cpuspace', 'NONE') in ('NONE', 'COPROC')
+                and set(f) <= _PLAIN_READ
+                and f.get('seq', 'NEXT') == 'NEXT' and 'next' not in f):
+            g, d = WORDS[i + 1]
+            same_size = (f.get('szsel', 'FIXED') == g.get('szsel', 'FIXED')
+                         and (f.get('size', 'LONG') == g.get('size', 'LONG')
+                              or f.get('bytes', 0) != 0))
+            if (_reads_rdata(g) and set(g) <= _CONSUMER and same_size
+                    and not g.get('call')):
+                h = dict(f)
+                h.update(g)
+                if f.get('bytes', 0) == 0:
+                    # the operand size is the read's; the consumer agreed on it
+                    h['szsel'] = f.get('szsel', 'FIXED')
+                    h['size'] = f.get('size', 'LONG')
+                keep.append((i, h, c + ' / ' + d))
+                merged += 1
+                i += 2
+                continue
+        keep.append((i, f, c))
+        i += 1
+    # the old index of every word that survives, and where it now is
+    where = {}
+    for new, (old, _f, _c) in enumerate(keep):
+        where[old] = new
+    removed = set(range(len(WORDS))) - set(where)
+    for name in list(LABELS):
+        assert LABELS[name] not in removed, name
+        LABELS[name] = where[LABELS[name]]
+    WORDS[:] = [(f, c) for _old, f, c in keep]
+    return merged
+
+
+MERGED_READS = _merge_reads()
 
 
 # ==========================================================================
