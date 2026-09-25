@@ -122,11 +122,35 @@ through the condition multiplexer into the microcode store's address, 45 levels 
 now starting at `xw_q`, which the transfer-main-processor-control-register
 primitive's and MOVEC's control-register tests read.
 
+## Catching up with the MC68020
+
+Three phases of performance work, described in `doc/timing-divergences.md`
+("Catching up"), each measured on the Artix-7 with `COPROCESSOR = 1`, and on the
+same whole-machine benchmark: `make sunos-fpu`, SunOS 4.1.1 booted to a shell
+and running an MC68881 program, in clocks to its final report.
+
+| | Slice LUTs | FF | BRAM | MHz | `make cycles` | SunOS clocks |
+|---|--:|--:|--:|--:|--:|--:|
+| M13 | 7,317 | | 11 | 22.28 | 1499 | 2,278,439,102 |
+| 1: stall, read merge, MOVEM, call/return | 7,451 | 1,870 | 11 | 22.11 | 1316 | 2,037,305,996 |
+| 2: fast effective addresses | 7,517 | 1,870 | 11 | 22.48 | 1286 | 1,949,810,333 |
+| 3: instruction refill | 7,612 | 1,870 | 11 | 21.94 | 1225 | 1,915,111,867 |
+
+The manual's cache case for the `make cycles` mix is 1332. Over the three phases
+the mix went from 12.5 % slower than the part to 8 % faster, and SunOS from
+boot to its result takes 16 % fewer clocks. The clock moved by less than
+place-and-route's own run-to-run noise, and the limiting path is the same
+family throughout: a data register, or `xw_q` in Phase 2, through the
+condition multiplexer into the micro-ROM's address. With the unreachable routes excluded (`make paths`) Phase 3
+is 27.46 MHz, limited by a data register through the ALU and the pipe-advance
+commit into the fetch point -- the push into a full queue on the same edge as
+the pop, which Phase 3 added -- 0.5 ns ahead of the status register family.
+
 ## The reset audit
 
 `make audit` proves that every register takes its value from a reset branch, in
-the source and in a yosys netlist, at the configured cache size. **2,828
-flip-flops, every one reset, and 100 exempted** -- one register, named in
+the source and in a yosys netlist, at the configured cache size. **2,946
+flip-flops, every one reset, and 102 exempted** -- one register, named in
 `tools/reset_audit.py`:
 
 **The microcode store's read register.** A block RAM's output register cannot

@@ -166,8 +166,34 @@ module rd68021_ifu #(
   assign room = primed_q && (cnt_q != 2'd2) && !pf_odd && !ckpt_busy_q
              && !scan_now;
 
+  // A word may also go into a full queue that is giving one up on the same
+  // edge -- the 2'b11 arm below. Only the push itself looks at that: the pop
+  // depends on the microword retiring, which depends on the bus, and the cache
+  // lookup and the fetch request stay on `room` so that none of that reaches
+  // them. doc/timing-divergences.md, Phase 3.
+  logic do_flush, do_adv, do_consume, do_pop, auto_load;
+  logic room_p;
+  assign room_p = primed_q && ((cnt_q != 2'd2) || do_pop) && !pf_odd
+               && !ckpt_busy_q && !scan_now;
+
   logic push;
-  assign push = room && chr_hit;
+  assign push = room_p && chr_hit;
+
+  // The low word of the holding register is going in, so the long word after
+  // it is the one wanted next. The cache is looked up there instead, and a hit
+  // reloads the holding register on the same edge -- one word per clock out of
+  // the cache rather than two every three.
+  logic look_ahead;
+  assign look_ahead = room && chr_hit && fill_q[1];
+
+  logic [29:0] cache_la;
+  assign cache_la = look_ahead ? fill_q[31:2] + 30'd1 : fill_q[31:2];
+
+  // After a flush stage D is empty and the queue is too, and the first word
+  // goes straight into stage D rather than through stage C a clock later. A
+  // word from a faulted prefetch does not: its fault is taken at stage C.
+  logic bypass;
+  assign bypass = push && !d_v_q && (cnt_q == 2'd0) && !chr_f_q && !do_pop;
 
   // Ask the bus unit for the long word the queue wants next.
   //
@@ -235,7 +261,7 @@ module rd68021_ifu #(
       rd68021_icache #(.ENTRIES (ICACHE_ENTRIES)) u_icache (
           .clk     (clk),
           .rst_n   (rst_n),
-          .la      (fill_q[31:2]),
+          .la      (cache_la),
           .lfc2    (pf_super),
           .hit     (cache_lhit),
           .rdata   (cache_rdata),
@@ -262,8 +288,6 @@ module rd68021_ifu #(
   // ==========================================================================
   // The pipe
   // ==========================================================================
-  logic do_flush, do_adv, do_consume, do_pop, auto_load;
-
   assign do_flush   = (pf_op == rd68021_ucode_pkg::U_PF_FLUSH);
   assign do_consume = (pf_op == rd68021_ucode_pkg::U_PF_CONSUME);
 
@@ -330,6 +354,14 @@ module rd68021_ifu #(
         // is discarded when it lands and so cannot overwrite this.
         chr_q      <= cache_rdata;
         chr_addr_q <= fill_q[31:2];
+        chr_v_q    <= 1'b1;
+        chr_f_q    <= 1'b0;
+      end else if (look_ahead && cache_hit && (!fetch_pend_q || discard_q)) begin
+        // The next long word, out of the cache, while this one's last word is
+        // pushed. A bus answer landing on the same edge takes precedence above,
+        // and the lookahead simply waits for the ordinary path.
+        chr_q      <= cache_rdata;
+        chr_addr_q <= cache_la;
         chr_v_q    <= 1'b1;
         chr_f_q    <= 1'b0;
       end else if (!fetch_pend_q && room && !chr_hit) begin
@@ -453,11 +485,17 @@ module rd68021_ifu #(
 
         unique case ({push, do_pop})
           2'b10: begin                                   // push only
-            if (cnt_q == 2'd0) c_q <= chr_word;
-            else               b_q <= chr_word;
-            if (cnt_q == 2'd0) c_f_q <= chr_f_q;
-            else               b_f_q <= chr_f_q;
-            cnt_q  <= cnt_q + 2'd1;
+            if (bypass) begin
+              d_q    <= chr_word;
+              d_v_q  <= 1'b1;
+              pc_d_q <= fill_q;
+            end else begin
+              if (cnt_q == 2'd0) c_q <= chr_word;
+              else               b_q <= chr_word;
+              if (cnt_q == 2'd0) c_f_q <= chr_f_q;
+              else               b_f_q <= chr_f_q;
+              cnt_q <= cnt_q + 2'd1;
+            end
             fill_q <= fill_q + 32'd2;
           end
           2'b01: begin                                   // pop only

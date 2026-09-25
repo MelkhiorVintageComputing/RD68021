@@ -12,8 +12,8 @@ and a change to it in either direction fails the target until someone looks at
 it and writes the new number down. The table at the end is generated from the
 measurement.
 
-Summary, RESET aside: **22 exact, 55 faster, 48 slower; 1286 clocks where the
-manual's cache case adds up to 1332** -- 3.5 % fewer over this mix, from 1499
+Summary, RESET aside: **20 exact, 64 faster, 41 slower; 1225 clocks where the
+manual's cache case adds up to 1332** -- 8 % fewer over this mix, from 1499
 (12.5 % more) before the work in "Catching up" below. The mix is one of each instruction,
 not a program; weighted by what compiled code executes, the memory-operand rows
 dominate, and there this design is still slower than the part.
@@ -43,7 +43,7 @@ against 4: five on the write, and the pipe advance folded into it.
 
 ### Catching up
 
-Five changes took the mix from 1499 clocks to 1286, and each is a rule the
+Six changes took the mix from 1499 clocks to 1225, and each is a rule the
 microcode now follows rather than a special case:
 
 - **No wait for stage C at the effective-address dispatch.** The mode decoder
@@ -72,6 +72,14 @@ microcode now follows rather than a special case:
   path reaches a microword that reads the EA buffer before something has set it,
   and a tail-merging pass shares the identical last microwords the new paths
   repeat, which keeps the micro-ROM at 1906 words, under 2048.
+- **The instruction queue refills a word a clock.** Three changes in
+  `rd68021_ifu.sv`. While the holding register's low word is pushed, the cache is
+  looked up at the next long word and a hit reloads the register on the same
+  edge, so the cache feeds the queue continuously instead of two words in three
+  clocks. A full queue that is giving up a word takes one on the same edge. And
+  after a flush the first word goes straight into stage D rather than through
+  stage C a clock later. One clock off every taken branch, jump, call and return,
+  and off most instructions with extension words -- 60 rows, 1286 to 1225.
 
 ---
 
@@ -80,18 +88,18 @@ microcode now follows rather than a special case:
 | What | Measured | Direction | Why |
 |---|---|---|---|
 | **Every memory operand** | exact to +2 on the fast modes; +2 to +4 on the others; `MOVE.L (A0),(A2)` +3 | slower | The shape above. What is left on the fast modes is the two clocks of handshake around each bus cycle, and on the other modes the effective-address call as well. Overlapping operand cycles with microcode needs the bus unit to accept a request before the microword that wants the data -- a queue, and a second outstanding request in `doc/checkpoint.md`'s restart rules. |
-| **MOVEM** | +12 storing four registers; exact loading two | slower on stores | Two microwords per register -- the transfer and the address step -- and a prologue; the write's five clocks against the part's four are the rest. |
-| **MOVEP** | +13 and +14 | slower | Four byte transfers, each an operand at five clocks. |
-| **Exceptions** | TRAP +18, ILLEGAL and line A +23 | slower | A four-word frame is four operand writes and a vector read at five clocks each, plus the pipe refill at the handler. |
-| **RTE** | +14 | slower | Four reads, and the format word is decoded in microcode. |
-| **RTE out of a coprocessor frame** | +44 | slower | Six frame reads, the format word tested against five other formats first, and the response CIR read that resumes the dialogue -- a bus cycle to the coprocessor that the manual's 31 may not include. The only coprocessor count UM 8 gives. |
-| **Control flow** | BRA.S/W +1, BRA.L +4, JSR +6, BSR +6; RTS -1 | slower, RTS faster | A flush abandons the prefetch in flight, and the queue refills from the cache at two words per three clocks. JSR and BSR also write the return address. |
-| **The shifts and rotates** | 2 clocks, every count | **faster** (-2 to -10) | `rd68021_shifter.sv` is a barrel. UM 8 charges ROXL 12. |
-| **The multiply** | MULU.W 4, MULU.L 7 | **faster** (-23, -38) | 32 by 32 combinationally in four DSP blocks. It is not on the critical path (`doc/critical-path.md`). |
+| **MOVEM** | +11 storing four registers; -1 loading two | slower on stores | Two microwords per register -- the transfer and the address step -- and a prologue; the write's five clocks against the part's four are the rest. |
+| **MOVEP** | +13 storing, +8 loading | slower | Four byte transfers, each an operand at five clocks. |
+| **Exceptions** | TRAP +17, ILLEGAL and line A +22 | slower | A four-word frame is four operand writes and a vector read at five clocks each, plus the pipe refill at the handler. |
+| **RTE** | +10 | slower | Four reads, and the format word is decoded in microcode. |
+| **RTE out of a coprocessor frame** | +36 | slower | Six frame reads, the format word tested against five other formats first, and the response CIR read that resumes the dialogue -- a bus cycle to the coprocessor that the manual's 31 may not include. The only coprocessor count UM 8 gives. |
+| **Control flow** | BRA.S/W exact, BRA.L +2, JSR +5, BSR +5; RTS -2 | slower, RTS faster | A flush abandons the prefetch in flight, and the queue needs a clock to load the holding register from the cache before the first word reaches stage D. JSR and BSR also write the return address, five clocks against the part's overlapped push. |
+| **The shifts and rotates** | 1 clock, every count | **faster** (-3 to -11) | `rd68021_shifter.sv` is a barrel. UM 8 charges ROXL 12. |
+| **The multiply** | MULU.W 4, MULU.L 6 | **faster** (-23, -39) | 32 by 32 combinationally in four DSP blocks. It is not on the critical path (`doc/critical-path.md`). |
 | **The divide** | 44 for .W, 45 for .L | exact for DIVU.W, **faster** otherwise | One quotient bit per clock, restoring, no early termination: DIVU.W matches exactly and the signed and long forms are up to 47 clocks faster. |
-| **Bit fields, register forms** | 3 to 5 | **faster** (-3 to -14) | `rd68021_bitfield.sv` does the field in one clock; BFFFO counts in one. |
-| **Bit fields, memory forms** | -1 to +3 | either way | One clock more than they could be: everything the bit-field unit produces comes from the read data, so the pipe advance that ends the instruction is a microword of its own -- a prefetch fault on it would otherwise re-run the result on stale data (`doc/bugs-found.md`). |
-| **Status register and CCR immediates, MOVEC** | 3 | **faster** (-7 to -9) | UM charges twelve; here they are an ordinary register write and a pipe flush. |
+| **Bit fields, register forms** | 2 to 4 | **faster** (-4 to -15) | `rd68021_bitfield.sv` does the field in one clock; BFFFO counts in one. |
+| **Bit fields, memory forms** | -2 to +2 | either way | One clock more than they could be: everything the bit-field unit produces comes from the read data, so the pipe advance that ends the instruction is a microword of its own -- a prefetch fault on it would otherwise re-run the result on stale data (`doc/bugs-found.md`). |
+| **Status register and CCR immediates, MOVEC** | 2 or 3 | **faster** (-3 to -10) | UM charges twelve; here they are an ordinary register write and a pipe flush. |
 | **CMPM and MOVES** | +1 each (M13) | slower | The read data is copied to a working register before the microword that uses it, because that microword also advances the pipe: a prefetch fault there re-executes it after RTE, and read data is not in the fault frame. `doc/bugs-found.md`; `check_rdata_restart` holds every microword to it. |
 | **The cache holding register is not restored by RTE** | one bus cycle per fault | slower | `doc/checkpoint.md`: discarding it costs a refetch and can never give a wrong answer. Not in the table -- it only happens on a fault. |
 
@@ -126,102 +134,102 @@ overlap with the prefetch of the next instruction, but it is close.
 <!-- cycles:begin -- generated by tools/cycles.py; do not edit -->
 | Instruction | UM 8 cache case | | This core, warm | Δ | cold |
 |---|---:|---|---:|---:|---:|
-| `NOP` | 2 | 2 | 2 |  | 7 |
-| `MOVEQ #1,D4` | 2 | 2 | 2 |  | 7 |
+| `NOP` | 2 | 2 | 1 | -1 | 7 |
+| `MOVEQ #1,D4` | 2 | 2 | 1 | -1 | 7 |
 | `ADD.L D0,D4` | 2 | 2 + Dn 0 | 2 |  | 7 |
 | `ADD.L (A0),D4` | 6 | 2 + (An) 4 | 6 |  | 10 |
 | `ADD.L (A0)+,D4` | 6 | 2 + (An)+ 4 | 7 | **+1** | 10 |
 | `ADD.L -(A1),D4` | 7 | 2 + -(An) 5 | 7 |  | 10 |
-| `ADD.L (8,A0),D4` | 7 | 2 + (d16,An) 5 | 8 | **+1** | 13 |
+| `ADD.L (8,A0),D4` | 7 | 2 + (d16,An) 5 | 7 |  | 13 |
 | `ADD.L ($2000).W,D4` | 6 | 2 + (xxx).W 4 | 8 | **+2** | 13 |
 | `ADD.L ($2000).L,D4` | 6 | 2 + (xxx).L 4 | 9 | **+3** | 18 |
-| `ADD.L #imm,D4` | 6 | 2 + #.L 4 | 5 | -1 | 15 |
+| `ADD.L #imm,D4` | 6 | 2 + #.L 4 | 4 | -2 | 15 |
 | `ADD.L (4,A0,D3.L),D4` | 9 | 2 + (d8,An,Xn) 7 | 13 | **+4** | 18 |
 | `ADD.L ([A0]),D4` | 14 | 2 + ([B],I) 12 | 20 | **+6** | 27 |
 | `ADD.L D4,(A0)` | 8 | 4 + (An) 4 | 12 | **+4** | 13 |
 | `CMP.L D0,D4` | 2 | 2 | 2 |  | 7 |
 | `CMPA.L A0,A2` | 4 | 4 | 3 | -1 | 7 |
 | `MULU.W D1,D4` | 27 | 27 | 4 | -23 | 7 |
-| `MULU.L D1,D4` | 45 | 43 + #.W,Dn 2 | 7 | -38 | 12 |
+| `MULU.L D1,D4` | 45 | 43 + #.W,Dn 2 | 6 | -39 | 12 |
 | `DIVU.W D1,D4` | 44 | 44 | 44 |  | 44 |
 | `DIVS.W D1,D4` | 56 | 56 | 44 | -12 | 44 |
-| `DIVU.L D1,D4` | 80 | 78 + #.W,Dn 2 | 45 | -35 | 50 |
-| `DIVS.L D1,D4` | 92 | 90 + #.W,Dn 2 | 45 | -47 | 50 |
-| `ADDQ.L #1,D4` | 2 | 2 | 2 |  | 7 |
+| `DIVU.L D1,D4` | 80 | 78 + #.W,Dn 2 | 44 | -36 | 50 |
+| `DIVS.L D1,D4` | 92 | 90 + #.W,Dn 2 | 44 | -48 | 50 |
+| `ADDQ.L #1,D4` | 2 | 2 | 1 | -1 | 7 |
 | `ADDQ.L #1,(A0)` | 8 | 4 + (An) 4 | 10 | **+2** | 14 |
-| `ADDI.L #imm,D4` | 6 | 2 + #.L,Dn 4 | 5 | -1 | 15 |
-| `ADDI.W #1,(A0)` | 8 | 4 + #.W,(An) 4 | 14 | **+6** | 21 |
-| `ABCD D0,D4` | 4 | 4 | 2 | -2 | 7 |
+| `ADDI.L #imm,D4` | 6 | 2 + #.L,Dn 4 | 4 | -2 | 15 |
+| `ADDI.W #1,(A0)` | 8 | 4 + #.W,(An) 4 | 13 | **+5** | 21 |
+| `ABCD D0,D4` | 4 | 4 | 1 | -3 | 7 |
 | `ABCD -(A1),-(A2)` | 16 | 16 | 19 | **+3** | 20 |
-| `ADDX.L D0,D4` | 2 | 2 | 2 |  | 7 |
+| `ADDX.L D0,D4` | 2 | 2 | 1 | -1 | 7 |
 | `CMPM.L (A0)+,(A1)+` | 9 | 9 | 15 | **+6** | 16 |
-| `PACK D0,D4,#0` | 6 | 6 | 4 | -2 | 9 |
-| `UNPK D0,D4,#0` | 8 | 8 | 4 | -4 | 9 |
+| `PACK D0,D4,#0` | 6 | 6 | 3 | -3 | 9 |
+| `UNPK D0,D4,#0` | 8 | 8 | 3 | -5 | 9 |
 | `CLR.L D4` | 2 | 2 | 2 |  | 7 |
-| `CLR.L (A0)` | 6 | 4 + calc (An) 2 | 6 |  | 11 |
+| `CLR.L (A0)` | 6 | 4 + calc (An) 2 | 5 | -1 | 11 |
 | `NEG.L D4` | 2 | 2 | 2 |  | 7 |
-| `EXT.L D4` | 4 | 4 | 2 | -2 | 7 |
+| `EXT.L D4` | 4 | 4 | 1 | -3 | 7 |
 | `NBCD D4` | 6 | 6 | 2 | -4 | 7 |
 | `ST D4` | 4 | 4 | 2 | -2 | 7 |
 | `TAS D4` | 4 | 4 | 2 | -2 | 7 |
 | `TAS (A0)` | 14 | 12 + calc (An) 2 | 13 | -1 | 14 |
 | `TST.L D4` | 2 | 2 + Dn 0 | 2 |  | 7 |
 | `TST.L (A0)` | 6 | 2 + (An) 4 | 6 |  | 10 |
-| `LSL.L #1,D4` | 4 | 4 | 2 | -2 | 7 |
-| `LSL.L D1,D4` | 6 | 6 | 2 | -4 | 7 |
-| `ASL.L #1,D4` | 8 | 8 | 2 | -6 | 7 |
-| `ASR.L #1,D4` | 6 | 6 | 2 | -4 | 7 |
-| `ROL.L #1,D4` | 8 | 8 | 2 | -6 | 7 |
-| `ROXL.L #1,D4` | 12 | 12 | 2 | -10 | 7 |
+| `LSL.L #1,D4` | 4 | 4 | 1 | -3 | 7 |
+| `LSL.L D1,D4` | 6 | 6 | 1 | -5 | 7 |
+| `ASL.L #1,D4` | 8 | 8 | 1 | -7 | 7 |
+| `ASR.L #1,D4` | 6 | 6 | 1 | -5 | 7 |
+| `ROL.L #1,D4` | 8 | 8 | 1 | -7 | 7 |
+| `ROXL.L #1,D4` | 12 | 12 | 1 | -11 | 7 |
 | `LSL.W (A0)` | 9 | 5 + (An) 4 | 13 | **+4** | 14 |
-| `BTST #3,D4` | 4 | 4 | 4 |  | 9 |
+| `BTST #3,D4` | 4 | 4 | 3 | -1 | 9 |
 | `BTST D1,D4` | 4 | 4 | 2 | -2 | 7 |
 | `BSET D1,D4` | 4 | 4 | 2 | -2 | 7 |
 | `BTST D1,(A0)` | 8 | 4 + (An) 4 | 9 | **+1** | 10 |
 | `BSET D1,(A0)` | 8 | 4 + (An) 4 | 14 | **+6** | 15 |
-| `BTST #3,(A0)` | 8 | 4 + #.W,(An) 4 | 12 | **+4** | 18 |
-| `BFTST D4{0:8}` | 6 | 6 | 3 | -3 | 8 |
-| `BFEXTU D4{0:8},D5` | 8 | 8 | 4 | -4 | 9 |
-| `BFINS D5,D4{0:8}` | 10 | 10 | 5 | -5 | 10 |
-| `BFFFO D4{0:8},D5` | 18 | 18 | 4 | -14 | 9 |
-| `BFCHG D4{0:8}` | 12 | 12 | 5 | -7 | 10 |
-| `BFEXTU (A0){0:8},D5` | 15 | 13 + #.W,(An) 2 | 14 | -1 | 19 |
-| `BFINS D5,(A0){0:8}` | 16 | 14 + #.W,(An) 2 | 19 | **+3** | 24 |
-| `BFTST (A0){4:32}` | 17 | 15 (5 bytes) + #.W,(An) 2 | 16 | -1 | 21 |
-| `BRA.S (taken)` | 6 | 6 | 7 | **+1** | 14 |
-| `BRA.W (taken)` | 6 | 6 | 7 | **+1** | 16 |
-| `BRA.L (taken)` | 6 | 6 | 10 | **+4** | 22 |
+| `BTST #3,(A0)` | 8 | 4 + #.W,(An) 4 | 11 | **+3** | 18 |
+| `BFTST D4{0:8}` | 6 | 6 | 2 | -4 | 8 |
+| `BFEXTU D4{0:8},D5` | 8 | 8 | 3 | -5 | 9 |
+| `BFINS D5,D4{0:8}` | 10 | 10 | 4 | -6 | 10 |
+| `BFFFO D4{0:8},D5` | 18 | 18 | 3 | -15 | 9 |
+| `BFCHG D4{0:8}` | 12 | 12 | 4 | -8 | 10 |
+| `BFEXTU (A0){0:8},D5` | 15 | 13 + #.W,(An) 2 | 13 | -2 | 19 |
+| `BFINS D5,(A0){0:8}` | 16 | 14 + #.W,(An) 2 | 18 | **+2** | 24 |
+| `BFTST (A0){4:32}` | 17 | 15 (5 bytes) + #.W,(An) 2 | 15 | -2 | 21 |
+| `BRA.S (taken)` | 6 | 6 | 6 |  | 13 |
+| `BRA.W (taken)` | 6 | 6 | 6 |  | 15 |
+| `BRA.L (taken)` | 6 | 6 | 8 | **+2** | 21 |
 | `BEQ.S (not taken)` | 4 | 4 | 2 | -2 | 7 |
 | `BEQ.W (not taken)` | 6 | 6 | 3 | -3 | 8 |
 | `BEQ.L (not taken)` | 6 | 6 | 5 | -1 | 15 |
-| `DBF (count not expired)` | 6 | 6 | 7 | **+1** | 11 |
+| `DBF (count not expired)` | 6 | 6 | 6 |  | 10 |
 | `DBF (count expired)` | 10 | 10 | 4 | -6 | 8 |
 | `DBT (cc true)` | 6 | 6 | 3 | -3 | 8 |
 | `EXG D0,D4` | 2 | 2 | 3 | **+1** | 7 |
-| `SWAP D4` | 4 | 4 | 2 | -2 | 7 |
+| `SWAP D4` | 4 | 4 | 1 | -3 | 7 |
 | `MOVE SR,D4` | 4 | 4 | 2 | -2 | 7 |
 | `MOVE D0,CCR` | 4 | 4 + Dn 0 | 2 | -2 | 7 |
 | `MOVE #$2700,SR` | 10 | 8 + #.W 2 | 3 | -7 | 8 |
 | `MOVE A0,USP` | 2 | 2 | 2 |  | 7 |
 | `MOVEC CACR,D4` | 6 | 6 | 3 | -3 | 8 |
 | `MOVEC D4,SFC` | 12 | 12 | 3 | -9 | 8 |
-| `MOVEM.L D0-D3,(A2)` | 18 | 4 + 3x4 + #.W,(An) 2 | 30 | **+12** | 36 |
-| `MOVEM.L (A0),D4-D5` | 18 | 8 + 4x2 + #.W,(An) 2 | 18 |  | 24 |
-| `MOVEP.L D4,(0,A2)` | 17 | 17 | 31 | **+14** | 38 |
-| `MOVEP.L (0,A0),D4` | 18 | 18 | 27 | **+9** | 32 |
+| `MOVEM.L D0-D3,(A2)` | 18 | 4 + 3x4 + #.W,(An) 2 | 29 | **+11** | 36 |
+| `MOVEM.L (A0),D4-D5` | 18 | 8 + 4x2 + #.W,(An) 2 | 17 | -1 | 24 |
+| `MOVEP.L D4,(0,A2)` | 17 | 17 | 30 | **+13** | 38 |
+| `MOVEP.L (0,A0),D4` | 18 | 18 | 26 | **+8** | 32 |
 | `MOVES.L (A0),D4` | 9 | 7 + #.W,(An) 2 | 12 | **+3** | 17 |
 | `MOVE.L D0,D4` | 2 | Rn -> Dn | 2 |  | 7 |
 | `MOVEA.L A0,A4` | 2 | Rn -> An | 3 | **+1** | 7 |
-| `MOVE.W #1,D4` | 4 | #.W -> Dn | 3 | -1 | 8 |
-| `MOVE.L #imm,D4` | 6 | #.L -> Dn | 5 | -1 | 15 |
+| `MOVE.W #1,D4` | 4 | #.W -> Dn | 2 | -2 | 8 |
+| `MOVE.L #imm,D4` | 6 | #.L -> Dn | 4 | -2 | 15 |
 | `MOVE.L D0,(A2)` | 4 | Rn -> (An) | 6 | **+2** | 11 |
 | `MOVE.L D0,-(A2)` | 5 | Rn -> -(An) | 7 | **+2** | 9 |
 | `MOVE.L (A0),D4` | 6 | (An) -> Dn | 6 |  | 10 |
-| `MOVE.L (8,A0),D4` | 7 | (d16,An) -> Dn | 8 | **+1** | 13 |
+| `MOVE.L (8,A0),D4` | 7 | (d16,An) -> Dn | 7 |  | 13 |
 | `MOVE.L (4,A0,D3.L),D4` | 9 | (d8,An,Xn) -> Dn | 13 | **+4** | 18 |
 | `MOVE.L (A0),(A2)` | 7 | (An) -> (An) | 10 | **+3** | 14 |
 | `MOVE.L (A0)+,(A2)+` | 7 | (An)+ -> (An)+ | 12 | **+5** | 12 |
-| `ORI #0,CCR` | 12 | 12 | 3 | -9 | 8 |
+| `ORI #0,CCR` | 12 | 12 | 2 | -10 | 8 |
 | `ANDI #$FFFF,SR` | 12 | 12 | 3 | -9 | 8 |
 | `LEA (A0),A4` | 4 | 2 + calc (An) 2 | 3 | -1 | 7 |
 | `LEA (8,A0),A4` | 4 | 2 + calc (d16,An) 2 | 3 | -1 | 8 |
@@ -229,27 +237,27 @@ overlap with the prefetch of the next instruction, but it is close.
 | `LINK.W A4,#-8` | 5 | 5 | 9 | **+4** | 11 |
 | `LINK.L A4,#-8` | 6 | 6 | 11 | **+5** | 18 |
 | `UNLK A4` | 6 | 6 | 7 | **+1** | 9 |
-| `JMP (A5)` | 6 | 4 + jump (An) 2 | 7 | **+1** | 14 |
-| `JSR (A3)` | 7 | 5 + jump (An) 2 | 13 | **+6** | 21 |
-| `BSR.S` | 7 | 7 | 13 | **+6** | 16 |
-| `RTS` | 10 | 10 | 9 | -1 | 9 |
-| `RTR` | 14 | 14 | 18 | **+4** | 18 |
-| `RTD #4` | 10 | 10 | 13 | **+3** | 13 |
-| `RTE (format 0)` | 21 | 21 | 32 | **+11** | 32 |
+| `JMP (A5)` | 6 | 4 + jump (An) 2 | 6 |  | 13 |
+| `JSR (A3)` | 7 | 5 + jump (An) 2 | 12 | **+5** | 20 |
+| `BSR.S` | 7 | 7 | 12 | **+5** | 15 |
+| `RTS` | 10 | 10 | 8 | -2 | 8 |
+| `RTR` | 14 | 14 | 17 | **+3** | 17 |
+| `RTD #4` | 10 | 10 | 12 | **+2** | 12 |
+| `RTE (format 0)` | 21 | 21 | 31 | **+10** | 31 |
 | `RTE (coprocessor)` | 31 | 31 | 67 | **+36** | 68 |
 | `CHK.L D1,D4 (in range)` | 8 | 8 + Dn 0 | 5 | -3 | 7 |
-| `CHK2.L (A0),D4` | 22 | 18 + #.W,(An) 4 | 23 | **+1** | 29 |
-| `CMP2.L (A0),D4` | 22 | 18 + #.W,(An) 4 | 22 |  | 28 |
-| `CAS.L (unsuccessful)` | 14 | 12 + #.W,(An) 2 | 14 |  | 20 |
+| `CHK2.L (A0),D4` | 22 | 18 + #.W,(An) 4 | 22 |  | 29 |
+| `CMP2.L (A0),D4` | 22 | 18 + #.W,(An) 4 | 21 | -1 | 28 |
+| `CAS.L (unsuccessful)` | 14 | 12 + #.W,(An) 2 | 13 | -1 | 20 |
 | `CAS.L (successful)` | 17 | 15 + #.W,(An) 2 | 17 |  | 17 |
 | `CAS2.L (successful)` | 25 | 25 | 38 | **+13** | 43 |
 | `TRAPV (no trap)` | 4 | 4 | 2 | -2 | 7 |
 | `TRAPF` | 4 | 4 | 2 | -2 | 7 |
-| `TRAPF.W` | 6 | 6 | 4 | -2 | 9 |
-| `TRAPF.L` | 8 | 8 | 5 | -3 | 15 |
-| `TRAP #0` | 20 | 20 | 38 | **+18** | 48 |
-| `ILLEGAL` | 20 | 20 | 43 | **+23** | 43 |
-| `line A` | 20 | 20 | 43 | **+23** | 43 |
+| `TRAPF.W` | 6 | 6 | 3 | -3 | 9 |
+| `TRAPF.L` | 8 | 8 | 4 | -4 | 15 |
+| `TRAP #0` | 20 | 20 | 37 | **+17** | 47 |
+| `ILLEGAL` | 20 | 20 | 42 | **+22** | 42 |
+| `line A` | 20 | 20 | 42 | **+22** | 42 |
 | `RESET` | 518 | 518 | 515 | -3 | 515 |
 <!-- cycles:end -->
 
