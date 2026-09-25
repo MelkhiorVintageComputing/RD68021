@@ -5,15 +5,17 @@ divergence must be measured, reported and justified**. Bus *timing* is a
 different matter and is not negotiable -- that is `doc/bus-timing-compliance.md`
 and `doc/ac-timing.md`.
 
-`make cycles` measures 124 instructions against UM section 8's **cache case** --
+`make cycles` measures 125 instructions against UM section 8's **cache case** --
 "the instruction is in the cache but has no overlap" -- and every row is a
 regression check: the count this design takes is frozen in `tools/cycles.py`,
 and a change to it in either direction fails the target until someone looks at
 it and writes the new number down. The table at the end is generated from the
 measurement.
 
-Summary, RESET aside: **17 exact, 51 faster, 56 slower; 1421 clocks where the
-manual's cache case adds up to 1301**, about 9 % more over this mix. The mix is
+Summary, RESET aside: **17 exact, 51 faster, 57 slower; 1499 clocks where the
+manual's cache case adds up to 1332**, about 12.5 % more over this mix. RTE out of
+a coprocessor midinstruction frame, the one coprocessor count section 8 gives, is
+44 of those 167. The mix is
 one of each instruction, not a program; weighted by what compiled code actually
 executes, the memory-operand rows dominate and the gap is larger.
 
@@ -60,6 +62,7 @@ and two finishing.
 | **The divide** | 44 for .W, 45 for .L | exact for DIVU.W, **faster** otherwise | One quotient bit per clock, restoring, no early termination: DIVU.W matches exactly and the signed and long forms are up to 47 clocks faster. |
 | **Bit fields, register forms** | 3 to 5 | **faster** (-3 to -14) | `rd68021_bitfield.sv` does the field in one clock; BFFFO counts in one. Memory forms are within two clocks either way. |
 | **Status register and CCR immediates, MOVEC** | 3 | **faster** (-7 to -9) | UM charges twelve; here they are an ordinary register write and a pipe flush. |
+| **CMPM and MOVES** | +1 each (M13) | slower | The read data is copied to a working register before the microword that uses it, because that microword also advances the pipe: a prefetch fault there re-executes it after RTE, and read data is not in the fault frame. `doc/bugs-found.md`; `check_rdata_restart` holds every microword to it. |
 | **The cache holding register is not restored by RTE** | one bus cycle per fault | slower | `doc/checkpoint.md`: discarding it costs a refetch and can never give a wrong answer. Not in the table -- it only happens on a fault. |
 
 **Cold counts** -- the first pass, with the cache empty -- are in the table's
