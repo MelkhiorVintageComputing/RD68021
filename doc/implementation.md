@@ -15,17 +15,37 @@ make audit     # every register's reset, and the one named exception
 
 | | Artix-7 xc7a100t-1 (Vivado) | Cyclone V 5CSEMA5 (Quartus) |
 |---|--:|--:|
-| logic | **6,824 Slice LUTs (10.8 %)** | **9,108 ALMs (28 %)** |
-| registers | 1,862 | 2,403 |
-| block memory | **11 RAMB36** (the microcode store) | 2 blocks (the instruction cache) -- see below |
+Constrained at **40 ns, the 25 MHz grade** (`scripts/rd68021.xdc`,
+`scripts/rd68021.sdc`), with the coprocessor interface built:
+
+| | Artix-7 xc7a100t-1 (Vivado) | Cyclone V 5CSEMA5 (Quartus) |
+|---|--:|--:|
+| logic | **7,688 Slice LUTs (12.1 %)** | **11,842 ALMs (37 %)** |
+| registers | 1,872 | 6,114 |
+| block memory | **12 RAMB36** (the microcode store) | none -- see below |
 | distributed RAM | 76 LUTs (the instruction cache) | -- |
 | DSP | 4 (the multiplier) | 3 |
-| **frequency, static** | **22.72 MHz** (44.02 ns) | **21.08 MHz** |
-| frequency, reachable paths | 26.84 MHz (37.25 ns) | -- |
+| **frequency, static** | **25.54 MHz** (39.16 ns) | **23.73 MHz** |
+| frequency, reachable paths | 27.89 MHz (35.86 ns) | -- |
 
-**Both parts clear the MC68020's 16.67 and 20 MHz speed grades on static timing
-alone**, with no assumption about which paths the microcode takes. The 25 and
-33.33 MHz grades are not reached.
+**The Artix-7 clears the MC68020's 25 MHz speed grade on static timing alone**,
+with no assumption about which paths the microcode takes; the Cyclone V clears
+16.67 and 20 MHz. Until the constraint was tightened from 60 ns (16.67 MHz) to
+40 ns, the same Artix-7 build reported 21.83 MHz: Vivado stops optimising once a
+constraint is met, so the 60 ns figure measured the constraint as much as the
+design.
+
+**At 30 MHz** (a 33.33 ns trial, not checked in) the Artix-7 fails by 0.242 ns
+on 11 endpoints, 29.78 MHz, all of them the micro-ROM's address pins, and all on
+the route from the bit-field unit into the next micro-address that
+`tools/ucode/assemble.py`'s `check_live_cond` proves no microword takes. With
+that route and the other two `make paths` excludes left out, the build makes
+**31.37 MHz**: every route the microcode can take meets 30 MHz. The next walls
+are the micro-ROM's output through the ALU and a microword's own-result
+condition back to its address (31.4 MHz), and Phase 4's early retire, a
+half-clock path with 2.8 ns of slack left at 30 MHz. The 33.33 MHz grade would
+need the microcode store's output register duplicated or the own-result
+conditions registered.
 
 The plan estimated 14,000–18,000 Slice LUTs and 25–35 block RAMs at 14–18 MHz.
 The design came in at under half the logic and a third of the memory, and faster:
@@ -33,7 +53,7 @@ most of the saving is the bus unit owning dynamic sizing (no second-word-of-a-lo
 microcode at all) and a microcode store of 1,529 words where the plan feared
 15,000.
 
-A three-clock bus cycle at 22.72 MHz is 7.6 M bus cycles a second, against a
+A three-clock bus cycle at 25.54 MHz is 8.5 M bus cycles a second, against a
 real 16.67 MHz MC68020's 5.6 M.
 
 ### Reading a frequency off a slack
@@ -43,7 +63,8 @@ period to settle in and half have a whole one. Dividing the worst slack into the
 period -- what a single-edge design would do, and what this project's own
 `impl.tcl` did until M12 -- reads a half-period path as if it had a whole period.
 `scripts/fmax.tcl` scales every path by its own requirement instead: a path
-needing *d* ns of an *r* ns requirement needs a period of *d* × 60 / *r*. The
+needing *d* ns of an *r* ns requirement needs a period of *d* × *T* / *r*, *T*
+being the constrained period. The
 figure above is the worst of those. Quartus's Fmax already scales both edges
 together, so its number is quoted directly.
 
@@ -68,7 +89,7 @@ BFFFO in four -- and they are also the start of the longest path
 
 ### Quartus does not put the microcode store in block memory
 
-On the Cyclone V the 4096 × 100-bit store is built from logic, which is most of
+On the Cyclone V the 103-bit-wide store is built from logic, which is most of
 the difference between the two columns. Quartus Prime Lite infers no ROM from
 the generated `case` -- measured on the store alone, with the reset multiplexer
 on its address and without it, with `rom_style`, with `romstyle = "M10K"` and
@@ -76,7 +97,7 @@ with the attribute on the always block and on the register declaration: zero
 block-memory bits every time, and no message saying why. Vivado infers it
 from the same source.
 
-It fits in 28 % of the part and makes 21 MHz as it is, so it is recorded here
+It fits in 37 % of the part and makes 23.7 MHz as it is, so it is recorded here
 rather than fixed. The known way round it -- an array initialised from a file --
 needs an `initial` block, which `rtl/` does not allow.
 
@@ -128,6 +149,9 @@ Four phases of performance work, described in `doc/timing-divergences.md`
 ("Catching up"), each measured on the Artix-7 with `COPROCESSOR = 1`, and on the
 same whole-machine benchmark: `make sunos-fpu`, SunOS 4.1.1 booted to a shell
 and running an MC68881 program, in clocks to its final report.
+
+All four phases were implemented at the old 60 ns constraint; the MHz column is
+comparable across them but not with the 40 ns figures above.
 
 | | Slice LUTs | FF | BRAM | MHz | `make cycles` | SunOS clocks |
 |---|--:|--:|--:|--:|--:|--:|
