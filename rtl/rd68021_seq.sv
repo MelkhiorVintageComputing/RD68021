@@ -280,9 +280,28 @@ module rd68021_seq #(
   // lowered. Reading sr_q there is one instruction late in both cases, which a
   // MOVE #$8700,SR followed by a MOVEQ shows: the MOVEQ is the instruction the
   // manual traces, and it was the one after it that got traced.
+  //
+  // Only a microword that DECODES can make the difference, and only four shapes
+  // of it exist -- MOVE to SR and STOP write T0, ANDI, ORI and EORI to SR combine
+  // SR with T0 -- so the value is computed from those two registers here and
+  // not taken off the result bus. assemble.py's check_live_shape holds every
+  // SR-writing microword that decodes to one of the four. Reading the result
+  // bus put the shifter and the bit-field unit, which no such microword uses,
+  // on a timing path into the next micro-address (doc/critical-path.md).
+  logic [15:0] sr_dec;
+  always_comb begin
+    unique case (`UF(ALU))
+      rd68021_ucode_pkg::U_ALU_AND: sr_dec = sr_q & t_q[0][15:0];
+      rd68021_ucode_pkg::U_ALU_OR:  sr_dec = sr_q | t_q[0][15:0];
+      rd68021_ucode_pkg::U_ALU_EOR: sr_dec = sr_q ^ t_q[0][15:0];
+      default:                      sr_dec = t_q[0][15:0];
+    endcase
+  end
+
   logic [15:0] sr_eff;
-  assign sr_eff = (retire && (`UF(DST) == rd68021_ucode_pkg::U_DST_SR))
-                  ? (y[15:0] & rd68021_pkg::SR_IMPLEMENTED)
+  assign sr_eff = (retire && (`UF(DST) == rd68021_ucode_pkg::U_DST_SR)
+                   && (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE))
+                  ? (sr_dec & rd68021_pkg::SR_IMPLEMENTED)
                   : sr_q;
 
   assign super_mode  = sr_q[rd68021_pkg::SR_S];
@@ -775,8 +794,15 @@ module rd68021_seq #(
   logic sh_x_in;
   assign sh_x_in = sr_q[rd68021_pkg::SR_X];
 
+  // The shifter's operand is a data register or read data and nothing else --
+  // assemble.py's check_shift_src -- so it has a two-way multiplexer of its own
+  // rather than the A bus, which also carries the bit-field unit's results.
+  logic [31:0] sh_op;
+  assign sh_op = (`UF(ASRC) == rd68021_ucode_pkg::U_ASRC_RDATA) ? req_rdata[31:0]
+                                                                  : dreg[rsel];
+
   rd68021_shifter u_shifter (
-      .op (a_bus), .count (sh_count), .size (sh_size), .kind (sh_kind),
+      .op (sh_op), .count (sh_count), .size (sh_size), .kind (sh_kind),
       .left (sh_left), .x_in (sh_x_in),
       .res (sh_res), .c_out (sh_c), .v_out (sh_v), .x_out (sh_x),
       .x_write (sh_xwr));
@@ -1524,6 +1550,20 @@ module rd68021_seq #(
   assign flag_v = sr_q[rd68021_pkg::SR_V];
   assign flag_c = sr_q[rd68021_pkg::SR_C];
 
+  // CHK's two tests, on the register and the bound themselves: the register is
+  // negative, and the register is greater than the bound, signed, at the size
+  // CHK names. See U_COND_RESNEG and U_COND_GTZ below.
+  logic chk_neg, chk_gt;
+  always_comb begin
+    if (eff_size == rd68021_ucode_pkg::U_SIZE_WORD) begin
+      chk_neg = dreg[wsel][15];
+      chk_gt  = $signed(dreg[wsel][15:0]) > $signed(t_q[1][15:0]);
+    end else begin
+      chk_neg = dreg[wsel][31];
+      chk_gt  = $signed(dreg[wsel]) > $signed(t_q[1]);
+    end
+  end
+
   logic cc_true;
   always_comb begin
     unique case (stg_d[11:8])
@@ -1551,7 +1591,13 @@ module rd68021_seq #(
     unique case (`UF(COND))
       rd68021_ucode_pkg::U_COND_CC:    cond_true = cc_true;
       rd68021_ucode_pkg::U_COND_NCC:   cond_true = ~cc_true;
-      rd68021_ucode_pkg::U_COND_RESM1: cond_true = (y[15:0] == 16'hFFFF);
+      // The three conditions on a microword's own result are taken from the
+      // registers it reads, not from the result bus: DBcc's counter minus one is
+      // $FFFF exactly when the counter was zero, and CHK's two tests are a sign
+      // and a signed comparison. assemble.py's check_live_shape holds each to
+      // that one shape, and with it no result -- the shifter's, the bit-field
+      // unit's -- has a path into the next micro-address (doc/critical-path.md).
+      rd68021_ucode_pkg::U_COND_RESM1: cond_true = (dreg[rsel][15:0] == 16'h0000);
       rd68021_ucode_pkg::U_COND_EMPTY:    cond_true = (t_q[0][15:0] == 16'd0);
       rd68021_ucode_pkg::U_COND_NOTEMPTY: cond_true = (t_q[0][15:0] != 16'd0);
       // Bit 10 of the extension word: the long forms' 64-bit selector.
@@ -1602,8 +1648,8 @@ module rd68021_seq #(
         cond_true = (req_end == rd68021_pkg::CE_BERR);
       // Tested on the result the CURRENT microword is computing, not on the
       // status register, which it has not written yet.
-      rd68021_ucode_pkg::U_COND_RESNEG: cond_true = res_n;
-      rd68021_ucode_pkg::U_COND_GTZ:    cond_true = ~res_z & ~(res_n ^ alu_v);
+      rd68021_ucode_pkg::U_COND_RESNEG: cond_true = chk_neg;
+      rd68021_ucode_pkg::U_COND_GTZ:    cond_true = chk_gt;
       rd68021_ucode_pkg::U_COND_MDOVF: cond_true =
           (`UF(MDOP) == rd68021_ucode_pkg::U_MDOP_DIV) ? div_ovf : mul_ovf;
       // ---- The coprocessor interface -- UM section 7 --------------------

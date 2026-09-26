@@ -204,8 +204,11 @@ a fraction of the instructions it should have. `sim/tme/build.sh` adds a hook to
 copy of TME -- `tme_gettimeofday` asks it, and the Intersil 7170 reads its time of day
 through `tme_gettimeofday` -- and the element installs it: the time the machine was
 made at, rounded to a second, plus 60 ns per clock. A clock tick then comes after as
-many instructions as on the real machine, and a run is reproducible. With no hook,
-TME's own CPUs are unchanged.
+many instructions as on the real machine. A run is reproducible up to the date it
+starts on, which is the host's: two runs of the same RTL through `make sunos-fpu`
+finished 0.13 % apart in clocks (1,864,128,103 and 1,866,615,375), date
+conversion and whatever else reads the clock taking a different path. With no
+hook, TME's own CPUs are unchanged.
 
 ## Instruments
 

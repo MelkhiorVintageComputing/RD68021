@@ -721,44 +721,53 @@ def check_cond_dst():
     return bad
 
 
-# The result bus reaches the next micro-address by exactly two routes: a
-# condition that reads the result of its own microword rather than a register,
-# and the status register written in the same microword, which `sr_eff` passes
-# straight through to the interrupt test at a boundary. From an operand source,
-# through the ALU and either route, to the microcode store is the longest
-# combinational path in the design, and scripts/paths.tcl cuts it for the deep
-# units on the strength of this check: a microword on either route takes its
-# result from the ALU alone and from shallow sources, never from the shifter,
-# the bit-field unit or the multiplier and divider. doc/critical-path.md.
-COND_LIVE = ('RESM1', 'RESNEG', 'GTZ')
-DEEP_SOURCES = ('BF_', 'MUL', 'DIV')
+# Nothing on the result bus reaches the next micro-address. Two things used to
+# take it there: a condition on the microword's own result, and the status
+# register written by a microword that decodes, which the interrupt and trace
+# tests read the same clock through `sr_eff`. rd68021_seq now computes both from
+# the registers the microword reads instead -- DBcc's counter minus one is $FFFF
+# exactly when the counter was zero, CHK's tests are a sign and a signed
+# comparison, and the four SR writes that decode are T0, or SR combined with T0
+# -- which is only the same thing for a microword of exactly that shape. This
+# holds every microword to it. It is what keeps the shifter and the bit-field
+# unit off every path into the microcode store's address (doc/critical-path.md).
+LIVE_SHAPES = {
+    # cond: {field: value} that must hold exactly, absent meaning the default
+    'RESM1':  {'asrc': 'DREG', 'bsrc': 'ONE', 'alu': 'SUB', 'size': 'WORD',
+               'szsel': 'FIXED', 'eadst': 0},
+    'RESNEG': {'asrc': 'DREGW', 'alu': 'A', 'szsel': 'CHK'},
+    'GTZ':    {'asrc': 'DREGW', 'bsrc': 'T1', 'alu': 'SUB', 'szsel': 'CHK'},
+}
+SR_DECODE_SHAPES = {('A', 'T0', 'ZERO'), ('AND', 'SR', 'T0'),
+                    ('OR', 'SR', 'T0'), ('EOR', 'SR', 'T0')}
 
 
-def check_live_cond():
+def check_live_shape():
+    defaults = {k: d for k, (_w, _e, d) in isa.FIELDS.items()}
     bad = []
     for i, (f, c) in enumerate(program.WORDS):
-        if f.get('seq') == 'COND' and f.get('cond') in COND_LIVE:
-            why = 'branches on %s, which reads its own result' % f.get('cond')
-        elif f.get('dst') == 'SR':
-            why = 'writes SR, which the interrupt test reads the same clock'
-        else:
-            continue
-        if f.get('alu') == 'SHIFT':
-            bad.append('microword %d %s, and takes the result from the shifter '
-                       '-- %s' % (i, why, c))
-        for src in ('asrc', 'bsrc'):
-            v = f.get(src, '')
-            if any(v.startswith(d) for d in DEEP_SOURCES):
-                bad.append('microword %d %s, and feeds it from %s -- %s'
-                           % (i, why, v, c))
+        if f.get('seq') == 'COND' and f.get('cond') in LIVE_SHAPES:
+            want = LIVE_SHAPES[f['cond']]
+            wrong = ['%s=%s' % (k, f.get(k, defaults[k])) for k, v in want.items()
+                     if f.get(k, defaults[k]) != v]
+            if wrong:
+                bad.append('microword %d branches on %s, which rd68021_seq '
+                           'computes for one shape only, and has %s -- %s'
+                           % (i, f['cond'], ', '.join(wrong), c))
+        if f.get('dst') == 'SR' and f.get('seq') == 'DECODE':
+            shape = (f.get('alu', defaults['alu']), f.get('asrc', defaults['asrc']),
+                     f.get('bsrc', defaults['bsrc']))
+            if shape not in SR_DECODE_SHAPES:
+                bad.append('microword %d writes SR and decodes as %s, and the '
+                           'interrupt and trace tests see only T0 or SR with T0 '
+                           '-- %s' % (i, '/'.join(shape), c))
     return bad
 
 
 # The shifter's operand comes from a data register or from read data and from
-# nothing else. Its input multiplexer is the A bus, which can also carry the
-# bit-field unit's outputs, and bit-field unit -> shifter -> condition codes is
-# the next-longest path once the ones above are gone; scripts/paths.tcl cuts it
-# on the strength of this check.
+# nothing else: rd68021_seq gives it a two-way multiplexer of its own rather than
+# the A bus, which also carries the bit-field unit's outputs. A SHIFT microword
+# naming any other source would shift a data register instead.
 SHIFT_SOURCES = ('DREG', 'RDATA')
 
 
@@ -1018,7 +1027,7 @@ def main():
     global EARLY
     EARLY = mark_early()
 
-    bad = (frames.check() + isa.check() + check_cond_dst() + check_live_cond() + check_shift_src()
+    bad = (frames.check() + isa.check() + check_cond_dst() + check_live_shape() + check_shift_src()
            + check_ea_live() + check_ea_set() + check_rdata_restart() + check_read_no_pipe()
            + check_areg_size() + check_restore_order())
     if bad:

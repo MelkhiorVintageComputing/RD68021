@@ -96,6 +96,8 @@ module core_exc_tb;
 
   // Bus cycles, for the one test whose subject is that there are none.
   int unsigned starts;
+  int unsigned k;
+  string       what;
   initial starts = 0;
   always @(negedge as_n_o) if (rst_n) starts = starts + 1;
 
@@ -526,6 +528,104 @@ module core_exc_tb;
           "mask: and it came in before the next instruction, not after it");
     check(dut.u_seq.dreg[1] === 32'h0000_0031, "mask: the handler ran");
     check_f0(ISP0 - 8, 16'h2000, CODE + 4, 4'h0, 12'h100, "mask");
+
+    // ======================================================================
+    // The same boundary through ANDI and EORI to SR, and a trace turned on by
+    // ORI to SR. The sequencer computes the status register a decoding
+    // microword writes from SR and T0 itself, not from the result bus
+    // (doc/critical-path.md), and these are the three shapes besides MOVE.
+    // ======================================================================
+    for (k = 0; k < 2; k++) begin
+      base_setup();
+      poke_l(32'h0000_0100, HAND);         // vector 64
+      if (k == 0) begin
+        poke_w(CODE + 0, 16'h027C);        // ANDI #$F8FF,SR -- mask 7 -> 0
+        poke_w(CODE + 2, 16'hF8FF);
+      end else begin
+        poke_w(CODE + 0, 16'h0A7C);        // EORI #$0700,SR -- mask 7 -> 0
+        poke_w(CODE + 2, 16'h0700);
+      end
+      poke_w(CODE + 4, 16'h7001);          // MOVEQ #1,D0 -- must NOT run first
+      poke_w(CODE + 6, 16'h60FE);
+      poke_w(HAND + 0, 16'h7231);          // MOVEQ #$31,D1
+      poke_w(HAND + 2, 16'h60FE);
+      iack_mode = IACK_VECTOR;
+      iack_vec  = 8'd64;
+      ipl_n_i   = ~3'd3;
+      reset_dut();
+      run_until(HAND + 2, 2000, reached);
+      what = (k == 0) ? "ANDI to SR" : "EORI to SR";
+      check(reached, {what, ": lowering the mask lets the interrupt in"});
+      check(dut.u_seq.dreg[0] === 32'h0000_0000,
+            {what, ": before the next instruction, not after it"});
+      check_f0(ISP0 - 8, 16'h2000, CODE + 4, 4'h0, 12'h100, what);
+      ipl_n_i = 3'b111;
+    end
+
+    base_setup();
+    poke_l(32'h0000_0024, HAND);           // vector 9
+    poke_w(CODE + 0, 16'h007C);            // ORI #$8000,SR -- T1 on
+    poke_w(CODE + 2, 16'h8000);
+    poke_w(CODE + 4, 16'h7006);            // MOVEQ #6,D0 -- this one is traced
+    poke_w(CODE + 6, 16'h60FE);
+    poke_w(HAND + 0, 16'h7277);            // MOVEQ #$77,D1
+    poke_w(HAND + 2, 16'h60FE);
+    reset_dut();
+    run_until(HAND + 2, 2000, reached);
+    check(reached, "ORI to SR trace: the handler runs");
+    check_f0(ISP0 - 12, 16'hA700, CODE + 6, 4'h2, 12'h024, "ORI to SR trace");
+    check(peek_l(ISP0 - 4) === CODE + 4,
+          "ORI to SR trace: the MOVEQ after it was the one traced");
+    check(dut.u_seq.dreg[0] === 32'h0000_0006,
+          "ORI to SR trace: and it ran before the trap");
+
+    // ======================================================================
+    // CHK -- PRM 4, vector 6. The sequencer decides "below zero" and "above
+    // the bound" from the register and the bound themselves, not from the
+    // result bus (doc/critical-path.md), and the sweep only runs CHK in bounds,
+    // so both trapping arms are here, at both sizes, with the N bit PRM 4 says
+    // each leaves: set below zero, clear above the bound.
+    //
+    //          size    D0             bound         traps  N
+    // ======================================================================
+    for (k = 0; k < 7; k++) begin
+      logic [31:0] d0v;
+      bit          lng, trap, nset;
+      case (k)
+        0: begin lng = 0; d0v = 32'hFFFF_FFF0; trap = 1; nset = 1; end  // -16
+        1: begin lng = 0; d0v = 32'h0000_0070; trap = 1; nset = 0; end  // 112 > 100
+        2: begin lng = 0; d0v = 32'h0001_0050; trap = 0; nset = 0; end  // word 80
+        3: begin lng = 0; d0v = 32'h0000_0064; trap = 0; nset = 0; end  // on the bound
+        4: begin lng = 1; d0v = 32'h0001_0000; trap = 1; nset = 0; end  // 65536 > 100
+        5: begin lng = 1; d0v = 32'h8000_0000; trap = 1; nset = 1; end  // most negative
+        default: begin lng = 1; d0v = 32'h0000_0064; trap = 0; nset = 0; end
+      endcase
+      base_setup();
+      poke_l(32'h0000_0018, HAND);         // vector 6
+      poke_w(HAND, 16'h60FE);              // BRA *
+      poke_w(CODE + 0, 16'h203C);          // MOVE.L #d0v,D0
+      poke_l(CODE + 2, d0v);
+      if (lng) begin
+        poke_w(CODE + 6, 16'h413C);        // CHK.L #100,D0
+        poke_l(CODE + 8, 32'd100);
+        poke_w(CODE + 12, 16'h7E01);       // MOVEQ #1,D7
+        poke_w(CODE + 14, 16'h60FE);
+      end else begin
+        poke_w(CODE + 6, 16'h41BC);        // CHK.W #100,D0
+        poke_w(CODE + 8, 16'd100);
+        poke_w(CODE + 10, 16'h7E01);       // MOVEQ #1,D7
+        poke_w(CODE + 12, 16'h60FE);
+      end
+      reset_dut();
+      dut.u_seq.dreg[7] = 32'h0;
+      run_until(HAND, 600, reached);
+      what = $sformatf("CHK.%s with D0=%08h", lng ? "L" : "W", d0v);
+      check(reached === trap, {what, trap ? ": traps" : ": does not trap"});
+      if (trap)
+        check(dut.u_seq.sr_q[3] === nset, {what, nset ? ": sets N" : ": clears N"});
+      else
+        check(dut.u_seq.dreg[7] === 32'h1, {what, ": carries on"});
+    end
 
     // ======================================================================
     // Level seven -- UM 6.1.9. "A level 7 interrupt is nonmaskable", and what
