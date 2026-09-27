@@ -13,29 +13,31 @@ make audit     # every register's reset, and the one named exception
 
 ## The numbers
 
-Constrained at **40 ns, the 25 MHz grade** (`scripts/rd68021.xdc`,
-`scripts/rd68021.sdc`), with the coprocessor interface built:
+Constrained at **33.333 ns, 30 MHz** (`scripts/rd68021.xdc`,
+`scripts/rd68021.sdc`), between the manual's 25 and 33.33 MHz grades, with the
+coprocessor interface built:
 
 | | Artix-7 xc7a100t-1 (Vivado) | Cyclone V 5CSEMA5 (Quartus) |
 |---|--:|--:|
-| logic | **7,805 Slice LUTs (12.3 %)** | **10,799 ALMs (34 %)** |
-| registers | 1,872 | 5,907 |
+| logic | **7,815 Slice LUTs (12.3 %)** | **10,914 ALMs (34 %)** |
+| registers | 1,872 | 5,914 |
 | block memory | **12 RAMB36** (the microcode store) | none -- see below |
 | distributed RAM | 76 LUTs (the instruction cache) | -- |
 | DSP | 4 (the multiplier) | 3 |
-| **frequency, static** | **27.97 MHz** (35.75 ns) | **30.55 MHz** |
+| **frequency, static** | **31.34 MHz** (31.90 ns) | **31.5 MHz** |
 
-**Both parts clear the MC68020's 25 MHz speed grade on static timing**, and
-there is no other kind of timing to quote: the routes the microcode cannot take
+**Both parts meet 30 MHz on static timing**, and there is no other kind of
+timing to quote: the routes the microcode cannot take
 are no longer in the netlist (`doc/critical-path.md`). Until the constraint was
 tightened from 60 ns (16.67 MHz) to 40 ns, the Artix-7 reported 21.83 MHz:
 Vivado stops optimising once a constraint is met, so the 60 ns figure measured
 the constraint as much as the design.
 
-**At 30 MHz** (a 33.33 ns trial, not checked in) the Artix-7 meets timing with
-1.43 ns of slack: 31.34 MHz static, 7,815 Slice LUTs. The 33.33 MHz grade is the
-next step, and `doc/critical-path.md` says what stands in its way -- the
-bit-field unit's width read from a data register, into the ALU.
+**At the 33.33 MHz grade** (a 30 ns trial, not checked in) the Artix-7 meets
+timing too, with 1.23 ns of slack: 34.76 MHz static, 7,838 Slice LUTs. What
+limits it there, and what comes next, is in `doc/critical-path.md`. The bus
+unit's own timing is the other half of a speed grade, and `make timing`
+(`doc/ac-timing.md`) already finds all four grades feasible.
 
 The plan estimated 14,000–18,000 Slice LUTs and 25–35 block RAMs at 14–18 MHz.
 The design came in at under half the logic and a third of the memory, and faster:
@@ -43,7 +45,7 @@ most of the saving is the bus unit owning dynamic sizing (no second-word-of-a-lo
 microcode at all) and a microcode store of 1,529 words where the plan feared
 15,000.
 
-A three-clock bus cycle at 27.97 MHz is 9.3 M bus cycles a second, against a
+A three-clock bus cycle at 31.34 MHz is 10.4 M bus cycles a second, against a
 real 16.67 MHz MC68020's 5.6 M.
 
 ### Reading a frequency off a slack

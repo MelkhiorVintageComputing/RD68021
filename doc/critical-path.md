@@ -8,12 +8,13 @@ Artix-7, with the coprocessor interface:
 
 | constraint | static frequency | slack | Slice LUTs |
 |---|--:|--:|--:|
-| 40 ns, the 25 MHz grade (`scripts/rd68021.xdc`) | **27.97 MHz** (35.75 ns) | +4.25 ns | 7,805 |
-| 33.33 ns, a 30 MHz trial (not checked in) | **31.34 MHz** (31.90 ns) | +1.43 ns | 7,815 |
+| 40 ns, the 25 MHz grade | 27.97 MHz (35.75 ns) | +4.25 ns | 7,805 |
+| **33.333 ns, 30 MHz** (`scripts/rd68021.xdc`) | **31.34 MHz** (31.90 ns) | +1.43 ns | 7,815 |
+| 30 ns, the 33.33 MHz grade (a trial, not checked in) | **34.76 MHz** (28.77 ns) | +1.23 ns | 7,838 |
 
 There are no exclusions: static timing is the real answer. The constraint still
 matters -- Vivado stops optimising once it is met, which is why the same RTL
-reports 28 MHz asked for 25 and 31 MHz asked for 30.
+reports 28 MHz asked for 25, 31 asked for 30 and 35 asked for 33.33.
 
 ## The routes that are gone
 
@@ -57,14 +58,16 @@ without the assumption.
 
 ## What is left
 
-The 40 ns build's top families:
+At the checked-in 33.333 ns, the top families all begin at `xw_q` and end in the
+condition codes, the registers and the fetch unit -- the same datapath the 40 ns
+build showed first:
 
 | period | family |
 |--:|---|
-| 35.75 ns | `xw_q` → the condition codes |
-| 35.01 ns | `xw_q` → the address registers |
-| 34.98 ns | `xw_q` → the fetch unit's fill point |
-| 34.63 ns | `xw_q` → the data registers |
+| 31.90 ns | `xw_q` → the condition codes |
+| 31.88 ns | `xw_q` → the fetch unit's fill point |
+| 31.29 ns | `xw_q` → the data registers |
+| 30.91 ns | `xw_q` → the address registers |
 
 They are one datapath with four ends, and they are real paths:
 
@@ -75,7 +78,22 @@ They are one datapath with four ends, and they are real paths:
   the bit-field unit's width logic and 40-bit window, onto the A bus, through
   the ALU, and into the flags or a register.
 
-That is 36 to 42 levels, three quarters of the delay routing.
+That is 33 to 40 levels, three quarters of the delay routing.
+
+Asked for 30 ns, Vivado gets that datapath under 30 ns too, and what is left
+at 34.76 MHz is:
+
+| period | family |
+|--:|---|
+| 28.77 ns | the microcode store's output → the condition codes |
+| 28.48 ns | the store's output → the fetch unit's fill point |
+| 27.61 ns | the store's output → the data registers |
+| 27.35 ns | the early retire (half period) → the fetch unit's holding register |
+
+The first three are the microword's own fields choosing the operands and the
+operation, through the ALU, into a register: the store's output fans out to most
+of the sequencer, and routing is two thirds of the delay. The fourth is the early
+retire's half-period path, 1.3 ns of slack in 15, about 36.6 MHz.
 
 ## If it has to be faster
 
@@ -88,14 +106,14 @@ them.
 - `doc/timing-divergences.md` shows they have clocks to spare: BFFFO is 4 here
   and 18 in the manual.
 
-**After that, the microcode store's output.** It fans out to most of the
-sequencer, and its routing is most of the next families' delay; duplicating the
-output register would attack it.
+**Past 33.33 MHz, the microcode store's output.** It fans out to most of the
+sequencer, and its routing is most of the 30 ns build's worst families;
+duplicating the output register would attack it.
 
-**The early retire's half-period path** (`doc/timing-divergences.md`) comes
-after both, at about 37 MHz. The bus unit's falling-edge verdict reaches the
-fetch unit through the checkpoint-write gating in 15 levels. In the 30 MHz trial
-it has 3.1 ns of slack out of 16.7.
+**The early retire's half-period path** (`doc/timing-divergences.md`) is close
+behind, at about 36.6 MHz. The bus unit's falling-edge verdict reaches the fetch
+unit through the checkpoint-write gating in 14 levels. Taking the fetch unit's
+cache lookup off the checkpoint-write gate would be the fix.
 
 **The bus unit's own paths are not the limit.** Its worst is the late bus-error
 term into the operand registers, twelve levels in half a period.
