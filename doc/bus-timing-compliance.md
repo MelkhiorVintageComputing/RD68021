@@ -62,7 +62,9 @@ the part that needs no pad delays: the distances between clock edges.
 
 ## The operand, not the bus cycle
 
-The sequencer presents one request per **operand** and stalls until `req_ack`. The
+The sequencer presents one request per **operand** and stalls until it completes:
+on `req_ack`, or, for a microword the assembler marks `early`, on `req_early` at the
+edge that ends S5 (`doc/timing-divergences.md`, "the early retire"). The
 bus unit owns the split into however many cycles Table 5-6 requires for that size,
 that alignment and whatever port answers; it drives SIZ1/SIZ0 with the number of
 bytes **remaining** (5.1.1, Table 5-2), routes the lanes per Tables 5-4 and 5-5, and
@@ -81,11 +83,17 @@ Two things fall out of that and are checked:
   the bus" invariant becomes here, and it is why the split lives on this side.
 
 `req_last` is combinational and true throughout S5 of an operand's final cycle: the
-operand completes at the rising edge that ends S5, so the sequencer has **half a
-clock** to present its next request. That half clock is the design's tightest path
-by construction, and it is what the microword's successor previews exist to fill.
-`fetch_last` is the same signal for the instruction fetch port — the prefetch source
-needs it for the same reason, and without it a prefetch is issued twice.
+operand completes at the rising edge that ends S5, and a request already presented
+by then is taken on that edge. The sequencer uses it only to drop the request it
+has just had answered, so that it is not taken twice. `fetch_last` is the same
+signal for the instruction fetch port, which does use it to run prefetches back to
+back — without it a prefetch is issued twice.
+
+`req_early` is a falling-edge register, set on the edge entering S5 when the data
+operand is finishing with no bus error and no retry — the second of Table 5-8's two
+samples has already been taken there, so nothing can change the verdict. A
+microword marked `early` retires on it, half a clock later, instead of on the
+registered `req_ack` a clock after that. A cycle that ends in a fault never sets it.
 
 ## Dynamic bus sizing and misalignment
 
@@ -178,12 +186,13 @@ instead, which says the same thing one expression earlier.
 | The RESET instruction's 512-clock pulse | M5 |
 | The cycle aborted before AS on a cache hit | M11 |
 | Two of figure 5-44's seven arbiter states | `doc/divergences.md` |
-| One idle clock between operands | see below |
+| Idle clocks between operands | see below |
 
-**One idle clock between operands.** A new request is taken at the rising edge that
-ends the previous operand only if the sequencer has already presented it, which is
-what `req_last` is for. A source that instead waits for `req_ack` costs one clock
-between operands. That is a cycle-count divergence and not a protocol one — the bus
-cycles themselves are back to back within an operand, which is what Table 5-6
-counts — and it will go away when the microcode drives the port through its
-previews. It is recorded here so that the measurement in M12 is not a surprise.
+**Idle clocks between operands.** A new request is taken at the rising edge that
+ends the previous operand only if the sequencer has already presented it, and the
+sequencer presents the next microword's request only after the previous one has
+retired. After a microword that retires early that is **one idle clock** between
+operands; after one that takes its read data, which must wait for `req_ack`, it is
+**two**. That is a cycle-count divergence and not a protocol one — the bus cycles
+within an operand are back to back, which is what Table 5-6 counts — and
+`doc/timing-divergences.md` measures it.

@@ -64,9 +64,10 @@ Execution in Progress".
 `$B`.** RTE still takes a short frame apart.
 
 - A *data* fault always has an instruction in progress here: the microcode stalls
-  on `req_ack`, so the bus unit never runs ahead of the sequencer the way a real
-  MC68020's does -- which is how a real part produces a short frame for a data
-  access.
+  until its operand completes -- a microword that retires early does so only when
+  the bus unit has seen the operand finish with no fault -- so the bus unit never
+  runs ahead of the sequencer the way a real MC68020's does, which is how a real
+  part produces a short frame for a data access.
 - A *prefetch* fault is taken by the microword that needs the missing word -- in
   practice the instruction's last microword, which writes the result and advances
   the pipe. RTE re-executes it, and it reads the working registers, which only
@@ -151,17 +152,18 @@ system that relies on either behaviour should say which.
 
 ---
 
-## One idle clock between operands, for a source that waits for req_ack
+## Idle clocks between operands
 
 `req_last` is combinational and true throughout S5 of an operand's final cycle: the
-operand completes at the rising edge that ends S5, and a source that presents its
-next request within that half clock gets a back-to-back cycle. A source that
-instead waits for `req_ack` costs one clock.
+operand completes at the rising edge that ends S5, and a request already presented
+then gets a back-to-back cycle. The sequencer never has one ready: it presents a
+microword's request only once the microword before has retired. A microword that
+retires early (`doc/timing-divergences.md`) does so on the edge that ends S5, which
+leaves **one** idle clock before the next operand's S0; one that takes its read
+data retires on `req_ack` a clock later, which leaves **two**.
 
 This is a cycle-count difference and not a protocol one — the cycles *within* an
-operand are back to back, which is what UM Table 5-6 counts — and it goes away when
-the microcode drives the port through its successor previews. Recorded so that the
-measurement in M12 is not a surprise.
+operand are back to back, which is what UM Table 5-6 counts.
 
 ---
 

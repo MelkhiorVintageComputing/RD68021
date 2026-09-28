@@ -4,22 +4,36 @@
 groups the worst paths into families, and checks that the routes below, which
 no microword can take, are absent from the netlist -- it fails if one comes back.
 
-Artix-7, with the coprocessor interface:
+Artix-7, with the coprocessor interface, on today's tree (commit 640a47b):
 
 | constraint | static frequency | slack | Slice LUTs |
 |---|--:|--:|--:|
-| 40 ns, the 25 MHz grade | 27.97 MHz (35.75 ns) | +4.25 ns | 7,805 |
-| **33.333 ns, 30 MHz** (`scripts/rd68021.xdc`) | **31.34 MHz** (31.90 ns) | +1.43 ns | 7,815 |
-| 30 ns, the 33.33 MHz grade (a trial, not checked in) | **34.76 MHz** (28.77 ns) | +1.23 ns | 7,838 |
+| **33.333 ns, 30 MHz** (`scripts/rd68021.xdc`) | **35.60 MHz** (28.09 ns) | +2.62 ns | 7,762 |
+| 25 ns, 40 MHz (a trial, not checked in) | **41.57 MHz** (24.05 ns) | +0.78 ns | 7,777 |
+
+The Cyclone V makes 33.05 MHz at 33.333 ns (`doc/implementation.md`).
 
 There are no exclusions: static timing is the real answer. The constraint still
 matters -- Vivado stops optimising once it is met, which is why the same RTL
-reports 28 MHz asked for 25, 31 asked for 30 and 35 asked for 33.33.
+reports 35.6 MHz asked for 30 and 41.6 asked for 40.
+
+How it got here, each step measured on the Artix-7:
+
+| | constraint | static frequency |
+|---|---|--:|
+| the M13 tree | 60 ns | 22.28 MHz |
+| after the performance phases | 60 ns | 21.83 MHz |
+| the same RTL, constrained harder | 40 ns | 25.54 MHz |
+| the unreachable routes taken out (commit 23f64a0) | 40 ns | 27.97 MHz |
+| the same RTL | 33.333 ns | 31.34 MHz |
+| the same RTL, trial | 25 ns | 39.05 MHz, failing by 0.61 ns |
+| bit-field results off the A bus (c2a3ba0), trial | 25 ns | 40.79 MHz |
+| the multiplier's product off the A bus (640a47b), trial | 25 ns | 41.57 MHz |
 
 ## The routes that are gone
 
-Until the change recorded in `doc/size-and-speed.md`, the worst paths were ones
-no microword could take, and `scripts/paths.tcl` cut them out of a report:
+The worst paths used to be ones no microword could take, and `scripts/paths.tcl`
+could only cut them out of a report:
 
 | route | what it was |
 |---|---|
@@ -43,77 +57,74 @@ from registers instead of the result bus:
 The third is gone because the shifter has a two-way operand multiplexer of its
 own: a data register or read data.
 
-Each of these is only the same as before for a microword of exactly the shape
-the RTL assumes, so the assembler holds them there:
+## The deep units' results off the A bus
 
-- `check_live_shape` in `tools/ucode/assemble.py` covers the conditions and the
-  decoding SR writes;
-- `check_shift_src` covers the shifter's operand.
+With those gone, a 40 MHz trial showed the next layer of the same thing: the
+bit-field unit's results, and then the multiplier's product, rode the A bus, so
+static timing had to time them through the adder, into the condition codes, into
+the prefetch address and into the fetch unit. No microword sends them there.
 
-Both run in `make ucode-check`, which is in `make check`.
+- **The four bit-field sources** (field, sign-extended field, first-one offset,
+  merged word) are only ever copied or complemented into a data register or a T
+  register.
+- **The multiplier's two halves** are only ever copied, at long size, into a data
+  register. The MULx.L condition codes read the product itself.
 
-Removing the routes cost 117 Slice LUTs and moved the 40 ns static figure from
-25.54 to 27.97 MHz. That is the old "reachable paths" estimate of 27.89 MHz, now
-without the assumption.
+Both now have a multiplexer of their own, and join the result only at those
+register destinations (`y_reg` in `rtl/rd68021_seq.sv`). The bit fields' did most
+of the work: the 25 ns trial went from failing by 0.61 ns to 40.79 MHz, and the
+design got 199 LUTs smaller.
+
+Each of these narrow routes is only the same as before for a microword of the
+shape the RTL assumes, so the assembler holds them there. These checks are in
+`tools/ucode/assemble.py`, and all run in `make ucode-check`, which is in
+`make check`:
+
+| check | holds |
+|---|---|
+| `check_live_shape` | the three conditions, and the SR writes that decode |
+| `check_shift_src` | the shifter's operand |
+| `check_bf_shape` | the bit-field sources |
+| `check_mul_shape` | the product and the MUL32/MUL64 codes |
 
 ## What is left
 
-At the checked-in 33.333 ns, the top families all begin at `xw_q` and end in the
-condition codes, the registers and the fetch unit -- the same datapath the 40 ns
-build showed first:
+At the checked-in 33.333 ns the first families reported are the early retire's
+half-period paths, `req_early` into the fetch unit, at 35.60 MHz. Then there are
+full-period ones: the microcode store's output into the data registers
+(39.2 MHz), and a data register back into the register file (39.7 MHz).
+
+Asked for 40 MHz, Vivado gets the early retire to about 42.6 MHz, and what limits
+it at 41.57 MHz is:
 
 | period | family |
 |--:|---|
-| 31.90 ns | `xw_q` → the condition codes |
-| 31.88 ns | `xw_q` → the fetch unit's fill point |
-| 31.29 ns | `xw_q` → the data registers |
-| 30.91 ns | `xw_q` → the address registers |
+| 24.05 ns | the microcode store's output → the shifter → the result bus → CACR's cache-control pulse → the instruction cache's valid bits |
+| 23.84 ns | the store's output → the store's address |
+| 23.72 ns | the store's output → the fetch unit's fill point |
 
-They are one datapath with four ends, and they are real paths:
-
-- `xw_q` is the extension word;
-- for a bit-field instruction, bit 5 of it chooses whether the width comes from
-  a data register, and bits 2:0 name the register;
-- so the register file is read through a mux the extension word steers, into
-  the bit-field unit's width logic and 40-bit window, onto the A bus, through
-  the ALU, and into the flags or a register.
-
-That is 33 to 40 levels, three quarters of the delay routing.
-
-Asked for 30 ns, Vivado gets that datapath under 30 ns too, and what is left
-at 34.76 MHz is:
-
-| period | family |
-|--:|---|
-| 28.77 ns | the microcode store's output → the condition codes |
-| 28.48 ns | the store's output → the fetch unit's fill point |
-| 27.61 ns | the store's output → the data registers |
-| 27.35 ns | the early retire (half period) → the fetch unit's holding register |
-
-The first three are the microword's own fields choosing the operands and the
-operation, through the ALU, into a register: the store's output fans out to most
-of the sequencer, and routing is two thirds of the delay. The fourth is the early
-retire's half-period path, 1.3 ns of slack in 15, about 36.6 MHz.
+The first is one more route no microword takes. `cach_op`, the pulse a MOVEC to
+CACR sends the cache when it sets C or CE, is decoded from the result bus, so the
+shifter is in front of it; the MOVEC that writes CACR never shifts. The next two
+are the store's output fanning out to most of the sequencer, three quarters
+routing.
 
 ## If it has to be faster
 
-**The bit-field unit's width and offset are the lever.** Registering them would
-take the register read and the width logic off every path above. That means one
-microword computes the width and offset into a latch before the one that uses
-them.
+**`cach_op` off the result bus.** Taking the pulse from the operand MOVEC
+actually writes -- a data register or read data -- would remove the first family
+above, the same way the others went.
 
-- The cost is a clock on each bit-field instruction.
-- `doc/timing-divergences.md` shows they have clocks to spare: BFFFO is 4 here
-  and 18 in the manual.
+**The early retire's half-period path** (`doc/timing-divergences.md`) is next, at
+about 42.6 MHz. The bus unit's falling-edge verdict reaches the fetch unit through
+the checkpoint-write gating in 17 levels. Taking the fetch unit's cache lookup off
+the checkpoint-write gate would be the fix.
 
-**Past 33.33 MHz, the microcode store's output.** It fans out to most of the
-sequencer, and its routing is most of the 30 ns build's worst families;
-duplicating the output register would attack it.
-
-**The early retire's half-period path** (`doc/timing-divergences.md`) is close
-behind, at about 36.6 MHz. The bus unit's falling-edge verdict reaches the fetch
-unit through the checkpoint-write gating in 14 levels. Taking the fetch unit's
-cache lookup off the checkpoint-write gate would be the fix.
+**The microcode store's output.** It fans out to most of the sequencer, and its
+routing is most of the delay of what remains. Duplicating the output register
+would attack it.
 
 **The bus unit's own paths are not the limit.** Its worst is the late bus-error
-term into the operand registers, twelve levels in half a period.
+term into the operand registers, twelve levels in half a period. The manual has
+no speed grade above 33.33 MHz, and `make timing` finds all four of its grades
+feasible on the bus side.

@@ -233,8 +233,9 @@ compiled program uses none of it.
 
 ## Area and clock
 
-`make impl`, Artix-7: the interface costs 493 Slice LUTs (7 %) and takes the clock from
-22.72 to 22.28 MHz. `COPROCESSOR = 0` does not give either back -- it only makes F-line
+`make impl`, Artix-7, as measured at M13 under the 60 ns constraint of the time: the
+interface costs 493 Slice LUTs (7 %) and took the clock from 22.72 to 22.28 MHz.
+`doc/implementation.md` has today's figures, all with the interface built. `COPROCESSOR = 0` does not give either back -- it only makes F-line
 words F-line exceptions. `doc/implementation.md`.
 
 ## Cycle counts

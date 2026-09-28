@@ -1788,3 +1788,21 @@ sum, and the count came back as $D0000004.
 
 **Fixed by:** a read's data register starts at zero in `rd68021_biu.sv`.
 
+
+## Post-M13 · The testbenches missed every instruction that ended in an early retire
+
+**What:** the core harness, and `core_cycles_tb` after it, sampled `retire` on the
+falling edge to find instruction boundaries. Once a bus microword could retire
+early -- on the bus unit's falling-edge verdict that its operand finished cleanly --
+`retire` rose at that very falling edge, after the sample. The boundary of every
+instruction whose last microword was an early-retiring write went unseen.
+
+**Found by:** `make cycles`, which stopped measuring RTS, RTD and the two successful
+CAS rows: each is set up by a write (PEA, CLR) whose boundary the harness never saw,
+so it never armed its measurement. The core itself ran them correctly.
+
+**Fixed by:** the harness samples an eighth of a period after the falling edge
+(`SETTLE` in `rd68021_core_harness.svh`), where both kinds of retire have settled
+and both hold until the rising edge. `core_fault_tb` gained a bus error that arrives
+only at Table 5-8's second sample, the one fault an early retire has to see coming,
+and fails if the bus unit's guard against it is removed.

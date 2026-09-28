@@ -36,7 +36,8 @@ the rule is the irreversible decision; the frames themselves are bookkeeping.
 
 Two things decide it:
 
-- **Data faults.** The microcode stalls on `req_ack`, so there is no
+- **Data faults.** The microcode stalls until its operand completes (an early
+  retire happens only on a clean completion), so there is no
   bus/sequencer concurrency and a data access always has an instruction in
   progress. A real MC68020, whose bus controller runs ahead, can retire an
   instruction while its write is still outstanding, and so can produce a short
@@ -350,7 +351,7 @@ could not, until they were rewritten.
 
 | | what would have to be wrong for it to fail |
 |---|---|
-| `MOVEM.L (A0)+,D0-D7` faulting on its fifth transfer | the register counter or the mask is not restored, and the address register ends somewhere other than eight steps on |
+| `MOVEM.L (A0)+,D0-D7` faulting on its fifth transfer | the remaining mask -- which names the next register, lowest bit first -- is not restored, and the address register ends somewhere other than eight steps on |
 | a misaligned `MOVE.L` to an 8-bit port faulting on its third cycle | the frame records the operand rather than the **residual**. A sentinel is left over the bytes that already went, because both a correct rerun and a wrong one leave the right four bytes in memory |
 | a data fault repaired by the handler, `DF` cleared | RTE redoes the access. The handler writes a value the instruction would not have, for the same reason |
 | a data read emulated by the handler into `+$2C`, with the page still missing | RTE runs a bus cycle of its own instead of taking the operand out of the frame |

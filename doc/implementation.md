@@ -1,8 +1,9 @@
 # Implementation
 
-What the design comes to on real FPGA fabric, measured, and how. Every number
-here is from one tree -- the M12 commit -- with `ICACHE_ENTRIES = 64` and
-`COPROCESSOR = 0`, and from these targets:
+What the design comes to on real FPGA fabric, measured, and how. "The numbers"
+and "Where the area goes" are from one tree -- commit 640a47b, the fmax-40 fixes
+-- with `ICACHE_ENTRIES = 64` and `COPROCESSOR = 1`; the sections after them say
+which tree and which constraint each of theirs came from. The targets:
 
 ```sh
 make impl      # Vivado 2025.2 place and route, xc7a100tcsg324-1, out of context
@@ -19,25 +20,25 @@ coprocessor interface built:
 
 | | Artix-7 xc7a100t-1 (Vivado) | Cyclone V 5CSEMA5 (Quartus) |
 |---|--:|--:|
-| logic | **7,815 Slice LUTs (12.3 %)** | **10,914 ALMs (34 %)** |
-| registers | 1,872 | 5,914 |
-| block memory | **12 RAMB36** (the microcode store) | none -- see below |
+| logic | **7,762 Slice LUTs (12.2 %)** | **11,690 ALMs (36 %)** |
+| registers | 1,872 | 5,849 |
+| block memory | **11 RAMB36 + 1 RAMB18** (the microcode store) | none -- see below |
 | distributed RAM | 76 LUTs (the instruction cache) | -- |
 | DSP | 4 (the multiplier) | 3 |
-| **frequency, static** | **31.34 MHz** (31.90 ns) | **31.5 MHz** |
+| **frequency, static** | **35.60 MHz** (28.09 ns) | **33.05 MHz** |
 
-**Both parts meet 30 MHz on static timing**, and there is no other kind of
-timing to quote: the routes the microcode cannot take
+**Both parts meet the MC68020's top speed grade, 33.33 MHz, on static timing**,
+while constrained only for 30, and there is no other kind of timing to quote: the routes the microcode cannot take
 are no longer in the netlist (`doc/critical-path.md`). Until the constraint was
 tightened from 60 ns (16.67 MHz) to 40 ns, the Artix-7 reported 21.83 MHz:
 Vivado stops optimising once a constraint is met, so the 60 ns figure measured
 the constraint as much as the design.
 
-**At the 33.33 MHz grade** (a 30 ns trial, not checked in) the Artix-7 meets
-timing too, with 1.23 ns of slack: 34.76 MHz static, 7,838 Slice LUTs. What
-limits it there, and what comes next, is in `doc/critical-path.md`. The bus
-unit's own timing is the other half of a speed grade, and `make timing`
-(`doc/ac-timing.md`) already finds all four grades feasible.
+**At 40 MHz** (a 25 ns trial, not checked in) the Artix-7 meets timing too:
+41.57 MHz static, 7,777 Slice LUTs. What limits it there, and what comes next, is
+in `doc/critical-path.md`. The manual has no grade above 33.33 MHz, and the bus
+unit's own timing is the other half of a speed grade: `make timing`
+(`doc/ac-timing.md`) finds all four of the manual's grades feasible.
 
 The plan estimated 14,000–18,000 Slice LUTs and 25–35 block RAMs at 14–18 MHz.
 The design came in at under half the logic and a third of the memory, and faster:
@@ -45,7 +46,7 @@ most of the saving is the bus unit owning dynamic sizing (no second-word-of-a-lo
 microcode at all) and a microcode store of 1,529 words where the plan feared
 15,000.
 
-A three-clock bus cycle at 31.34 MHz is 10.4 M bus cycles a second, against a
+A three-clock bus cycle at 35.60 MHz is 11.9 M bus cycles a second, against a
 real 16.67 MHz MC68020's 5.6 M.
 
 ### Reading a frequency off a slack
@@ -62,22 +63,22 @@ together, so its number is quoted directly.
 
 ### Where the area goes (Artix-7, Slice LUTs)
 
-| | LUTs | FFs | RAMB36 | DSP |
+| | LUTs | FFs | block RAM | DSP |
 |---|--:|--:|--:|--:|
-| sequencer, datapath and register file | 3,436 | 1,055 | | 4 |
+| sequencer, datapath, register file and coprocessor interface | 4,134 | 1,063 | | 4 |
 | — shifter | 903 | | | |
-| — bit-field unit | 742 | | | |
+| — bit-field unit | 760 | | | |
 | — divider | 432 | 139 | | |
-| — opcode decoder | 237 | | | |
-| — microcode store | | | 11 | |
-| bus unit | 598 | 388 | | |
-| fetch unit and instruction cache | 477 (76 as RAM) | 280 | | |
-| **total** | **6,824** | **1,862** | **11** | **4** |
+| — opcode decoder | 314 | | | |
+| — microcode store | | | 11 RAMB36 + 1 RAMB18 | |
+| bus unit | 609 | 390 | | |
+| fetch unit and instruction cache | 612 (76 as RAM) | 280 | | |
+| **total** | **7,762** | **1,872** | **11 + 1** | **4** |
 
-The shifter and the bit-field unit together are a quarter of the design. They
-buy the fastest rows in `doc/timing-divergences.md` -- every shift in two clocks,
-BFFFO in four -- and they are also the start of the longest path
-(`doc/critical-path.md`).
+The shifter and the bit-field unit together are a fifth of the design. They buy
+some of the fastest rows in `doc/timing-divergences.md` -- every shift in one
+clock, BFFFO in four -- and they used to be the start of the longest paths, until
+their results were given routes of their own (`doc/critical-path.md`).
 
 ### Quartus does not put the microcode store in block memory
 
@@ -89,7 +90,7 @@ with the attribute on the always block and on the register declaration: zero
 block-memory bits every time, and no message saying why. Vivado infers it
 from the same source.
 
-It fits in 34 % of the part and makes 30.5 MHz as it is, so it is recorded here
+It fits in 36 % of the part and makes 33.0 MHz as it is, so it is recorded here
 rather than fixed. The known way round it -- an array initialised from a file --
 needs an `initial` block, which `rtl/` does not allow.
 
@@ -147,9 +148,10 @@ date, and two runs of the same RTL finished 0.13 % apart (`doc/sun3.md`). Every
 phase's gain is well clear of that.
 
 All four phases were implemented at the old 60 ns constraint; the MHz column is
-comparable across them but not with the 40 ns figures above.
+comparable across them but not with the figures above. BRAM counts Vivado's block
+RAM cells, RAMB36 and RAMB18 alike.
 
-| | Slice LUTs | FF | BRAM | MHz | `make cycles` | SunOS clocks |
+| | Slice LUTs | FF | BRAM cells | MHz | `make cycles` | SunOS clocks |
 |---|--:|--:|--:|--:|--:|--:|
 | M13 | 7,317 | | 11 | 22.28 | 1499 | 2,278,439,102 |
 | 1: stall, read merge, MOVEM, call/return | 7,451 | 1,870 | 11 | 22.11 | 1316 | 2,037,305,996 |
@@ -162,7 +164,8 @@ the mix went from 12.5 % slower than the part to 11 % faster, and SunOS from
 boot to its result takes 18 % fewer clocks. The clock moved by less than
 place-and-route's own run-to-run noise, and the limiting path is the same
 family throughout: a data register, or `xw_q` in Phase 2, through the
-condition multiplexer into the micro-ROM's address. With the unreachable routes excluded (`make paths`) Phase 3
+condition multiplexer into the micro-ROM's address. With the unreachable routes
+excluded -- which `make paths` did then; they are gone from the RTL now -- Phase 3
 is 27.46 MHz, limited by a data register through the ALU and the pipe-advance
 commit into the fetch point -- the push into a full queue on the same edge as
 the pop, which Phase 3 added -- and Phase 4 is 27.88 MHz, limited by the
@@ -172,8 +175,8 @@ micro-ROM's output into the status register.
 the bus unit and has half a period to reach every commit enable and the
 micro-ROM's address. Routed, it is 16 levels with 13.75 ns of slack against the
 30 ns half period: it would bind only above about 30.8 MHz, well clear of the
-full-clock paths. The microword grew a bit to 103, which costs the ROM a twelfth
-block RAM.
+full-clock paths. The microword grew a bit to 103, and Vivado mapped the store to
+one more block RAM cell than in Phases 1 to 3.
 
 ## The reset audit
 

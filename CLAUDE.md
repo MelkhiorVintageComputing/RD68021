@@ -154,7 +154,7 @@ Implementation, each a vendor run of tens of minutes:
 
 ```sh
 make impl             # Vivado place and route, xc7a100t, out of context
-make paths            # what limits the clock, with the unreachable routes excluded
+make paths            # what limits the clock, and proof the unreachable routes are gone
 make quartus          # the Cyclone V fit, for a second toolchain's number
 ```
 

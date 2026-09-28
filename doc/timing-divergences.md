@@ -23,8 +23,8 @@ dominate, and there this design is still slower than the part.
 ## The structure that decides most of it
 
 The sequencer does not count clocks. A microword with no bus request costs one
-clock; a microword with one costs the whole bus cycle, because it stalls on
-`req_ack`. So an instruction's cycle count is the length of its microcode plus
+clock; a microword with one costs the whole bus cycle, because it stalls until the
+operand completes -- on `req_ack`, or on the early retire below. So an instruction's cycle count is the length of its microcode plus
 the bus cycles it asks for, and nothing else -- there is no table of cycle
 counts anywhere in this design and no way to tune one.
 
@@ -104,7 +104,7 @@ microcode now follows rather than a special case:
 |---|---|---|---|
 | **Every memory operand** | exact to +2 on the fast modes; +2 to +4 on the others; `MOVE.L (A0),(A2)` +2 | slower | The shape above. What is left on the fast modes is the clock that gets a request to S0 and, on a read, the clock after S5 that its data needs; on the other modes the effective-address call as well. Overlapping operand cycles with microcode needs the bus unit to accept a request before the microword that wants the data -- a queue, and a second outstanding request in `doc/checkpoint.md`'s restart rules. |
 | **MOVEM** | +7 storing four registers; -1 loading two | slower on stores | Two microwords per register -- the transfer and the address step -- and a prologue. |
-| **MOVEP** | +9 storing, +8 loading | slower | Four byte transfers, each an operand at five clocks. |
+| **MOVEP** | +9 storing, +8 loading | slower | Four byte transfers, each an operand: a write at four clocks, a read at five. |
 | **Exceptions** | TRAP +13, ILLEGAL and line A +18 | slower | A four-word frame is four operand writes at four clocks and a vector read at five, plus the pipe refill at the handler. |
 | **RTE** | +10 | slower | Four reads, and the format word is decoded in microcode. |
 | **RTE out of a coprocessor frame** | +36 | slower | Six frame reads, the format word tested against five other formats first, and the response CIR read that resumes the dialogue -- a bus cycle to the coprocessor that the manual's 31 may not include. The only coprocessor count UM 8 gives. |
