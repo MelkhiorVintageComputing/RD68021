@@ -576,8 +576,7 @@ module rd68021_seq #(
         a_bus = {22'd0, req_rdata[7:0], 2'b00};
       rd68021_ucode_pkg::U_ASRC_REGN:  a_bus = regn_val;
       rd68021_ucode_pkg::U_ASRC_REGNR: a_bus = regnr_val;
-      rd68021_ucode_pkg::U_ASRC_MULLO: a_bus = mul_full[31:0];
-      rd68021_ucode_pkg::U_ASRC_MULHI: a_bus = mul_full[63:32];
+      // The product is not on the A bus either: see bf_a below.
       rd68021_ucode_pkg::U_ASRC_DIVQ:  a_bus = div_q;
       rd68021_ucode_pkg::U_ASRC_DIVR:  a_bus = div_r;
       // PRM 8 puts the long forms' register numbers in the extension word:
@@ -609,14 +608,15 @@ module rd68021_seq #(
     endcase
   end
 
-  // The bit field's results -- PRM 4 -- on a multiplexer of their own. Every
-  // microword that reads one copies it or complements it into a data register
-  // or a T register and does nothing else with it (assemble.py's
-  // check_bf_shape), so it joins the result only at those destinations: the
-  // adder, the condition codes, the prefetch address, the bus's write data and
-  // the checkpoint port never see it. On the A bus it put the bit-field unit's
-  // depth in front of all of them, on paths no microword takes
-  // (doc/critical-path.md).
+  // The bit field's results -- PRM 4 -- and the multiplier's product, on a
+  // multiplexer of their own. Every microword that reads one copies it (or, for
+  // a bit field, complements it) into a register and does nothing else with it
+  // (assemble.py's check_bf_shape and check_mul_shape), so it joins the result
+  // only at the register destinations: the adder, the prefetch address, the
+  // bus's write data and the checkpoint port never see it, and the multiply's
+  // condition codes are taken from the product directly. On the A bus these put
+  // the bit-field unit's and the multiplier's depth in front of all of them, on
+  // paths no microword takes (doc/critical-path.md).
   logic        bf_on;
   logic [31:0] bf_a, y_reg;
   always_comb begin
@@ -636,6 +636,8 @@ module rd68021_seq #(
         bf_a = ((`UF(SZSEL) == rd68021_ucode_pkg::U_SZSEL_BFREG)
                 ? {27'd0, bf_offset[4:0]} : bf_offset) + {26'd0, bf_ffo};
       rd68021_ucode_pkg::U_ASRC_BF_MERGED:  bf_a = bf_merged_reg;
+      rd68021_ucode_pkg::U_ASRC_MULLO:      bf_a = mul_full[31:0];
+      rd68021_ucode_pkg::U_ASRC_MULHI:      bf_a = mul_full[63:32];
       default: begin
         bf_on = 1'b0;
         bf_a  = 32'd0;
@@ -2237,9 +2239,9 @@ module rd68021_seq #(
           rd68021_ucode_pkg::U_DST_DREG: begin
             // A byte or word write leaves the rest of the data register alone.
             unique case (eff_size)
-              rd68021_ucode_pkg::U_SIZE_BYTE: dreg[wsel][7:0]  <= y[7:0];
-              rd68021_ucode_pkg::U_SIZE_WORD: dreg[wsel][15:0] <= y[15:0];
-              default:                        dreg[wsel]       <= y;
+              rd68021_ucode_pkg::U_SIZE_BYTE: dreg[wsel][7:0]  <= y_reg[7:0];
+              rd68021_ucode_pkg::U_SIZE_WORD: dreg[wsel][15:0] <= y_reg[15:0];
+              default:                        dreg[wsel]       <= y_reg;
             endcase
           end
           rd68021_ucode_pkg::U_DST_DREG_R: begin
@@ -2319,7 +2321,7 @@ module rd68021_seq #(
             end
           end
           rd68021_ucode_pkg::U_DST_DREG_XQ: dreg[xw_q[14:12]] <= y_reg;
-          rd68021_ucode_pkg::U_DST_DREG_XR: dreg[xw_q[2:0]]   <= y;
+          rd68021_ucode_pkg::U_DST_DREG_XR: dreg[xw_q[2:0]]   <= y_reg;
           rd68021_ucode_pkg::U_DST_CCR:
             sr_q[4:0] <= y[4:0];
           rd68021_ucode_pkg::U_DST_AREG: begin
@@ -2505,8 +2507,10 @@ module rd68021_seq #(
             sr_q[rd68021_pkg::SR_X] <= bcd_c;
           end
           rd68021_ucode_pkg::U_CCR_MUL32: begin
-            sr_q[rd68021_pkg::SR_N] <= res_n;
-            sr_q[rd68021_pkg::SR_Z] <= res_z;
+            // From the product, not the result bus: check_mul_shape holds
+            // every microword with these codes to a long copy of MULLO.
+            sr_q[rd68021_pkg::SR_N] <= mul_full[31];
+            sr_q[rd68021_pkg::SR_Z] <= (mul_full[31:0] == 32'd0);
             sr_q[rd68021_pkg::SR_V] <= mul_ovf;
             sr_q[rd68021_pkg::SR_C] <= 1'b0;
           end

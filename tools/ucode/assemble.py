@@ -796,6 +796,42 @@ def check_bf_shape():
     return bad
 
 
+# The multiplier's product likewise: it joins the result only at a data-register
+# destination, as a long copy, and the multiply's condition codes are taken from
+# the product itself rather than the result bus.
+MUL_ASRC = ('MULLO', 'MULHI')
+MUL_DSTS = ('DREG', 'DREG_XQ', 'DREG_XR')
+
+
+def check_mul_shape():
+    bad = []
+    for i, (f, c) in enumerate(program.WORDS):
+        if f.get('ccr') in ('MUL32', 'MUL64') and f.get('asrc') != 'MULLO':
+            bad.append('microword %d sets the multiply\'s codes from the product '
+                       'and reads %s, not MULLO -- %s'
+                       % (i, f.get('asrc', 'ZERO'), c))
+        if f.get('asrc') not in MUL_ASRC:
+            continue
+        wrong = []
+        if f.get('alu', 'A') != 'A':
+            wrong.append('alu=%s' % f.get('alu'))
+        if f.get('dst', 'NONE') not in MUL_DSTS:
+            wrong.append('dst=%s' % f.get('dst', 'NONE'))
+        if f.get('size', 'LONG') != 'LONG' or f.get('szsel', 'FIXED') != 'FIXED':
+            wrong.append('not long')
+        if f.get('ccr', 'NONE') not in ('NONE', 'MUL32', 'MUL64'):
+            wrong.append('ccr=%s' % f.get('ccr'))
+        if f.get('bus', 'NONE') != 'NONE':
+            wrong.append('bus=%s' % f.get('bus'))
+        if f.get('pf', 'NONE') == 'FLUSH':
+            wrong.append('pf=FLUSH')
+        if wrong:
+            bad.append('microword %d reads %s, which reaches only a data register '
+                       'as a long copy, and has %s -- %s'
+                       % (i, f['asrc'], ', '.join(wrong), c))
+    return bad
+
+
 # The shifter's operand comes from a data register or from read data and from
 # nothing else: rd68021_seq gives it a two-way multiplexer of its own rather than
 # the A bus, which also carries the bit-field unit's outputs. A SHIFT microword
@@ -1059,7 +1095,7 @@ def main():
     global EARLY
     EARLY = mark_early()
 
-    bad = (frames.check() + isa.check() + check_cond_dst() + check_live_shape() + check_bf_shape() + check_shift_src()
+    bad = (frames.check() + isa.check() + check_cond_dst() + check_live_shape() + check_bf_shape() + check_mul_shape() + check_shift_src()
            + check_ea_live() + check_ea_set() + check_rdata_restart() + check_read_no_pipe()
            + check_areg_size() + check_restore_order())
     if bad:
