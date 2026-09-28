@@ -540,21 +540,7 @@ module rd68021_seq #(
         a_bus = {16'd0, frame_code, flt_odd_q ? 12'h00C : 12'h008};
       rd68021_ucode_pkg::U_ASRC_FMTVECI:
         a_bus = {16'd0, frame_code, 2'b00, `UF(VEC), 2'b00};
-      // The bit field's results -- PRM 4.
-      rd68021_ucode_pkg::U_ASRC_BF_FIELD:   a_bus = bf_field;
-      rd68021_ucode_pkg::U_ASRC_BF_SXFIELD: a_bus = bf_sxfield;
-      // BFFFO: "the bit offset in the instruction plus the offset of the first
-      // one bit", and the field's width when there is none.
-      //
-      // For a DATA REGISTER the offset that goes into that sum is the one the
-      // field was actually taken at -- the low five bits -- and not the whole
-      // register. The two are congruent modulo 32, so either serves equally as
-      // an offset into the same field, and doc/manual-contradictions.md records
-      // that the manual does not choose between them.
-      rd68021_ucode_pkg::U_ASRC_BF_FFO:
-        a_bus = ((`UF(SZSEL) == rd68021_ucode_pkg::U_SZSEL_BFREG)
-                 ? {27'd0, bf_offset[4:0]} : bf_offset) + {26'd0, bf_ffo};
-      rd68021_ucode_pkg::U_ASRC_BF_MERGED:  a_bus = bf_merged_reg;
+      // The bit field's results are NOT on the A bus: see bf_a below.
       rd68021_ucode_pkg::U_ASRC_VBR:   a_bus = vbr_q;
       // The fault frame's fields -- doc/ssw.md and doc/checkpoint.md.
       rd68021_ucode_pkg::U_ASRC_SSW:        a_bus = {16'd0, ssw};
@@ -622,6 +608,42 @@ module rd68021_seq #(
       default:                         a_bus = 32'd0;
     endcase
   end
+
+  // The bit field's results -- PRM 4 -- on a multiplexer of their own. Every
+  // microword that reads one copies it or complements it into a data register
+  // or a T register and does nothing else with it (assemble.py's
+  // check_bf_shape), so it joins the result only at those destinations: the
+  // adder, the condition codes, the prefetch address, the bus's write data and
+  // the checkpoint port never see it. On the A bus it put the bit-field unit's
+  // depth in front of all of them, on paths no microword takes
+  // (doc/critical-path.md).
+  logic        bf_on;
+  logic [31:0] bf_a, y_reg;
+  always_comb begin
+    bf_on = 1'b1;
+    unique case (`UF(ASRC))
+      rd68021_ucode_pkg::U_ASRC_BF_FIELD:   bf_a = bf_field;
+      rd68021_ucode_pkg::U_ASRC_BF_SXFIELD: bf_a = bf_sxfield;
+      // BFFFO: "the bit offset in the instruction plus the offset of the first
+      // one bit", and the field's width when there is none.
+      //
+      // For a DATA REGISTER the offset that goes into that sum is the one the
+      // field was actually taken at -- the low five bits -- and not the whole
+      // register. The two are congruent modulo 32, so either serves equally as
+      // an offset into the same field, and doc/manual-contradictions.md records
+      // that the manual does not choose between them.
+      rd68021_ucode_pkg::U_ASRC_BF_FFO:
+        bf_a = ((`UF(SZSEL) == rd68021_ucode_pkg::U_SZSEL_BFREG)
+                ? {27'd0, bf_offset[4:0]} : bf_offset) + {26'd0, bf_ffo};
+      rd68021_ucode_pkg::U_ASRC_BF_MERGED:  bf_a = bf_merged_reg;
+      default: begin
+        bf_on = 1'b0;
+        bf_a  = 32'd0;
+      end
+    endcase
+  end
+  assign y_reg = !bf_on ? y
+               : (`UF(ALU) == rd68021_ucode_pkg::U_ALU_NOT) ? ~bf_a : bf_a;
 
   always_comb begin
     unique case (`UF(BSRC))
@@ -2157,10 +2179,10 @@ module rd68021_seq #(
         end
 
         unique case (`UF(DST))
-          rd68021_ucode_pkg::U_DST_T0: t_q[0] <= y;
-          rd68021_ucode_pkg::U_DST_T1: t_q[1] <= y;
-          rd68021_ucode_pkg::U_DST_T2: t_q[2] <= y;
-          rd68021_ucode_pkg::U_DST_T3: t_q[3] <= y;
+          rd68021_ucode_pkg::U_DST_T0: t_q[0] <= y_reg;
+          rd68021_ucode_pkg::U_DST_T1: t_q[1] <= y_reg;
+          rd68021_ucode_pkg::U_DST_T2: t_q[2] <= y_reg;
+          rd68021_ucode_pkg::U_DST_T3: t_q[3] <= y_reg;
           rd68021_ucode_pkg::U_DST_XW: xw_q   <= y[15:0];
           rd68021_ucode_pkg::U_DST_CPRIM: cprim_q <= y[15:0];
           // The midinstruction frame's internal word, put back -- the same
@@ -2224,9 +2246,9 @@ module rd68021_seq #(
             // The same, addressed by the effective-address register field: the
             // destination of a one-operand instruction whose <ea> is a register.
             unique case (eff_size)
-              rd68021_ucode_pkg::U_SIZE_BYTE: dreg[rsel][7:0]  <= y[7:0];
-              rd68021_ucode_pkg::U_SIZE_WORD: dreg[rsel][15:0] <= y[15:0];
-              default:                        dreg[rsel]       <= y;
+              rd68021_ucode_pkg::U_SIZE_BYTE: dreg[rsel][7:0]  <= y_reg[7:0];
+              rd68021_ucode_pkg::U_SIZE_WORD: dreg[rsel][15:0] <= y_reg[15:0];
+              default:                        dreg[rsel]       <= y_reg;
             endcase
           end
           // MOVEM writing a register back. A word transfer is sign extended
@@ -2296,7 +2318,7 @@ module rd68021_seq #(
               areg[xw_q[14:12]] <= y_areg;
             end
           end
-          rd68021_ucode_pkg::U_DST_DREG_XQ: dreg[xw_q[14:12]] <= y;
+          rd68021_ucode_pkg::U_DST_DREG_XQ: dreg[xw_q[14:12]] <= y_reg;
           rd68021_ucode_pkg::U_DST_DREG_XR: dreg[xw_q[2:0]]   <= y;
           rd68021_ucode_pkg::U_DST_CCR:
             sr_q[4:0] <= y[4:0];

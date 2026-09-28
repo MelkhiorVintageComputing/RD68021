@@ -764,6 +764,38 @@ def check_live_shape():
     return bad
 
 
+# The bit-field unit's results reach nothing but a data register or a T
+# register: rd68021_seq takes them off the A bus and joins them to the result
+# only at those destinations (`y_reg`), copied or complemented. A microword that
+# sent one anywhere else -- through the adder, into the condition codes, onto
+# the bus, into the pipe -- would get the result bus's value instead, which is
+# not the field. doc/critical-path.md.
+BF_ASRC = ('BF_FIELD', 'BF_SXFIELD', 'BF_FFO', 'BF_MERGED')
+BF_DSTS = ('T0', 'T1', 'T2', 'T3', 'DREG_XQ', 'DREG_R')
+
+
+def check_bf_shape():
+    bad = []
+    for i, (f, c) in enumerate(program.WORDS):
+        if f.get('asrc') not in BF_ASRC:
+            continue
+        wrong = []
+        if f.get('alu', 'A') not in ('A', 'NOT'):
+            wrong.append('alu=%s' % f.get('alu'))
+        if f.get('dst', 'NONE') not in BF_DSTS:
+            wrong.append('dst=%s' % f.get('dst', 'NONE'))
+        for k, ok in (('ccr', 'NONE'), ('bus', 'NONE'), ('mdop', 'NONE')):
+            if f.get(k, ok) != ok:
+                wrong.append('%s=%s' % (k, f.get(k)))
+        if f.get('pf', 'NONE') == 'FLUSH':
+            wrong.append('pf=FLUSH')
+        if wrong:
+            bad.append('microword %d reads %s, which reaches only a data or T '
+                       'register copied or complemented, and has %s -- %s'
+                       % (i, f['asrc'], ', '.join(wrong), c))
+    return bad
+
+
 # The shifter's operand comes from a data register or from read data and from
 # nothing else: rd68021_seq gives it a two-way multiplexer of its own rather than
 # the A bus, which also carries the bit-field unit's outputs. A SHIFT microword
@@ -1027,7 +1059,7 @@ def main():
     global EARLY
     EARLY = mark_early()
 
-    bad = (frames.check() + isa.check() + check_cond_dst() + check_live_shape() + check_shift_src()
+    bad = (frames.check() + isa.check() + check_cond_dst() + check_live_shape() + check_bf_shape() + check_shift_src()
            + check_ea_live() + check_ea_set() + check_rdata_restart() + check_read_no_pipe()
            + check_areg_size() + check_restore_order())
     if bad:
