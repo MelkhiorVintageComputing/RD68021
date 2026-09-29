@@ -179,6 +179,36 @@ module bus_error_tb;
       check(saw_fault, "case 4: a BERR one state pair after DSACK raises req_fault");
     end
 
+    // -------------------------------------------------------------------
+    // AVEC -- UM 5.4.1: "the AVEC signal can be used to terminate interrupt
+    // acknowledge cycles ... AVEC is ignored during all other bus cycles."
+    // A board that ties it low -- a Sun-3/60 replica autovectors everything
+    // that way -- must still see its ordinary cycles wait for DSACK. The slave
+    // at $3000_0000 inserts three wait states, so a cycle AVEC ended would end
+    // at the first sample, before its data, and report CE_AVEC.
+    // -------------------------------------------------------------------
+    avec_drv = 1'b1;
+    op_write(32'h3000_0100, 4, 40'h00_CAFE_F00D, cycles);
+    check(req_end == 3'd1, "AVEC on a write: ignored, the cycle ends on DSACK");
+    check({sw.mem[12'h100], sw.mem[12'h101], sw.mem[12'h102], sw.mem[12'h103]}
+          === 32'hCAFE_F00D, "AVEC on a write: the slave took the data");
+    op_read(32'h3000_0100, 4, got, cycles);
+    check(req_end == 3'd1, "AVEC on a read: ignored, the cycle ends on DSACK");
+    check(got[31:0] === 32'hCAFE_F00D, "AVEC on a read: the data came back");
+
+    // ... and on an interrupt acknowledge it still ends the cycle, with nothing
+    // else answering: CPU space type $F, level 5, where no slave lives.
+    req_fc       = 3'b111;
+    req_cpuspace = 4'hF;
+    req_cpuaddr  = 8'd5;
+    op_read(32'h0, 1, got, cycles);
+    check(req_end == 3'd4, "AVEC on an interrupt acknowledge: ends it, CE_AVEC");
+    check(cycles == 1,     "AVEC on an interrupt acknowledge: one cycle");
+    req_fc       = 3'b101;
+    req_cpuspace = 4'd0;
+    req_cpuaddr  = 8'd0;
+    avec_drv     = 1'b0;
+
     $display("bus_error_tb: %0d checks, %0d failures, %0d drive violations",
              checks, fails, drive_violations);
     if (fails == 0 && drive_violations == 0) $display("PASS: bus_error_tb");

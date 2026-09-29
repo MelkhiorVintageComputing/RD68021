@@ -108,6 +108,7 @@ logic        bus_idle, bus_granted, reset_busy;
 // them is met for the same falling edge of the processor clock", so every task
 // below drives them from a rising edge.
 logic berr_drv;   // active high here; inverted onto the pin
+logic avec_drv;   // likewise. Held on across ordinary cycles to prove it is ignored.
 logic halt_drv;
 logic br_drv;
 logic bgack_drv;
@@ -155,7 +156,7 @@ rd68021_biu dut (
     .ds_n_o (ds_n_o), .ds_oe (ds_oe),
     .dben_o (dben_o), .dben_oe (dben_oe),
     .dsack_n_i (dsack_n_i),
-    .ipl_n_i (3'b111), .avec_n_i (1'b1),
+    .ipl_n_i (3'b111), .avec_n_i (~avec_drv),
     .br_n_i (~br_drv), .bg_n_o (bg_n_o), .bgack_n_i (~bgack_drv),
     .berr_n_i (~berr_drv),
     .reset_n_i (1'b1), .reset_n_o (reset_n_o), .reset_n_oe (reset_n_oe),
@@ -239,6 +240,7 @@ task automatic reset_dut();
   req_cpuaddr  = 8'd0;
   fetch_pending = 1'b0;
   berr_drv     = 1'b0;
+  avec_drv     = 1'b0;
   halt_drv     = 1'b0;
   br_drv       = 1'b0;
   bgack_drv    = 1'b0;

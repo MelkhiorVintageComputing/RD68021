@@ -921,6 +921,11 @@ module rd68021_biu #(
   // simply not taken. Here the late sample writes term_err and term_rty, which is
   // the same place the early sample writes them.
   logic berr_s, halt_s, avec_s;
+  // The cycle under way is an interrupt acknowledge: CPU space, type $F on
+  // A19-A16 -- UM figure 5-31. Both were latched at S0 and hold for the cycle.
+  logic cyc_iack;
+  assign cyc_iack = (cyc_fc == rd68021_pkg::FC_CPU)
+                 && (cyc_addr[19:16] == rd68021_pkg::CPUS_IACK);
   logic early_q;
   assign berr_s = ~berr_n_i;
   // AVEC is active low and is sampled on the same edge as DSACK. Only an
@@ -961,12 +966,15 @@ module rd68021_biu #(
           term_q   <= 1'b1;  term_rty <= 1'b1;               // case 5
         end else if (berr_s) begin
           term_q   <= 1'b1;  term_err <= 1'b1;               // case 3
-        end else if (!avec_s) begin
+        end else if (!avec_s && cyc_iack) begin
           // UM 6.1.9 and table 5-8: AVEC terminates an interrupt acknowledge
           // cycle in place of DSACK and says "use the autovector for this
-          // level". It is sampled on the same edge as DSACK, and on any other
-          // kind of cycle it means nothing -- which is why the microcode, and
-          // not the bus unit, decides what to do with it.
+          // level". It is sampled on the same edge as DSACK. On any other
+          // cycle it is not a termination at all -- UM 5.4.1, "AVEC is ignored
+          // during all other bus cycles" -- and the cycle waits for DSACK: a
+          // board that ties AVEC low to autovector everything must still get
+          // its wait states. Ending the cycle on it lost the writes of a
+          // Sun-3/60 replica's PROM (doc/bugs-found.md).
           term_q   <= 1'b1;  term_avc <= 1'b1;
         end else if (dsack_n_i != rd68021_pkg::DSACK_WAIT) begin
           term_q   <= 1'b1;  term_hlt <= halt_s;             // cases 1 and 2

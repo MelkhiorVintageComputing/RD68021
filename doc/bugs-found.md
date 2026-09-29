@@ -1806,3 +1806,30 @@ so it never armed its measurement. The core itself ran them correctly.
 and both hold until the rising edge. `core_fault_tb` gained a bus error that arrives
 only at Table 5-8's second sample, the one fault an early retire has to see coming,
 and fails if the bus unit's guard against it is removed.
+
+## Post-M13 · AVEC ended every bus cycle, not only an interrupt acknowledge
+
+**What:** the bus unit's termination sample, entering S3 and at every wait state,
+took AVEC as a termination whatever the cycle was. UM 5.4.1: "the AVEC signal can
+be used to terminate interrupt acknowledge cycles ... AVEC is ignored during all
+other bus cycles", and `doc/pinout.md` said the same. The code's own comment said
+AVEC meant nothing outside an acknowledge, and left the cycle to the microcode --
+but it had already ended the cycle, at the first sample, without waiting for
+DSACK. A write to a slow device was lost and a read returned whatever was on the
+bus.
+
+**Found by:** a downstream Sun-3/60 FPGA replica whose glue ties AVEC low
+permanently, because it autovectors every interrupt. Its PROM never got past its
+first diagnostic register write, which the glue acknowledges half a clock after
+the S3 sample. The Suska core, which ignores AVEC outside an acknowledge, booted
+the same PROM.
+
+**Why nothing found it sooner:** every harness here asserted AVEC only on an
+interrupt acknowledge -- TME's included -- so the rule was never exercised
+outside one. The bus harness tied the pin high.
+
+**Fixed by:** the sample honours AVEC only when the cycle under way is an
+interrupt acknowledge, CPU space with $F on A19-A16, both latched at S0.
+`bus_error_tb` holds AVEC low across a write and a read to a slave with three
+wait states, and checks both wait for DSACK and move their data; it failed before
+the fix. It also checks AVEC still ends an acknowledge that nothing else answers.
