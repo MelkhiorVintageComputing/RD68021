@@ -1851,3 +1851,33 @@ complained, at the fault and never after RTE.
 
 **Fixed by:** `boundary` in `rd68021_core_harness.svh` excludes a retirement that
 takes a fault.
+
+## Post-M13 · RTE of a prefetch fault gave its hand-back to the next instruction
+
+**What:** RTE ends by handing the faulted access back to the bus unit -- the
+residual of the operand with DF set, nothing at all with DF clear -- and resuming
+at the microword that faulted. The bus unit took the hand-back at once, whether
+anyone was asking for it or not, and raised its acknowledge. When the resumed
+microword had no bus request of its own -- a prefetch fault taken while the pipe
+was empty after a jump, which resumes at the microword that waits for the pipe --
+the acknowledge arrived a clock or two later, and the next instruction's first
+bus microword took it as its own, with the frame's data input buffer as its
+data. An RTS at the resumed address returned to address 0 without reading its
+stack; its own request went out afterwards, orphaned.
+
+**Found by:** a downstream Sun-3/60 FPGA replica running NetBSD 10.1, whose first
+user processes page their text in: the page fault on an RTS's fetch returned to
+0. It looked latency-dependent there -- slow memory is what left both stages of
+the pipe faulted -- but in simulation it fails at every latency, with or without
+the FB and FC bits hp300-derived kernels set.
+
+**Why nothing found it sooner:** `core_fault_tb`'s empty-pipe fault resumed into
+a MOVEQ, which asks for no operand, and the stray acknowledge expired unused.
+SunOS takes its text faults elsewhere in the pipe.
+
+**Fixed by:** the bus unit hands the operand back only to a request -- the first
+one after RTE is the resumed microword's own -- and the sequencer cancels it when
+the resumed microword retires without one. A prefetch is no longer held up
+behind a pending hand-back, since the resumed microword may be waiting for it.
+`core_fault_tb` runs the replica's case: a user-mode jump into a missing page
+whose first instruction is an RTS, and a handler that sets FB and FC.

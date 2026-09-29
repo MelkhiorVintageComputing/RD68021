@@ -126,6 +126,7 @@ module rd68021_top #(
   logic [31:0] flt_dib;
 
   logic        rst_op_valid;
+  logic        rst_cancel;
   logic [31:0] rst_addr;
   logic  [2:0] rst_bytes;
   logic  [2:0] rst_fc;
@@ -226,6 +227,7 @@ module rd68021_top #(
       .flt_dob        (flt_dob),
       .flt_dib        (flt_dib),
       .rst_op_valid   (rst_op_valid),
+      .rst_cancel     (rst_cancel),
       .rst_addr       (rst_addr),
       .rst_bytes      (rst_bytes),
       .rst_fc         (rst_fc),
@@ -344,6 +346,7 @@ module rd68021_top #(
       .flt_dob        (flt_dob),
       .flt_dib        (flt_dib),
       .rst_op_valid   (rst_op_valid),
+      .rst_cancel     (rst_cancel),
       .rst_addr       (rst_addr),
       .rst_bytes      (rst_bytes),
       .rst_fc         (rst_fc),

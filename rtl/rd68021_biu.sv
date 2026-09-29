@@ -60,6 +60,10 @@ module rd68021_biu #(
 
     // ... and back in, when RTE says to finish it ----------------------------
     input  logic        rst_op_valid,
+    // The microword RTE resumed has retired without asking for an operand: the
+    // fault was an instruction prefetch at a boundary, and there is nothing to
+    // hand back. Whatever is pending is dropped.
+    input  logic        rst_cancel,
     input  logic [31:0] rst_addr,
     input  logic  [2:0] rst_bytes,
     input  logic  [2:0] rst_fc,
@@ -285,7 +289,7 @@ module rd68021_biu #(
   // which on the MC68010 project cost a long-word read one of its two words every
   // few thousand DMA transfers.
   logic want_cycle;
-  assign want_cycle = op_continuing || rst_pend_q || req_valid || fetch_valid;
+  assign want_cycle = op_continuing || req_valid || fetch_valid;
 
   logic bus_is_idle;
   assign bus_is_idle = (st_p == rd68021_pkg::ST_IDLE)
@@ -629,10 +633,23 @@ module rd68021_biu #(
   // this is a latched request and not a level. Without the latch the handover
   // was simply missed, the resumed microword issued its own full-length request
   // instead, and RTE rewrote the bytes that had already gone.
-  assign take_rst   = !op_continuing && rst_pend_q && (rst_bytes != 3'd0);
+  //
+  // ... and it is handed to the resumed microword's OWN request, not to
+  // whichever request comes first. RTE resumes at the microword that faulted;
+  // when that one has a bus request, its request is the first presented, and it
+  // takes the operand. When it has none -- an instruction prefetch fault taken
+  // while the pipe was empty, at a boundary -- the operand is for nobody, and
+  // the sequencer cancels it when that microword retires. Taking it without a
+  // request gave its acknowledge, and its data, to the next instruction's first
+  // bus microword: an RTS at the resumed address jumped to the frame's data
+  // input buffer without reading its stack (doc/bugs-found.md).
+  //
+  // A prefetch is not held up behind it either: the resumed microword may be
+  // waiting for exactly that word.
+  assign take_rst   = !op_continuing && rst_pend_q && req_valid
+                   && (rst_bytes != 3'd0);
   assign take_req   = !op_continuing && !rst_pend_q && req_valid;
-  assign take_fetch = !op_continuing && !rst_pend_q && !req_valid
-                   && fetch_valid;
+  assign take_fetch = !op_continuing && !req_valid && fetch_valid;
 
   // UM 6.2.2: with DF cleared "it assumes that the data input buffer value on
   // the stack is valid for a read or that the data has been correctly written
@@ -644,7 +661,8 @@ module rd68021_biu #(
   // it does has to happen exactly once. Satisfying its request from the frame
   // is what lets it run again without running the access again.
   logic rst_done;
-  assign rst_done = rst_pend_q && !op_continuing && (rst_bytes == 3'd0);
+  assign rst_done = rst_pend_q && !op_continuing && req_valid
+                 && (rst_bytes == 3'd0);
 
   // CPU space synthesises its address from the type field -- UM figure 5-31.
   logic [31:0] cpu_space_addr;
@@ -789,7 +807,7 @@ module rd68021_biu #(
         req_ack    <= 1'b1;
         req_end_q  <= rd68021_pkg::CE_DSACK;
         rdata_q    <= {8'd0, rst_dob};
-      end
+      end else if (rst_cancel)   rst_pend_q <= 1'b0;
 
       fetch_ack <= 1'b0;
       req_fault    <= 1'b0;

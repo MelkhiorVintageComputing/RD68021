@@ -481,6 +481,47 @@ module core_fault_tb;
     check(dut.u_seq.usp_q === GONE + 32'h14, "RTS from a missing page: the stack stepped once");
 
     // ======================================================================
+    // A prefetch fault taken with the pipe empty, in user mode, and resumed
+    // into an RTS -- NetBSD on a Sun-3/60 replica (doc/bugs-found.md). The
+    // jump empties the pipe, the fetch at the target faults, and the frame
+    // resumes at the microword that waits for the pipe, which asks for no
+    // operand. RTE's hand-back is then for nobody; before the fix the RTS's
+    // stack read took its acknowledge and its data, and returned to address 0
+    // without reading the stack. The handler sets FB and FC in the SSW, as
+    // hp300-derived kernels do.
+    // ======================================================================
+    base_setup();
+    poke_w(CODE + 0,  16'h227C);           // MOVEA.L #$1800,A1
+    poke_l(CODE + 2,  32'h0000_1800);
+    poke_w(CODE + 6,  16'h4E61);           // MOVE A1,USP
+    poke_w(CODE + 8,  16'h46FC);           // MOVE #$0000,SR -- to user mode
+    poke_w(CODE + 10, 16'h0000);
+    poke_w(CODE + 12, 16'h4EF9);           // JMP GONE -- its fetch faults
+    poke_l(CODE + 14, GONE);
+    poke_w(GONE + 0,  16'h4E75);           // RTS -- the first instruction there
+    poke_w(GONE + 2,  16'h4E71);
+    poke_l(32'h0000_1800, 32'h0000_0480);  // its return address
+    poke_w(32'h0000_0480, 16'h7C07);       // MOVEQ #7,D6
+    poke_w(32'h0000_0482, 16'h60FE);
+    poke_w(HAND + 0,  16'h006F);           // ORI.W #$C000,($A,SP) -- FC and FB
+    poke_w(HAND + 2,  16'hC000);
+    poke_w(HAND + 4,  16'h000A);
+    poke_w(HAND + 6,  16'h4E73);           // RTE
+    reset_dut();
+    run_until(HAND + 6, 3000, reached);
+    base = ISP0 - 32'h5C;
+    check(reached, "resumed into RTS: the bus error is taken");
+    check(peek_w(base + 32'h0A) === 16'hF000,
+          "resumed into RTS: SSW FC, FB, RC and RB, and nothing else");
+    check(peek_l(base + 32'h02) === GONE, "resumed into RTS: +$02 is the jump's target");
+    berr_en = 1'b0;
+    run_until(32'h0000_0482, 3000, reached);
+    check(reached, "resumed into RTS: RTE resumes, and the RTS returns where its stack says");
+    check(dut.u_seq.dreg[6] === 32'h0000_0007, "resumed into RTS: the code there ran");
+    check(dut.u_seq.usp_q === 32'h0000_1804, "resumed into RTS: the user stack stepped once");
+    check(dut.u_seq.isp_q === ISP0, "resumed into RTS: the frame came off");
+
+    // ======================================================================
     // The fast effective-address paths step (An)+ and -(An) on the bus
     // microword itself, for a read, and on the one after it, for a write. A
     // fault must leave the register as it was either way, and RTE's rerun must

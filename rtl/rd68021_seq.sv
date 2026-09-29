@@ -53,6 +53,7 @@ module rd68021_seq #(
     input  logic [31:0] flt_dob,
     input  logic [31:0] flt_dib,
     output logic        rst_op_valid,
+    output logic        rst_cancel,
     output logic [31:0] rst_addr,
     output logic  [2:0] rst_bytes,
     output logic  [2:0] rst_fc,
@@ -2705,6 +2706,16 @@ module rd68021_seq #(
   assign rst_rw       = rs_rw_q;
   assign rst_rmc      = rs_rm_q;
   assign rst_dob      = rst_data_q;
+
+  // The microword RESUME jumped to is the one retiring. If it asked for an
+  // operand it has taken the hand-back by now; if it did not, the fault was a
+  // prefetch at a boundary and the hand-back is nobody's. Either way it is over.
+  logic resumed_q;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)      resumed_q <= 1'b0;
+    else if (retire) resumed_q <= (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_RESUME);
+  end
+  assign rst_cancel = resumed_q && retire;
 
   // UM 6.1.2: "if a bus error occurs during the exception processing for a bus
   // error, address error, or reset ... a double bus fault occurs and the

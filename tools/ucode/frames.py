@@ -292,6 +292,8 @@ EXEMPT = [
     ('biu', 'early_q',      '... and its half-clock early form, for one S5'),
     ('seq', 'early_q',      'the last microword retired early; lives one clock, '
                             'and no fault is taken in it from its own bus cycle'),
+    ('seq', 'resumed_q',    'the microword now presented is the one RTE resumed; '
+                            'lives until it retires'),
     ('biu', 'fetch_ack',    '... and to the fetch unit'),
     ('biu', 'req_fault',    'a fault is being reported this clock'),
     ('biu', 'req_fault_wr', '... on a write'),
