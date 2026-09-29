@@ -339,8 +339,9 @@ is what decides which of the three stack pointers A7 means.
 
 ## How this is verified
 
-`sim/tb/core_fault_tb.sv`, 78 checks, and `sim/tb/core_paging_tb.sv`, 288 over
-72 cases. Every frame is compared as **memory**, field by field at the offsets
+`sim/tb/core_fault_tb.sv`, 134 checks; `sim/tb/core_paging_tb.sv`, 288 over
+72 cases; and `sim/tb/core_cow_tb.sv`, 118, which runs a real kernel and user
+process (`sim/programs/cow.S`) through copy-on-write. Every frame is compared as **memory**, field by field at the offsets
 UM table 6-5 gives: a frame this core writes and reads back consistently, but
 writes in the wrong place, would pass any check made through its own registers.
 
@@ -360,9 +361,9 @@ could not, until they were rewritten.
 | an address error | a bus cycle runs, or the fault bits are set where UM 6.2.1 says only the rerun bits are |
 | a double bus fault | `HALT` is not driven, or the processor carries on |
 | every combination of operand size, alignment and port width faulted across a page boundary | anything above, in a shape the directed cases did not think of. Half the cases straddle and half do not, and the sweep counts its own faults so that it cannot pass by not faulting |
+| a user program writing to shared read-only pages in every shape copy-on-write meets -- plain, `(An)+`, `-(An)`, memory to memory, `ADDQ`, `BSET`, `BFINS`, `CAS`, a misaligned long word part-written, one across two protected pages, `JSR`, `LINK`, `MOVEM` to `-(SP)` part-way down its list, `PEA`, a byte to `-(A7)` -- each handled by a kernel that saves registers with `MOVEM`, copies the page with a `DBF` loop, calls a subroutine that uses the bit-field unit and the multiplier, and returns with `DF` set; one page the kernel writes itself and clears `DF`; and the first handler taking a fault of its own on its page-table read, two frames deep | RTE does not put back what the handler's work overwrote -- the working registers, the extension word, the MOVEM mask -- or reruns more than the faulted access, or returns to the wrong mode. The memory model refuses a faulted write, so each write has to land exactly once; the testbench checks memory, every register, the condition codes each instruction left, the user stack pointer, the frame the kernel logged for each fault, and that the program's last instruction, a privileged one, traps. Mutating RTE to skip T0 or the data output buffer fails it |
 
-`CAS` and `CAS2` are the one row of the original list still missing, and they
-are M10's: the instructions do not exist yet.
+`CAS2` is the one row of the original list still without a faulting case.
 
 ---
 

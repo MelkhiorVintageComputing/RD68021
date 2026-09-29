@@ -187,7 +187,19 @@ ifeq ($(COPROCESSOR),1)
 IVFLAGS += -DTB_COPROCESSOR
 endif
 
-sim: dirs
+# core_cow_tb runs a real program: a kernel and a user process, built by the
+# cross-toolchain. It owns its vector table and its modes, so it is linked
+# without crt0, and it lives at a fixed path so that `cache`, which runs `sim`
+# with another BUILD, finds it too.
+COW := build/programs/cow
+$(COW).hex: sim/programs/cow.S sim/programs/flat.ld
+	@mkdir -p build/programs
+	@$(CROSS)gcc -c -o $(COW).o sim/programs/cow.S
+	@$(CROSS)gcc -nostdlib -nostartfiles -T sim/programs/flat.ld -o $(COW).elf \
+	    $(COW).o 2> $(COW).link.log || { cat $(COW).link.log; exit 1; }
+	@$(CROSS)objcopy -O verilog --verilog-data-width=1 $(COW).elf $@
+
+sim: dirs $(COW).hex
 	@ok=1; for tb in $(TBS); do \
 	  iverilog $(IVFLAGS) -I sim/tb -o $(BUILD)/$$tb.vvp -s $$tb \
 	      $(RTL) sim/models/*.sv sim/tb/$$tb.sv > $(BUILD)/$$tb.build.log 2>&1 \

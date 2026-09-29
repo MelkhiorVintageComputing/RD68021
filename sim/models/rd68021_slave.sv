@@ -40,6 +40,11 @@ module rd68021_slave #(
     input  logic        ds_n_i,
     input  logic        rw_i,
     input  logic [31:0] d_i,            // from the processor, on a write
+    // A write the system is refusing: the MMU in front of this memory has
+    // answered the cycle with a bus error, so the memory must not change. The
+    // model acknowledges regardless, as a device behind an MMU would; only
+    // the store is inhibited.
+    input  logic        wr_inhibit_i,
     output logic [31:0] d_o,
     output logic        d_oe,
     output logic  [1:0] dsack_n_o
@@ -138,7 +143,7 @@ module rd68021_slave #(
 
   int unsigned k;
   always_ff @(negedge clk) begin
-    if (rst_n && selected && !rw_i && !ds_n_i && answering) begin
+    if (rst_n && selected && !rw_i && !ds_n_i && answering && !wr_inhibit_i) begin
       for (k = 0; k < 4; k = k + 1) begin
         if (k < xfer_n(a_i, siz_i)) begin
           mem[idx(a_i + k)] = wr_lane[port_off(a_i) + k];

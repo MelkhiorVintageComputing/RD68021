@@ -181,25 +181,25 @@ assign dsack_n_i = dsack32 & dsack16 & dsack8 & dsackw;
 rd68021_slave #(.PORT_BYTES (4), .WAITS (0), .BASE (32'h0000_0000),
                 .MASK (32'hF000_0000)) s32 (
     .clk (clk), .rst_n (rst_n), .a_i (a_o), .siz_i (siz_o), .fc_i (fc_o),
-    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus),
+    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus), .wr_inhibit_i (1'b0),
     .d_o (d32), .d_oe (oe32), .dsack_n_o (dsack32));
 
 rd68021_slave #(.PORT_BYTES (2), .WAITS (0), .BASE (32'h1000_0000),
                 .MASK (32'hF000_0000)) s16 (
     .clk (clk), .rst_n (rst_n), .a_i (a_o), .siz_i (siz_o), .fc_i (fc_o),
-    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus),
+    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus), .wr_inhibit_i (1'b0),
     .d_o (d16), .d_oe (oe16), .dsack_n_o (dsack16));
 
 rd68021_slave #(.PORT_BYTES (1), .WAITS (0), .BASE (32'h2000_0000),
                 .MASK (32'hF000_0000)) s8 (
     .clk (clk), .rst_n (rst_n), .a_i (a_o), .siz_i (siz_o), .fc_i (fc_o),
-    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus),
+    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus), .wr_inhibit_i (1'b0),
     .d_o (d8), .d_oe (oe8), .dsack_n_o (dsack8));
 
 rd68021_slave #(.PORT_BYTES (4), .WAITS (3), .BASE (32'h3000_0000),
                 .MASK (32'hF000_0000)) sw (
     .clk (clk), .rst_n (rst_n), .a_i (a_o), .siz_i (siz_o), .fc_i (fc_o),
-    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus),
+    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus), .wr_inhibit_i (1'b0),
     .d_o (dw), .d_oe (oew), .dsack_n_o (dsackw));
 
 // ---------------------------------------------------------------------------

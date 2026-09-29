@@ -1833,3 +1833,21 @@ interrupt acknowledge, CPU space with $F on A19-A16, both latched at S0.
 `bus_error_tb` holds AVEC low across a write and a read to a slave with three
 wait states, and checks both wait for DSACK and move their data; it failed before
 the fix. It also checks AVEC still ends an acknowledge that nothing else answers.
+
+## Post-M13 · The harness counted a faulted microword as the end of its instruction
+
+**What:** the core harness took any retiring microword with `seq = DECODE` to be an
+instruction boundary, including one that retired into a fault. That microword
+commits nothing -- the sequencer goes to the fault entry, and the instruction is
+still in progress -- so the pipe is mid-instruction, and for a two-word
+instruction whose extension word has been consumed, stage B is six bytes on
+rather than four. The pipe invariant check failed there, on a state that was
+correct.
+
+**Found by:** `core_cow_tb`, whose user program is the first to take write faults
+on two-word instructions -- `MOVE.L (A1),8(A0)`, `BSET #5,(A0)`, `CAS.L`, and
+`MOVE.L` to absolute addresses. Every functional check passed; only the invariant
+complained, at the fault and never after RTE.
+
+**Fixed by:** `boundary` in `rd68021_core_harness.svh` excludes a retirement that
+takes a fault.

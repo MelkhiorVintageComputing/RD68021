@@ -67,6 +67,11 @@ end
 //                 early retire has to see coming.
 logic        berr_n_i;
 logic        berr_force;
+// A write a bus error refuses does not reach memory -- the MMU in front of it
+// said no. Off by default, so every other testbench's memory behaves as it
+// always has; core_cow_tb turns it on.
+logic        wr_protect;
+initial wr_protect = 1'b0;
 logic        berr_en;
 logic        berr_late;
 logic [31:0] berr_base;
@@ -166,19 +171,19 @@ assign dsack_n_i = dsack32 & dsack16 & dsack8 & dsack_ext & dsack_cp;
 rd68021_slave #(.PORT_BYTES (4), .WAITS (0), .BASE (32'h0000_0000),
                 .MASK (32'hF000_0000), .ABITS (16)) s32 (
     .clk (clk), .rst_n (rst_n), .a_i (a_o), .siz_i (siz_o), .fc_i (fc_o),
-    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus),
+    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus), .wr_inhibit_i (wr_protect && !berr_n_i),
     .d_o (d32), .d_oe (oe32), .dsack_n_o (dsack32));
 
 rd68021_slave #(.PORT_BYTES (2), .WAITS (0), .BASE (32'h1000_0000),
                 .MASK (32'hF000_0000), .ABITS (16)) s16 (
     .clk (clk), .rst_n (rst_n), .a_i (a_o), .siz_i (siz_o), .fc_i (fc_o),
-    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus),
+    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus), .wr_inhibit_i (wr_protect && !berr_n_i),
     .d_o (d16), .d_oe (oe16), .dsack_n_o (dsack16));
 
 rd68021_slave #(.PORT_BYTES (1), .WAITS (0), .BASE (32'h2000_0000),
                 .MASK (32'hF000_0000), .ABITS (16)) s8 (
     .clk (clk), .rst_n (rst_n), .a_i (a_o), .siz_i (siz_o), .fc_i (fc_o),
-    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus),
+    .as_n_i (as_n_o), .ds_n_i (ds_n_o), .rw_i (rw_o), .d_i (dbus), .wr_inhibit_i (wr_protect && !berr_n_i),
     .d_o (d8), .d_oe (oe8), .dsack_n_o (dsack8));
 
 initial begin
@@ -265,7 +270,12 @@ endfunction
 wire seq_is_decode =
     (dut.u_seq.uw[rd68021_ucode_pkg::U_SEQ_LSB +: rd68021_ucode_pkg::U_SEQ_W]
      == rd68021_ucode_pkg::U_SEQ_DECODE);
-wire boundary = dut.u_seq.retire && seq_is_decode;
+// A microword that retires into a fault commits nothing and ends nothing: the
+// sequencer goes to the fault entry, and the pipe is still in the middle of the
+// instruction -- its extension words may already be gone. Counting that as a
+// boundary made the pipe invariant below fail on every two-word instruction
+// whose write faulted, which core_cow_tb was the first to do.
+wire boundary = dut.u_seq.retire && seq_is_decode && !dut.u_seq.fault_now;
 
 // When to look at it. A microword normally retires on a clock decided at the
 // rising edge, but one the assembler marks `early` retires on the bus unit's
