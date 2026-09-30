@@ -326,6 +326,16 @@ endpackage
 
 def ucode_rom():
     words, width = assemble_words()
+    # The case is indexed by as many address bits as the program needs, not by
+    # the whole micro-address: Quartus infers no ROM from a case whose index has
+    # fewer than half its values labelled, and builds the store from logic
+    # instead -- ~4,700 LEs on a MAX 10, where 26 M9K do. The bits above, which
+    # no reachable micro-address sets, select the illegal entry through a flag
+    # registered alongside the read, so the function is the same as a full case.
+    iw = max(1, (len(words) - 1).bit_length())
+    split = iw < isa.UADDR_BITS
+    illegal = words[program.entry('illegal')]
+    hex_w = (width + 3) // 4
     out = [BANNER]
     out.append("""// The microcode store.
 //
@@ -365,26 +375,50 @@ module rd68021_ucode_rom (
   // Say which memory and stop it being a choice: Vivado's ROM inference in its
   // own synthesis report is preliminary and timing optimisation may reverse it
   // with no message. The attribute is on a register DECLARATION, which is where
-  // both tools look for it -- on the always block Quartus ignores it with
-  // Warning 10335 -- and Quartus picks the block type for the family itself.
+  // Vivado looks for it; Quartus reads no attribute here, and needs none once
+  // the case is dense enough to be a ROM -- see below -- choosing the block
+  // (M9K, M10K) for the family itself.
   (* rom_style = "block" *)
   logic [%d:0] rom_q;
-  assign uw = rom_q;
-
-  always_ff @(posedge clk) begin
-      case (a)""" % (isa.UADDR_BITS - 1, width - 1,
+""" % (isa.UADDR_BITS - 1, width - 1,
                             isa.UADDR_BITS - 1, isa.UADDR_BITS,
                             program.entry('reset'), width - 1))
+    if split:
+        out.append("""  // The program is %d words, so the store is indexed by the low %d bits of the
+  // micro-address: a case over all %d with fewer than half its entries labelled
+  // is one Quartus builds from logic. The bits above are set by no reachable
+  // micro-address; if they ever are -- a corrupted frame's resume address, say
+  // -- the flag, registered with the read, gives the illegal entry, exactly as
+  // the full case's `default' did. A plain register, reset like any other.
+  logic [%d:0] a_lo;
+  logic        hi, hi_q;
+  assign a_lo = a[%d:0];
+  assign hi   = |a[%d:%d];
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) hi_q <= 1'b0;
+    else        hi_q <= hi;
+  end
+  assign uw = hi_q ? %d'h%0*X : rom_q;
+
+  always_ff @(posedge clk) begin
+      case (a_lo)""" % (len(words), iw, isa.UADDR_BITS, iw - 1, iw - 1,
+                           isa.UADDR_BITS - 1, iw, width, hex_w, illegal))
+    else:
+        out.append("""  assign uw = rom_q;
+
+  always_ff @(posedge clk) begin
+      case (a)""")
+    lw = iw if split else isa.UADDR_BITS
     for i, w in enumerate(words):
         _f, comment = program.WORDS[i]
         out.append("        %d'd%-5d: rom_q <= %d'h%0*X;%s"
-                   % (isa.UADDR_BITS, i, width, (width + 3) // 4, w,
+                   % (lw, i, width, hex_w, w,
                       ('   // ' + comment) if comment else ''))
     out.append("""        default:      rom_q <= %d'h%0*X;   // the illegal entry
       endcase
   end
 
-endmodule""" % (width, (width + 3) // 4, words[program.entry('illegal')]))
+endmodule""" % (width, hex_w, illegal))
     return '\n'.join(out) + '\n'
 
 

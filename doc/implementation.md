@@ -1,14 +1,16 @@
 # Implementation
 
 What the design comes to on real FPGA fabric, measured, and how. "The numbers"
-and "Where the area goes" are from one tree -- commit 640a47b, the fmax-40 fixes
--- with `ICACHE_ENTRIES = 64` and `COPROCESSOR = 1`; the sections after them say
+and "Where the area goes" are from one tree -- the one whose microcode store is
+indexed by the address bits the program uses, after the AVEC and RTE fixes --
+with `ICACHE_ENTRIES = 64` and `COPROCESSOR = 1`; the sections after them say
 which tree and which constraint each of theirs came from. The targets:
 
 ```sh
 make impl      # Vivado 2025.2 place and route, xc7a100tcsg324-1, out of context
 make paths     # what limits the clock, from the checkpoint make impl leaves
 make quartus   # Quartus Prime Lite fit and timing, Cyclone V 5CSEMA5F31C6
+               # (AFAMILY='"MAX 10"' APART=10M50DAF484C6GES for a MAX 10)
 make audit     # every register's reset, and the one named exception
 ```
 
@@ -18,25 +20,29 @@ Constrained at **33.333 ns, 30 MHz** (`scripts/rd68021.xdc`,
 `scripts/rd68021.sdc`), between the manual's 25 and 33.33 MHz grades, with the
 coprocessor interface built:
 
-| | Artix-7 xc7a100t-1 (Vivado) | Cyclone V 5CSEMA5 (Quartus) |
-|---|--:|--:|
-| logic | **7,762 Slice LUTs (12.2 %)** | **11,690 ALMs (36 %)** |
-| registers | 1,872 | 5,849 |
-| block memory | **11 RAMB36 + 1 RAMB18** (the microcode store) | none -- see below |
-| distributed RAM | 76 LUTs (the instruction cache) | -- |
-| DSP | 4 (the multiplier) | 3 |
-| **frequency, static** | **35.60 MHz** (28.09 ns) | **33.05 MHz** |
+| | Artix-7 xc7a100t-1 (Vivado) | Cyclone V 5CSEMA5 (Quartus) | MAX 10 10M50DAF484C6GES (Quartus) |
+|---|--:|--:|--:|
+| logic | **7,995 Slice LUTs (12.6 %)** | **7,890 ALMs (25 %)** | **18,974 LEs (38 %)** |
+| registers | 1,874 | 5,869 | 5,525 |
+| block memory | **6 RAMB36** (the microcode store) | **21 M10K**, 210,944 bits (the store) | **26 M9K**, 210,944 bits (the store) |
+| distributed RAM | 76 LUTs (the instruction cache) | -- | -- |
+| DSP | 4 (the multiplier) | 3 | 8 9-bit multipliers |
+| **frequency, static** | **33.40 MHz** (29.94 ns) | **39.86 MHz** | **32.51 MHz** (slow 1200 mV 85 °C) |
 
-**Both parts meet the MC68020's top speed grade, 33.33 MHz, on static timing**,
-while constrained only for 30, and there is no other kind of timing to quote: the routes the microcode cannot take
-are no longer in the netlist (`doc/critical-path.md`). Until the constraint was
+**All three meet 30 MHz on static timing, and the Artix-7 and the Cyclone V the
+MC68020's top speed grade, 33.33 MHz**, and there is no other kind of timing to
+quote: the routes the microcode cannot take are no longer in the netlist
+(`doc/critical-path.md`). The Quartus figures are the fitter's own slow-corner
+Fmax; the instruction cache stays in logic on both Intel parts, because its read
+is asynchronous. Until the constraint was
 tightened from 60 ns (16.67 MHz) to 40 ns, the Artix-7 reported 21.83 MHz:
 Vivado stops optimising once a constraint is met, so the 60 ns figure measured
 the constraint as much as the design.
 
-**At 40 MHz** (a 25 ns trial, not checked in) the Artix-7 meets timing too:
-41.57 MHz static, 7,777 Slice LUTs. What limits it there, and what comes next, is
-in `doc/critical-path.md`. The manual has no grade above 33.33 MHz, and the bus
+**Asked for more**, the Artix-7 gives more: a 30 ns trial of this tree makes
+35.94 MHz, and a 25 ns trial of the tree before the AVEC, RTE and store changes
+made 41.57 MHz. What limits it there, and what comes next, is in
+`doc/critical-path.md`. The manual has no grade above 33.33 MHz, and the bus
 unit's own timing is the other half of a speed grade: `make timing`
 (`doc/ac-timing.md`) finds all four of the manual's grades feasible.
 
@@ -46,7 +52,7 @@ most of the saving is the bus unit owning dynamic sizing (no second-word-of-a-lo
 microcode at all) and a microcode store of 1,529 words where the plan feared
 15,000.
 
-A three-clock bus cycle at 35.60 MHz is 11.9 M bus cycles a second, against a
+A three-clock bus cycle at 33.40 MHz is 11.1 M bus cycles a second, against a
 real 16.67 MHz MC68020's 5.6 M.
 
 ### Reading a frequency off a slack
@@ -65,34 +71,41 @@ together, so its number is quoted directly.
 
 | | LUTs | FFs | block RAM | DSP |
 |---|--:|--:|--:|--:|
-| sequencer, datapath, register file and coprocessor interface | 4,134 | 1,063 | | 4 |
-| — shifter | 903 | | | |
-| — bit-field unit | 760 | | | |
-| — divider | 432 | 139 | | |
+| sequencer, datapath, register file and coprocessor interface | 4,399 | 1,065 | | 4 |
+| — shifter | 910 | | | |
+| — bit-field unit | 731 | | | |
+| — divider | 431 | 139 | | |
 | — opcode decoder | 314 | | | |
-| — microcode store | | | 11 RAMB36 + 1 RAMB18 | |
-| bus unit | 609 | 390 | | |
+| — microcode store | | | 6 RAMB36 | |
+| bus unit | 600 | 390 | | |
 | fetch unit and instruction cache | 612 (76 as RAM) | 280 | | |
-| **total** | **7,762** | **1,872** | **11 + 1** | **4** |
+| **total** | **7,995** | **1,874** | **6** | **4** |
 
 The shifter and the bit-field unit together are a fifth of the design. They buy
 some of the fastest rows in `doc/timing-divergences.md` -- every shift in one
 clock, BFFFO in four -- and they used to be the start of the longest paths, until
 their results were given routes of their own (`doc/critical-path.md`).
 
-### Quartus does not put the microcode store in block memory
+### The microcode store in Quartus: a case dense enough to be a ROM
 
-On the Cyclone V the 103-bit-wide store is built from logic, which is most of
-the difference between the two columns. Quartus Prime Lite infers no ROM from
-the generated `case` -- measured on the store alone, with the reset multiplexer
-on its address and without it, with `rom_style`, with `romstyle = "M10K"` and
-with the attribute on the always block and on the register declaration: zero
-block-memory bits every time, and no message saying why. Vivado infers it
-from the same source.
+Quartus infers no ROM from a `case` whose index has fewer than half its values
+labelled, whatever attribute it carries. The generated store used to be indexed
+by the whole twelve-bit micro-address, 1,906 words of 4,096, and Quartus built it
+from logic: 11,690 ALMs on the Cyclone V, 25,592 LEs on a MAX 10, and no message
+saying why. So `tools/ucode/assemble.py` indexes it by the bits the program
+needs -- eleven today -- and the bits above, which no reachable micro-address
+sets, select the illegal entry through a flag registered with the read: the same
+function as the full case. Quartus then builds it from block memory with no
+attribute at all, choosing the block for the family; Vivado reads it the same way
+and needs 6 RAMB36 instead of 11 and a RAMB18. Found downstream, on a Sun-3/60
+replica on a MAX 10, where the store as logic failed timing.
 
-It fits in 36 % of the part and makes 33.0 MHz as it is, so it is recorded here
-rather than fixed. The known way round it -- an array initialised from a file --
-needs an `initial` block, which `rtl/` does not allow.
+A MAX 10 has one more condition: it initialises block memory only in the
+configuration mode that carries memory contents,
+`INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"` ("Single Uncompressed Image
+with Memory Initialization"). In any other mode Quartus says "MIF is not
+supported for the selected family" and falls back to logic. `scripts/quartus.tcl`
+sets it for that family.
 
 ## The coprocessor interface (M13)
 
@@ -181,7 +194,7 @@ one more block RAM cell than in Phases 1 to 3.
 ## The reset audit
 
 `make audit` proves that every register takes its value from a reset branch, in
-the source and in a yosys netlist, at the configured cache size. **2,948
+the source and in a yosys netlist, at the configured cache size. **2,950
 flip-flops, every one reset, and 103 exempted** -- one register, named in
 `tools/reset_audit.py`:
 

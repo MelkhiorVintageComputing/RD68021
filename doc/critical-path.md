@@ -4,18 +4,22 @@
 groups the worst paths into families, and checks that the routes below, which
 no microword can take, are absent from the netlist -- it fails if one comes back.
 
-Artix-7, with the coprocessor interface, on today's tree (commit 640a47b):
+Artix-7, with the coprocessor interface, on today's tree -- the microcode store
+indexed by the bits the program uses, after the AVEC and RTE fixes:
 
 | constraint | static frequency | slack | Slice LUTs |
 |---|--:|--:|--:|
-| **33.333 ns, 30 MHz** (`scripts/rd68021.xdc`) | **35.60 MHz** (28.09 ns) | +2.62 ns | 7,762 |
-| 25 ns, 40 MHz (a trial, not checked in) | **41.57 MHz** (24.05 ns) | +0.78 ns | 7,777 |
+| **33.333 ns, 30 MHz** (`scripts/rd68021.xdc`) | **33.40 MHz** (29.94 ns) | +1.70 ns | 7,995 |
+| 30 ns, 33.33 MHz (a trial, not checked in) | **35.94 MHz** (27.82 ns) | +1.30 ns | 7,998 |
 
-The Cyclone V makes 33.05 MHz at 33.333 ns (`doc/implementation.md`).
+The Cyclone V makes 39.86 MHz at 33.333 ns and a MAX 10 10M50 32.51 MHz
+(`doc/implementation.md`).
 
 There are no exclusions: static timing is the real answer. The constraint still
 matters -- Vivado stops optimising once it is met, which is why the same RTL
-reports 35.6 MHz asked for 30 and 41.6 asked for 40.
+reports 33.4 MHz asked for 30 and 35.9 asked for 33.33. So does placement: the
+early retire's half-period path below moved between 33.4 and 37.1 MHz on the
+Artix-7 across builds whose RTL did not touch it.
 
 How it got here, each step measured on the Artix-7:
 
@@ -29,6 +33,10 @@ How it got here, each step measured on the Artix-7:
 | the same RTL, trial | 25 ns | 39.05 MHz, failing by 0.61 ns |
 | bit-field results off the A bus (c2a3ba0), trial | 25 ns | 40.79 MHz |
 | the multiplier's product off the A bus (640a47b), trial | 25 ns | 41.57 MHz |
+| the same RTL | 33.333 ns | 35.60 MHz |
+| AVEC and RTE fixes (33d9289) | 33.333 ns | 37.09 MHz |
+| the microcode store indexed by the bits it uses | 33.333 ns | 33.40 MHz, the early retire's placement |
+| the same RTL, trial | 30 ns | 35.94 MHz |
 
 ## The routes that are gone
 
@@ -90,12 +98,14 @@ shape the RTL assumes, so the assembler holds them there. These checks are in
 ## What is left
 
 At the checked-in 33.333 ns the first families reported are the early retire's
-half-period paths, `req_early` into the fetch unit, at 35.60 MHz. Then there are
-full-period ones: the microcode store's output into the data registers
-(39.2 MHz), and a data register back into the register file (39.7 MHz).
+half-period paths, `req_early` into the fetch unit, at 33.40 MHz. Then there are
+full-period ones from the microcode store's output: into the fetch unit's fill
+point (36.5 MHz), into the flag that marks an address above the program
+(38.2 MHz), and into the condition codes (38.2 MHz).
 
-Asked for 40 MHz, Vivado gets the early retire to about 42.6 MHz, and what limits
-it at 41.57 MHz is:
+Asked for 40 MHz, on the tree before the AVEC, RTE and store changes (640a47b),
+Vivado got the early retire to about 42.6 MHz, and what limited it at 41.57 MHz
+was:
 
 | period | family |
 |--:|---|
@@ -111,14 +121,16 @@ routing.
 
 ## If it has to be faster
 
-**`cach_op` off the result bus.** Taking the pulse from the operand MOVEC
-actually writes -- a data register or read data -- would remove the first family
-above, the same way the others went.
+**The early retire's half-period path** (`doc/timing-divergences.md`) comes
+first. It is what limits the checked-in build, and it is the one path whose
+figure moves most with placement: 33.4 to 42.6 MHz across the builds above. The
+bus unit's falling-edge verdict reaches the fetch unit through the
+checkpoint-write gating in 16 or 17 levels, three quarters routing. Taking the
+fetch unit's cache lookup off the checkpoint-write gate would be the fix.
 
-**The early retire's half-period path** (`doc/timing-divergences.md`) is next, at
-about 42.6 MHz. The bus unit's falling-edge verdict reaches the fetch unit through
-the checkpoint-write gating in 17 levels. Taking the fetch unit's cache lookup off
-the checkpoint-write gate would be the fix.
+**`cach_op` off the result bus.** Taking the pulse from the operand MOVEC
+actually writes -- a data register or read data -- would remove the 40 MHz
+trial's first family above, the same way the others went.
 
 **The microcode store's output.** It fans out to most of the sequencer, and its
 routing is most of the delay of what remains. Duplicating the output register

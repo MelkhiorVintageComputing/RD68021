@@ -281,7 +281,12 @@ afterwards.
    keeps the residual; a microword that issues an operand must be restartable
    from its own first clock with that residual reloaded. This is why the bus unit
    has architectural state and a restore port, which the MC68010 design had no
-   need of.
+   need of. What RTE hands back -- the residual with `DF` set, nothing with it
+   clear -- belongs to the **resumed microword's own request**: the bus unit
+   holds it until that request is presented, and drops it when the resumed
+   microword retires without one, which is a prefetch fault taken at a boundary.
+   Handing it to whichever request came first gave it to the next instruction
+   (`doc/bugs-found.md`).
 
 4. **`stg_b`, `stg_c` and the pipe's fault bits are architectural during a
    fault.** They are frame fields and SSW bits, so they may not be used as

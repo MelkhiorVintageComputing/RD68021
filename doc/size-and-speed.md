@@ -17,6 +17,8 @@ and `make quartus` (Cyclone V).
 | the clock constrained at 33.333 ns (30 MHz) instead of 40 ns | yes | Artix-7 27.97 → **31.34 MHz**, +10 LUTs; Cyclone V 30.55 → **31.5 MHz**. A 30 ns trial, the 33.33 MHz grade, meets timing at 34.76 MHz |
 | the bit-field unit's results off the A bus, joined to the result only at the register destinations; `check_bf_shape` | yes | at a 25 ns trial, −0.61 ns → +0.48 ns, 39.05 → **40.79 MHz**, 7,966 → 7,767 LUTs |
 | the multiplier's product likewise, and the MULx.L codes from the product; `check_mul_shape` | yes | at the 25 ns trial, 40.79 → **41.57 MHz**, +10 LUTs. At the checked-in 33.333 ns: Artix-7 **35.60 MHz**, 7,762 LUTs; Cyclone V **33.05 MHz**. No clock count changed |
+| the microcode store's `case` indexed by the address bits the program uses (eleven), the bits above selecting the illegal entry through a reset flag; found downstream on a MAX 10 | yes | Quartus infers the store as a ROM at last: Cyclone V 11,690 → **7,890 ALMs**, 21 M10K, 33.05 → **39.86 MHz**; MAX 10 10M50 25,592 → **18,974 LEs**, 26 M9K, 32.51 MHz. Artix-7 12 block RAM cells → **6 RAMB36**, +159 LUTs, 33.40 MHz at 33.333 ns (the early retire's placement; 35.94 MHz asked for 30 ns) |
+| `INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"` for a MAX 10 in `scripts/quartus.tcl` | yes | without it a MAX 10 initialises no block memory -- "MIF is not supported for the selected family" -- and the store stays in logic whatever its shape |
 
 Before M12's first measurement the plan's estimate was 14,000–18,000 LUTs, 25–35
 block RAMs and 14–18 MHz. Measured: 6,824 LUTs, 11 block RAMs, 22.72 MHz.

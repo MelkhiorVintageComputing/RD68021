@@ -44,6 +44,13 @@ proc main {} {
 
     set_global_assignment -name FAMILY $family
     set_global_assignment -name DEVICE $part
+    # A MAX 10 configures from its own flash, and only one of its configuration
+    # modes carries initialised memory: without it Quartus will not infer the
+    # microcode store as a ROM at all ("MIF is not supported for the selected
+    # family") and builds it from half the part's logic elements.
+    if {[string match -nocase "max 10" $family] || [string match -nocase "max10" $family]} {
+        set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"
+    }
     set_global_assignment -name TOP_LEVEL_ENTITY $top
     set_global_assignment -name PROJECT_OUTPUT_DIRECTORY [file join $here $build quartus_out]
     set_global_assignment -name SDC_FILE $sdc
