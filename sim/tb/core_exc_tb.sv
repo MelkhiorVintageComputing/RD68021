@@ -86,8 +86,17 @@ module core_exc_tb;
   always @(posedge iack_now) begin
     iacks      = iacks + 1;
     iack_level = a_o[3:1];
-    ipl_n_i    = 3'b111;   // a device drops its request when acknowledged
+    if (!ipl_hold)
+      ipl_n_i  = 3'b111;   // a device drops its request when acknowledged
   end
+
+  // ... or holds it until its handler clears it, as a clock chip does: a write
+  // to IPL_CLR drops the request.
+  localparam logic [31:0] IPL_CLR = 32'h0000_7000;
+  bit ipl_hold;
+  initial ipl_hold = 1'b0;
+  always @(negedge as_n_o)
+    if (rst_n && ipl_hold && !rw_o && a_o == IPL_CLR) ipl_n_i = 3'b111;
 
   // How long the RESET instruction held the pin -- PRM 6 says 512 clocks.
   int unsigned rsto_clocks;
@@ -645,6 +654,46 @@ module core_exc_tb;
     check(iack_level === 3'd7, "level 7: the acknowledge asked about level 7");
     check(dut.u_seq.dreg[1] === 32'h0000_0032, "level 7: autovector 31");
     check_f0(ISP0 - 8, 16'h2700, CODE, 4'h0, 12'h07C, "level 7");
+
+    // ======================================================================
+    // A level 7 the device holds until its handler clears it -- the Sun-3's
+    // clock. It is one transition, so it is one interrupt: the handler's own
+    // boundaries see level 7 against a level 7, not a new edge. Taken from a
+    // running program, and taken from STOP, which leaves by no decode
+    // boundary; that path remembered the level from before the STOP, and the
+    // handler's first boundary took the interrupt again, nested.
+    // ======================================================================
+    for (k = 0; k < 2; k++) begin
+      int unsigned i0;
+      base_setup();
+      poke_l(32'h0000_007C, HAND);         // autovector 31 = 24 + 7
+      if (k == 0) begin
+        poke_w(CODE + 0, 16'h60FE);        // BRA * -- mask is still 7
+      end else begin
+        poke_w(CODE + 0, 16'h4E72);        // STOP #$2700
+        poke_w(CODE + 2, 16'h2700);
+        poke_w(CODE + 4, 16'h60FE);
+      end
+      poke_w(HAND + 0, 16'h7232);          // MOVEQ #$32,D1 -- a boundary first
+      poke_w(HAND + 2, 16'h4E71);          // NOP
+      poke_w(HAND + 4, 16'h11C0);          // MOVE.B D0,($7000).W -- clear it
+      poke_w(HAND + 6, 16'h7000);
+      poke_w(HAND + 8, 16'h4E73);          // RTE
+      reset_dut();
+      ipl_hold = 1'b1;
+      run_cycles(60);
+      i0 = iacks;
+      request(7, IACK_AUTO, 8'd0);
+      run_cycles(1500);
+      what = (k == 0) ? "held level 7" : "held level 7 from STOP";
+      check(iacks - i0 == 1, $sformatf("%s: acknowledged once, not %0d times",
+                                       what, iacks - i0));
+      check(dut.u_seq.dreg[1] === 32'h0000_0032, {what, ": the handler ran"});
+      check(dut.u_seq.isp_q === ISP0, {what, ": and returned, frame and all"});
+      check(dut.u_ifu.pc_d === ((k == 0) ? CODE : CODE + 4),
+            {what, ": to where it was"});
+      ipl_hold = 1'b0;
+    end
 
     // ======================================================================
     // Done

@@ -43,8 +43,15 @@ module core_cpif_tb;
   always @(*) avec_n_i = !iack_now;
   always @(posedge iack_now) begin
     iacks   = iacks + 1;
-    ipl_n_i = 3'b111;
+    if (!ipl_hold) ipl_n_i = 3'b111;
   end
+
+  // ... or holds it until its handler writes IPL_CLR, as a clock chip does.
+  localparam logic [31:0] IPL_CLR = 32'h0000_7000;
+  bit ipl_hold;
+  initial ipl_hold = 1'b0;
+  always @(negedge as_n_o)
+    if (rst_n && ipl_hold && !rw_o && a_o == IPL_CLR) ipl_n_i = 3'b111;
 
   task automatic base_setup();
     int unsigned v;
@@ -832,6 +839,36 @@ module core_cpif_tb;
     expect_cir(1'b1, R_RESP, 2, 32'h8900, "IA");
     expect_cir(1'b1, R_RESP, 2, 32'h0802, "IA: after RTE");
     expect_end("IA");
+
+    // A level 7 held until its handler clears it, taken inside the dialogue:
+    // the midinstruction interrupt is entered by the microcode, with no decode
+    // boundary, and the handler's first boundary must not see a new transition
+    // to seven and take it again.
+    base_setup();
+    poke_l(32'h0000_007C, HAND);           // autovector 7
+    poke_w(CODE + 0,  16'h46FC);           // MOVE #$2000,SR: mask 0
+    poke_w(CODE + 2,  16'h2000);
+    poke_w(CODE + 4,  16'hF200);
+    poke_w(CODE + 6,  16'h0B00);
+    poke_w(CODE + 8,  16'h60FE);
+    poke_w(HAND + 0,  16'h7232);           // MOVEQ #$32,D1 -- a boundary first
+    poke_w(HAND + 2,  16'h4E71);           // NOP
+    poke_w(HAND + 4,  16'h11C0);           // MOVE.B D0,($7000).W -- clear it
+    poke_w(HAND + 6,  16'h7000);
+    poke_w(HAND + 8,  16'h4E73);           // RTE
+    cp.push_resp(16'h8900);                // null, CA, IA
+    cp.push_resp(16'h0802);
+    reset_dut();
+    iacks = 0;
+    ipl_hold = 1'b1;
+    wait (cp.log_n == 1);
+    ipl_n_i = ~3'd7;
+    run_until(CODE + 8, 4000, reached);
+    check(reached, "IA, held level 7: RTE, and the dialogue ends");
+    check(iacks == 1, $sformatf("IA, held level 7: acknowledged once, not %0d times", iacks));
+    check(dut.u_seq.dreg[1] === 32'h0000_0032, "IA, held level 7: the handler ran");
+    ipl_hold = 1'b0;
+    li = cp.log_n;                         // the dialogue is checked above
 
     // ... and on the master stack, with the throwaway frame on the interrupt
     // stack -- UM 6.1.9 and 7.5.2.6.

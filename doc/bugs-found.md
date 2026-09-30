@@ -1881,3 +1881,32 @@ the resumed microword retires without one. A prefetch is no longer held up
 behind a pending hand-back, since the resumed microword may be waiting for it.
 `core_fault_tb` runs the replica's case: a user-mode jump into a missing page
 whose first instruction is an RTS, and a handler that sets FB and FC.
+
+## Post-M13 · A held level-7 interrupt taken from STOP was taken twice
+
+**What:** level 7 is edge-sensitive -- UM 6.1.9, a transition from a lower level
+to seven -- and the core judges the edge against the level remembered at the last
+instruction boundary, which it recorded only when a decode retired. Two ways into
+an interrupt retire no decode: leaving STOP, and the coprocessor's
+midinstruction interrupt (UM 7.5.2.6), which the microcode enters from inside the
+dialogue. A device holds its request until the handler clears it, so at the
+handler's first boundary the level was seven against a remembered lower level: a
+fresh "transition", and the interrupt was taken again, nested, although nothing
+had changed on the pins.
+
+**Found by:** a downstream Sun-3/60 FPGA replica running SunOS 4.1.1. The kernel
+idles in STOP while the PROM monitor's 100 Hz level-7 clock runs; one tick gave
+two acknowledges 6 µs apart, the inner handler cleared the clock chip, and the
+outer one found it clear and reported "Exception 0x7C". Their patch covered STOP;
+the coprocessor path had the same gap, and a test here shows it.
+
+**Why nothing found it sooner:** every interrupt source in the testbenches dropped
+its request as soon as it was acknowledged, which hides the second edge; and TME's
+Sun-3, which SunOS runs on here, is not the replica's clock.
+
+**Fixed by:** the level is recorded on every step into an interrupt entry point
+(`irq_enter`, the same condition that latches the acknowledged level), as well as
+at every decode. `core_exc_tb` and `core_cpif_tb` hold a level 7 until the handler
+writes a clear register -- from a running program, from STOP, and inside a
+coprocessor dialogue -- and count one acknowledge; the STOP and coprocessor cases
+failed before.

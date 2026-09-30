@@ -2601,13 +2601,6 @@ module rd68021_seq #(
     end
   end
 
-  // The level as it was at the last boundary, for the level-7 edge.
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n)                                        irq_prev_q <= 3'd0;
-    else if (retire && (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE))
-                                                       irq_prev_q <= irq_level;
-  end
-
   // The level this acknowledge cycle is for. Latched on the step INTO the
   // interrupt entry point, wherever that step comes from -- the decode arm or
   // the stopped state -- and not while sitting on it, which a stalled first
@@ -2620,6 +2613,21 @@ module rd68021_seq #(
                       && (upc_nxt == rd68021_ucode_pkg::ENTRY_IRQ))
                   || ((upc != rd68021_ucode_pkg::ENTRY_CP_IRQ)
                       && (upc_nxt == rd68021_ucode_pkg::ENTRY_CP_IRQ));
+
+  // The level as it was at the last boundary, for the level-7 edge -- and at
+  // every step into an interrupt, which is where a transition is CONSUMED. Two
+  // of those steps retire no decode: leaving STOP, and the coprocessor's
+  // midinstruction interrupt, entered by the microcode from inside the
+  // dialogue. Without them the handler's first boundary judged level 7 against
+  // the level from before: a device holds its request until the handler clears
+  // it, so that was a fresh "transition", and the non-maskable interrupt was
+  // taken a second time, nested (doc/bugs-found.md).
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)                                        irq_prev_q <= 3'd0;
+    else if ((retire && (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE))
+             || irq_enter)
+                                                       irq_prev_q <= irq_level;
+  end
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n)          irq_taking_q <= 3'd0;
