@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: CERN-OHL-S-2.0
+// Copyright 2026 Romain Dolbeau
+// Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 // RD68021 -- the bus-level test harness.
 //
 // Drives rd68021_biu on its own, against four slaves of different port widths, on

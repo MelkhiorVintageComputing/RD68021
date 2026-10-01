@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: CERN-OHL-S-2.0
+// Copyright 2026 Romain Dolbeau
+// Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 // RD68021 -- a bus slave with a selectable port width.
 //
 // Written from UM 5.2.1 and Tables 5-1, 5-4, 5-5 and 5-7, deliberately without

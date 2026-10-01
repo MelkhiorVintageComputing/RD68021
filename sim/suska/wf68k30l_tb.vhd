@@ -1,3 +1,7 @@
+-- SPDX-License-Identifier: CERN-OHL-S-2.0
+-- Copyright 2026 Romain Dolbeau
+-- Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 -- A bus-trace testbench for the Suska WF68K30L, under ghdl.
 --
 -- WHY THIS EXISTS

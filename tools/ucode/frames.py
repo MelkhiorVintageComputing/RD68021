@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: CERN-OHL-S-2.0
+# Copyright 2026 Romain Dolbeau
+# Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 """The six exception stack frames, and the state this design keeps in them.
 
     python3 tools/ucode/frames.py            # the layouts and the budget

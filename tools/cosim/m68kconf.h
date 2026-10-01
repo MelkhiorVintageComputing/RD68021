@@ -1,3 +1,9 @@
+/* SPDX-License-Identifier: MIT
+ *
+ * A copy of Musashi's m68kconf.h, under Musashi's own licence, which follows.
+ */
+/* ======================================================================== */
+
 /* RD68021's Musashi configuration.
  *
  * Inputs/ is immutable, so this is a copy of Inputs/ref/Musashi/m68kconf.h. It

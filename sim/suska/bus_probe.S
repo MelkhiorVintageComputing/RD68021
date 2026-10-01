@@ -1,3 +1,7 @@
+| SPDX-License-Identifier: CERN-OHL-S-2.0
+| Copyright 2026 Romain Dolbeau
+| Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 | RD68021 -- the bus probe, run on this core and on the Suska WF68K30L.
 |
 | Every data transfer the dynamic bus sizing tables describe: byte, word and

@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: CERN-OHL-S-2.0
+ * Copyright 2026 Romain Dolbeau
+ * Source location: https://github.com/MelkhiorVintageComputing/RD68021
+ */
+
 /* RD68021 -- an MC68881 behind the coprocessor interface, for TME.
  *
  * TME's own MC68881 lives inside its CPU emulation: its instructions read their

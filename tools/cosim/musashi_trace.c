@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: CERN-OHL-S-2.0
+ * Copyright 2026 Romain Dolbeau
+ * Source location: https://github.com/MelkhiorVintageComputing/RD68021
+ */
+
 /* RD68021 -- the instruction-by-instruction oracle.
  *
  * Loads a flat image, runs it under Musashi as an MC68020, and prints the

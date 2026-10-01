@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: CERN-OHL-S-2.0
+# Copyright 2026 Romain Dolbeau
+# Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 # RD68021 timing constraints.
 #
 # 33.333 ns, 30 MHz. Section 10's clock table has grades at 16.67, 20, 25 and

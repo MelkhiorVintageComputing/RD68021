@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: CERN-OHL-S-2.0
+# Copyright 2026 Romain Dolbeau
+# Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 # The clock period the design can actually run at, from the paths Vivado reports.
 #
 # Sourced by impl.tcl and paths.tcl. The bus unit works on both edges, so about

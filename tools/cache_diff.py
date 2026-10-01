@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: CERN-OHL-S-2.0
+# Copyright 2026 Romain Dolbeau
+# Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 """Hold a cached and an uncached run of the same program to the same bus.
 
     python3 tools/cache_diff.py <uncached.bus> <cached.bus>

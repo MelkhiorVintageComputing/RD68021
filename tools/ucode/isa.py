@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: CERN-OHL-S-2.0
+# Copyright 2026 Romain Dolbeau
+# Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 """The microword: every field, every encoding, and the datapath they drive.
 
     python3 tools/ucode/isa.py          # the layout

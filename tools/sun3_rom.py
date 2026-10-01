@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: CERN-OHL-S-2.0
+# Copyright 2026 Romain Dolbeau
+# Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 """Make the Sun-3 boot PROM `make sun3` runs: a copy, patched to boot faster.
 
     python3 tools/sun3_rom.py <original.bin> <patched.bin>

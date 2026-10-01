@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: CERN-OHL-S-2.0
+# Copyright 2026 Romain Dolbeau
+# Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 """Is there any pad-delay assignment that meets Section 10?
 
     python3 tools/timing/analyse.py build/timing-events.log

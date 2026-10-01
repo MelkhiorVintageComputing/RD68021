@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: CERN-OHL-S-2.0
+// Copyright 2026 Romain Dolbeau
+// Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 // RD68021 -- instruction clock counts, for `make cycles`.
 //
 // tools/cycles.py writes the rows and judges the answers; this only measures.

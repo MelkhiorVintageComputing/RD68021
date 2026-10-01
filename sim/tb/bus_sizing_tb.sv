@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: CERN-OHL-S-2.0
+// Copyright 2026 Romain Dolbeau
+// Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 // RD68021 -- dynamic bus sizing and operand misalignment.
 //
 // The milestone test for the bus unit. Three things are checked, and the first is

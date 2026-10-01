@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: CERN-OHL-S-2.0
+# Copyright 2026 Romain Dolbeau
+# Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 """The difference-constraint system, and Bellman-Ford.
 
 An RTL model has no pad delays, so Section 10's limits cannot be measured from

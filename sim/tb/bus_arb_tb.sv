@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: CERN-OHL-S-2.0
+// Copyright 2026 Romain Dolbeau
+// Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 // RD68021 -- bus arbitration: UM 5.7.1 and the state machine of 5.7.1.4.
 //
 // The protocol, in the manual's own three steps:

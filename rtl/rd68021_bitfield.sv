@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: CERN-OHL-S-2.0
+// Copyright 2026 Romain Dolbeau
+// Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 // RD68021 -- the bit-field unit. PRM 4, the eight BFxxx instructions.
 //
 // A bit field is `width` bits, 1 to 32 of them, starting `offset` bits after a

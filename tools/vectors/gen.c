@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: CERN-OHL-S-2.0
+ * Copyright 2026 Romain Dolbeau
+ * Source location: https://github.com/MelkhiorVintageComputing/RD68021
+ */
+
 /* RD68021 -- the per-opcode vector generator.
  *
  * There is no SingleStepTests set for the MC68020, so the mass oracle has to be

@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: CERN-OHL-S-2.0
+// Copyright 2026 Romain Dolbeau
+// Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 // RD68021 -- bus exception control: UM Table 5-8, all six cases.
 //
 // The table indexes two samples by "the number of the current even bus state":

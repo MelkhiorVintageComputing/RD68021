@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: CERN-OHL-S-2.0
+# Copyright 2026 Romain Dolbeau
+# Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 # What limits this design's frequency, and proof that nothing unreachable does.
 #
 #   vivado -mode batch -source scripts/paths.tcl -tclargs <repo-root>

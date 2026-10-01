@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: CERN-OHL-S-2.0
+// Copyright 2026 Romain Dolbeau
+// Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 // RD68021 -- the bus cycle on the manual's own ruler.
 //
 // UM 5.3 measures a bus cycle in states, one per CLK half period, and figures 10-3

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: CERN-OHL-S-2.0
+# Copyright 2026 Romain Dolbeau
+# Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 """Prove that no register in rtl/ initialises outside reset.
 
     python3 tools/reset_audit.py --top rd68021_top --build build rtl/*.sv

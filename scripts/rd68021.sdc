@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: CERN-OHL-S-2.0
+# Copyright 2026 Romain Dolbeau
+# Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 # Quartus timing constraints. Mirrors scripts/rd68021.xdc.
 #
 # derive_clock_uncertainty is added explicitly because Quartus adds none by default

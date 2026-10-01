@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: CERN-OHL-S-2.0
+// Copyright 2026 Romain Dolbeau
+// Source location: https://github.com/MelkhiorVintageComputing/RD68021
+
 // RD68021 -- the bit-field unit against a model written the other way round.
 //
 // rd68021_bitfield works in whole words: a rotate or a shift puts the field at
