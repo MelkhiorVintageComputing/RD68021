@@ -144,3 +144,15 @@ limits the clock), `make quartus` (Cyclone V, or a MAX 10 with
 | `doc/bugs-found.md` | every bug found, how, and how it was fixed |
 | `doc/sun3.md` | running the core inside TME as a Sun-3 |
 | `doc/suska-crosscheck.md` | the bus cycles compared with the Suska core |
+
+## Licence
+
+Copyright 2026 Romain Dolbeau.
+
+RD68021 is licensed under the **CERN Open Hardware Licence Version 2 – Strongly
+Reciprocal** (SPDX: `CERN-OHL-S-2.0`); the full text is in `LICENSE`. Anyone
+who makes or distributes hardware based on it must make its modified sources
+available under the same terms.
+
+The submodules under `Inputs/` are separate works under their own terms, as are
+the Motorola manuals they contain.
