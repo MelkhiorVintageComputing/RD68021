@@ -156,13 +156,14 @@ Implementation, each a vendor run of tens of minutes:
 make impl             # Vivado place and route, xc7a100t, out of context
 make paths            # what limits the clock, and proof the unreachable routes are gone
 make quartus          # the Cyclone V fit, for a second toolchain's number
+make quartus AFAMILY='"MAX 10"' APART=10M50DAF484C6GES   # ... or a MAX 10
 ```
 
-`make vectors` defaults to the groups whose microcode exists, so it stays green
-while a milestone is being built; `vectors-all` is the milestone's own criterion
-and is expected to fail until it closes.
+Every instruction group has microcode now, so `make vectors` with no `OP=` runs
+them all (`VECGROUPS := all`) and is the same as `vectors-all`; both are expected
+to pass. Name a group with `OP=` to run just that one while working on it.
 
-Targets arrive as the milestones that need them do; `make help` lists what exists.
+`make help` lists every target, grouped as above.
 
 ## Tooling notes
 
