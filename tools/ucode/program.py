@@ -3222,6 +3222,12 @@ u('and do it all again',
 # the reason UM 6.1.12 gives the four-word frame: writing the status register is
 # what decides which of the three stack pointers A7 means.
 # ==========================================================================
+# What each fault frame's builder writes and each RTE reads back, by offset:
+# assemble.py's check_frame_fields holds them to frames.INTERNAL.
+FRAME_WRITES = {}
+FRAME_READS = {}
+
+
 def rte_fault(stem, long_frame):
     label(stem)
     u('the frame base, which is where the walk starts',
@@ -3259,8 +3265,13 @@ def rte_fault(stem, long_frame):
             (0x38, 4, 'EA'),
             (0x44, 2, 'LINK'),
             (0x46, 4, 'PC_PREV'),
+            # The primitive a bus error interrupted: what the rest of its
+            # transfer reads its length and direction from, and which a
+            # handler's own coprocessor instructions have since overwritten.
+            (0x4A, 2, 'CPRIM'),
         ]
 
+    FRAME_READS[stem] = [(off, n, dst) for off, n, dst in fields if n]
     at = 0
     for off, nbytes, dst in fields:
         if nbytes == 0:
@@ -3647,8 +3658,8 @@ def fault_frame(stem, long_frame):
       asrc='EA_SAVE', alu='A', dst='SP', size='LONG')
 
     # (offset, bytes, source) in ascending order. The offsets are UM table 6-5
-    # for the named fields and doc/checkpoint.md for the rest; `check_frames`
-    # proves the set against frames.py.
+    # for the named fields and doc/checkpoint.md for the rest;
+    # assemble.py's check_frame_fields proves the set against frames.py.
     fields = [
         (0x02, 4, 'PC_D'),        # the instruction that was executing
         (0x06, 2, 'FLTFMT'),
@@ -3676,14 +3687,14 @@ def fault_frame(stem, long_frame):
             (0x40, 4, 'PC_FETCH'),
             (0x44, 2, 'LINK'),
             (0x46, 4, 'PC_PREV'),
+            (0x4A, 2, 'CPRIM'),
         ]
         # UM table 6-5 makes the frame forty-six words whatever is in them. The
         # words this design has no use for are written as zero rather than left
         # as whatever the handler's stack held: a frame is copied and restored
         # by a task switch, and one that carries the previous owner's stack is
         # a leak with no upside.
-        fields += [(off, 4, 'ZERO') for off in range(0x4A, 0x5A, 4)]
-        fields += [(0x5A, 2, 'ZERO')]
+        fields += [(off, 4, 'ZERO') for off in range(0x4C, 0x5C, 4)]
     else:
         # UM table 6-5 makes the short frame sixteen words. Its last two are
         # internal and this design has nothing to put in them: a format $A frame
@@ -3692,6 +3703,7 @@ def fault_frame(stem, long_frame):
         # resumes or is already clear.
         fields += [(0x1C, 4, 'ZERO')]
 
+    FRAME_WRITES[stem] = list(fields)
     at = 0
     for off, nbytes, src in fields:
         step = off - at

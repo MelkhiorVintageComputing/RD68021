@@ -599,6 +599,7 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_ASRC_EABASE: a_bus = ea_base;
       // The coprocessor interface -- UM section 7.
       rd68021_ucode_pkg::U_ASRC_CPLEN: a_bus = {24'd0, cprim_q[7:0]};
+      rd68021_ucode_pkg::U_ASRC_CPRIM: a_bus = {16'd0, cprim_q};
       rd68021_ucode_pkg::U_ASRC_CPVEC: a_bus = {22'd0, cprim_q[7:0], 2'b00};
       rd68021_ucode_pkg::U_ASRC_CPREG: a_bus = cpreg_read;
       rd68021_ucode_pkg::U_ASRC_CPINT: a_bus = {16'd0, cp_int};

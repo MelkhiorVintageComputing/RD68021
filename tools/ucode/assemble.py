@@ -739,6 +739,53 @@ def check_restore_order():
     return bad
 
 
+# The long frame's private words that RTE deliberately does not read back,
+# and why. Everything else in frames.INTERNAL is written by the frame builder
+# and read by RTE, or it is not checkpointed at all.
+RTE_IGNORES = {
+    'ea_save': 'the frame builder\'s own pointer; RTE walks the frame with it '
+               'and has no use for the old value',
+    'pc_fetch': 'the same register as stage_b_addr at +$24, which RTE reads',
+}
+
+
+def check_frame_fields():
+    """Every private word of the long frame is saved and put back.
+
+    frames.INTERNAL says where each checkpointed register lives in the long
+    bus fault frame. That is only a promise: the frame builder has to write the
+    word from the register, and RTE has to read it back into it. A word the
+    builder fills with zero, or RTE skips, is a register that silently does not
+    survive a handler that changes it -- cprim at +$4A was exactly that, and a
+    handler that ran a coprocessor instruction resumed the interrupted transfer
+    with its own primitive's length.
+    """
+    bad = []
+    writes = program.FRAME_WRITES['exc_fault_long']
+    reads = program.FRAME_READS['rte_fault_long']
+
+    def covering(fields, o):
+        return [f for off, n, f in fields if off <= o < off + n]
+
+    for off, hi, lo, name, bits, _ in frames.INTERNAL:
+        for w in range((bits + 15) // 16):
+            o = off + 2 * w
+            src = covering(writes, o)
+            if not src or src == ['ZERO']:
+                bad.append('long frame +$%02X (%s): the frame builder writes %s '
+                           'there, not the register' % (o, name, src or 'nothing'))
+            if name in RTE_IGNORES:
+                continue
+            if not covering(reads, o):
+                bad.append('long frame +$%02X (%s): RTE does not read it back, '
+                           'so a handler that changes the register changes the '
+                           'resumed instruction' % (o, name))
+    for name in RTE_IGNORES:
+        if name not in [n for _, _, _, n, _, _ in frames.INTERNAL]:
+            bad.append('RTE_IGNORES names %r, which is not in frames.INTERNAL' % name)
+    return bad
+
+
 def check_cond_dst():
     bad = []
     for i, (f, c) in enumerate(program.WORDS):
@@ -1139,7 +1186,7 @@ def main():
 
     bad = (frames.check() + isa.check() + check_cond_dst() + check_live_shape() + check_bf_shape() + check_mul_shape() + check_shift_src()
            + check_ea_live() + check_ea_set() + check_rdata_restart() + check_read_no_pipe()
-           + check_areg_size() + check_restore_order())
+           + check_areg_size() + check_restore_order() + check_frame_fields())
     if bad:
         print('FAIL: the tables are not self-consistent')
         for b in bad:

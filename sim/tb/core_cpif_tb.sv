@@ -39,6 +39,7 @@ module core_cpif_tb;
   bit          reached;
   logic [31:0] base;
   int unsigned li;       // the next log entry a test expects
+  int unsigned n;
 
   // An autovectoring interrupt source that drops its request when acknowledged.
   int unsigned iacks;
@@ -963,6 +964,54 @@ module core_cpif_tb;
     expect_cir(1'b0, R_OPND, 4, 32'h5555_AAAA, "CIR bus error: the rerun");
     expect_cir(1'b1, R_RESP, 2, 32'h0802, "CIR bus error");
     expect_end("CIR bus error");
+
+    // ======================================================================
+    // A bus error on an operand a primitive is moving -- UM 7.5.2.8 -- with a
+    // handler that runs a coprocessor instruction of its own before its RTE,
+    // as a page-fault handler that switches FPU contexts does. Three
+    // twelve-byte operands from (A0) to the coprocessor, the fifth long word
+    // faulted; the handler's own dialogue moves a word. RTE reruns the faulted
+    // read and the rest of the operands go on as long words.
+    // ======================================================================
+    base_setup();
+    poke_l(32'h0000_0008, HAND);           // vector 2
+    poke_w(CODE + 0,  16'hF210);           // cpGEN (A0)
+    poke_w(CODE + 2,  16'h0700);
+    poke_w(CODE + 4,  16'h60FE);
+    poke_w(HAND + 0,  16'hF23C);           // cpGEN #imm, a word
+    poke_w(HAND + 2,  16'h0F01);
+    poke_w(HAND + 4,  16'h4321);
+    poke_w(HAND + 6,  16'h4E73);           // RTE
+    for (n = 0; n < 9; n = n + 1)
+      poke_l(DATA + 4 * n, 32'hD000_0000 + n);
+    cp.push_resp(16'h810C);                // CA, to CP, twelve bytes each
+    cp.push_resp(16'h9702);                // the handler's: CA, to CP, a word
+    cp.push_resp(16'h0802);                // ... finished
+    cp.push_resp(16'h0802);                // the interrupted one finished
+    cp.push_rsel(16'h00E0);                // three ones
+    reset_dut();
+    dut.u_seq.areg[0] = DATA;
+    berr_en   = 1'b1;
+    berr_base = DATA + 32'h10;             // the fifth long word
+    berr_mask = 32'hFFFF_FFFC;
+    run_until(HAND, 3000, reached);
+    check(reached, "operand bus error: the handler runs");
+    berr_en = 1'b0;
+    run_until(CODE + 4, 4000, reached);
+    check(reached, "operand bus error: RTE, and the instruction ends");
+    expect_cir(1'b0, R_CMD, 2, 32'h0700, "operand bus error");
+    expect_cir(1'b1, R_RESP, 2, 32'h810C, "operand bus error");
+    expect_cir(1'b1, R_RSEL, 2, 32'h00E0, "operand bus error");
+    for (n = 0; n < 4; n = n + 1)
+      expect_cir(1'b0, R_OPND, 4, 32'hD000_0000 + n, "operand bus error: before the fault");
+    expect_cir(1'b0, R_CMD, 2, 32'h0F01, "operand bus error: the handler's");
+    expect_cir(1'b1, R_RESP, 2, 32'h9702, "operand bus error: the handler's");
+    expect_cir(1'b0, R_OPND, 2, 32'h4321, "operand bus error: the handler's word");
+    expect_cir(1'b1, R_RESP, 2, 32'h0802, "operand bus error: the handler's");
+    for (n = 4; n < 9; n = n + 1)
+      expect_cir(1'b0, R_OPND, 4, 32'hD000_0000 + n, "operand bus error: after RTE");
+    expect_cir(1'b1, R_RESP, 2, 32'h0802, "operand bus error");
+    expect_end("operand bus error");
 
     // ======================================================================
     // Evaluate effective address and transfer data to registers and from an

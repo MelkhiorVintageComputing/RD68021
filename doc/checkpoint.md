@@ -260,6 +260,16 @@ demand-paged access -- a fault inside an effective-address subroutine restores
 `upc` from the frame and then returns through a link register holding whatever
 the handler last put there.
 
+**A home is not enough: it has to be used.** `check_rtl` proves every register
+has a slot; `check_frame_fields`, in `tools/ucode/assemble.py`, proves the frame
+builder writes each private slot of the long frame from its register and RTE
+reads it back. Two slots are exempt with a reason: `ea_save`, which is the
+builder's own pointer, and `pc_fetch`, which is the same register as +$24. Until
+it existed `cprim` had a slot at +$4A that the builder filled with zero and RTE
+skipped. A handler that ran a coprocessor instruction then resumed an
+interrupted operand transfer with its own primitive's length
+(`doc/bugs-found.md`).
+
 ## The rules this imposes on the microcode
 
 Eight, and the microcode is written to them rather than audited against them

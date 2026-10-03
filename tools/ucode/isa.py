@@ -348,6 +348,7 @@ ASRC = enc(
     'XREG',      # the general register it names -- data or address per bit 15
     # ---- The coprocessor interface -----------------------------------------
     'CPLEN',     # the primitive's length field, bits 7:0
+    'CPRIM',     # ... and the whole primitive, for the long fault frame's +$4A
     'CPVEC',     # ... read as a vector number, times four: the take-exception
                  # primitives -- UM 7.4.18 to 7.4.20
     'CPREG',     # the general register a transfer-single-register primitive

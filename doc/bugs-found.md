@@ -1910,3 +1910,36 @@ at every decode. `core_exc_tb` and `core_cpif_tb` hold a level 7 until the handl
 writes a clear register -- from a running program, from STOP, and inside a
 coprocessor dialogue -- and count one acknowledge; the STOP and coprocessor cases
 failed before.
+
+## Post-M13 · RTE did not put back the coprocessor primitive
+
+**What:** a bus error on an operand a coprocessor primitive is moving is an
+ordinary bus error, and RTE goes back into the middle of the primitive (UM
+7.5.2.8). What the rest of the transfer reads its length and direction from is
+the primitive itself, `cprim`, and `frames.py` gave it a home at +$4A of the long
+frame. But the frame builder wrote zero there, and RTE did not read it. With a
+handler that only saved and restored the coprocessor's state, `cprim` survived by
+being left alone. A handler that ran a coprocessor instruction of its own, as a
+page-fault handler switching FPU contexts does, left its own primitive in
+`cprim`, and the resumed transfer took that one's length: the next operand went
+to the coprocessor as a word where a long word was due, and the coprocessor
+called a protocol violation.
+
+**Found by:** RD68884, an MC68881 replica on the core's coprocessor interface. It
+faulted the fifth long word of an `FMOVEM.X (A0),FP0-FP2` and switched FPU
+contexts in the handler.
+
+**Why nothing found it sooner:** `core_cpif_tb`'s bus error was on an interface
+register, with an RTE for a handler. Nothing faulted an operand transfer and then
+used the coprocessor before returning. And the check that should have held the
+frame to `frames.py` did not exist: the frame builder's comment named a
+`check_frames` that had never been written.
+
+**Fixed by:** the frame builder writes `cprim` at +$4A and RTE reads it back.
+`check_frame_fields`, in `make ucode-check`, now requires every private word of
+the long frame to be written from its register and read back by RTE, apart from
+the two RTE has no use for. Either half of this fix reverted fails it. In
+`core_cpif_tb`, a transfer of three twelve-byte operands faults on its fifth long
+word; the handler moves a word through a dialogue of its own, and every operand
+after RTE has to be a long word with the right data. That test failed before the
+fix exactly as RD68884 reported.
