@@ -42,6 +42,14 @@ module rd68021_biu #(
     input  logic  [3:0] req_cpuspace,
     input  logic  [7:0] req_cpuaddr,
     input  logic        req_cpfault,
+    // A posted write -- UM 8.1.3, doc/checkpoint.md rule 9. It gets no
+    // acknowledge: `req_taken` says it has been taken, the clock after, and
+    // the requester goes on. `post_busy` says one is still outstanding, and a
+    // fault on it is `req_fault` with `req_fault_post`.
+    input  logic        req_post,
+    output logic        req_taken,
+    output logic        post_busy,
+    output logic        req_fault_post,
     output logic        req_ack,
     output logic        req_last,
     // The data operand finishes cleanly at the rising edge that ends S5 -- no
@@ -68,6 +76,8 @@ module rd68021_biu #(
     // fault was an instruction prefetch at a boundary, and there is nothing to
     // hand back. Whatever is pending is dropped.
     input  logic        rst_cancel,
+    // The operand handed back is a posted write: run it now, for nobody.
+    input  logic        rst_post,
     input  logic [31:0] rst_addr,
     input  logic  [2:0] rst_bytes,
     input  logic  [2:0] rst_fc,
@@ -187,7 +197,9 @@ module rd68021_biu #(
   logic        op_rw;        // 1 = read
   logic        op_rmc;
   logic        op_first;     // no bus cycle of this operand has started yet -- OCS
-  logic        op_isfetch;   // the request came from the instruction fetch unit
+  logic        op_isfetch;
+  logic        op_posted;    // a posted write: no acknowledge -- rule 9
+  logic        rst_post_q;   // the operand RTE handed back is a posted write   // the request came from the instruction fetch unit
   // A bus error on this CPU-space operand is a bus error and not an answer: a
   // coprocessor interface register other than the one that starts an
   // instruction -- UM 7.5.2.8.
@@ -293,7 +305,13 @@ module rd68021_biu #(
   // which on the MC68010 project cost a long-word read one of its two words every
   // few thousand DMA transfers.
   logic want_cycle;
-  assign want_cycle = op_continuing || req_valid || fetch_valid;
+  // RTE has a posted write to rerun, and the edge a posted write faults on.
+  logic rst_self, post_flt_end;
+  // Nothing new starts on the edge a posted write ends in a bus error: the
+  // sequencer is about to take it, and with nothing taken the state machine
+  // would go to S0 by its retry arm and run the faulted write again.
+  assign want_cycle = op_continuing
+                   || (!post_flt_end && (req_valid || fetch_valid || rst_self));
 
   logic bus_is_idle;
   assign bus_is_idle = (st_p == rd68021_pkg::ST_IDLE)
@@ -650,10 +668,21 @@ module rd68021_biu #(
   //
   // A prefetch is not held up behind it either: the resumed microword may be
   // waiting for exactly that word.
-  assign take_rst   = !op_continuing && rst_pend_q && req_valid
-                   && (rst_bytes != 3'd0);
-  assign take_req   = !op_continuing && !rst_pend_q && req_valid;
-  assign take_fetch = !op_continuing && !req_valid && fetch_valid;
+  //
+  // A posted write handed back is run at once, for nobody: the microword RTE
+  // resumed is not the one that wrote it -- doc/checkpoint.md rule 9.
+  //
+  // And nothing new is taken on the edge a posted write ends in a bus error.
+  // The sequencer is about to take the fault at whatever microword it is on,
+  // and a request that microword had presented must not run.
+  assign rst_self     = rst_pend_q && rst_post_q && (rst_bytes != 3'd0);
+  assign post_flt_end = op_finishing && op_posted && term_err;
+  assign take_rst   = !op_continuing && !post_flt_end && rst_pend_q
+                   && (req_valid || rst_post_q) && (rst_bytes != 3'd0);
+  assign take_req   = !op_continuing && !post_flt_end && !rst_pend_q
+                   && req_valid;
+  assign take_fetch = !op_continuing && !post_flt_end && !req_valid && fetch_valid
+                   && !rst_self;
 
   // UM 6.2.2: with DF cleared "it assumes that the data input buffer value on
   // the stack is valid for a read or that the data has been correctly written
@@ -665,8 +694,11 @@ module rd68021_biu #(
   // it does has to happen exactly once. Satisfying its request from the frame
   // is what lets it run again without running the access again.
   logic rst_done;
-  assign rst_done = rst_pend_q && !op_continuing && req_valid
+  assign rst_done = rst_pend_q && !rst_post_q && !op_continuing && req_valid
                  && (rst_bytes == 3'd0);
+
+  // A posted write is outstanding, or RTE has one to rerun.
+  assign post_busy = (op_active && op_posted) || rst_self;
 
   // CPU space synthesises its address from the type field -- UM figure 5-31.
   logic [31:0] cpu_space_addr;
@@ -763,7 +795,7 @@ module rd68021_biu #(
   // Combinational, and true throughout S5: the operand completes at the rising
   // edge that ends S5, which gives the sequencer half a clock to present the next
   // request. That half clock is the design's tightest path, by construction.
-  assign req_last   = op_finishing && !op_isfetch;
+  assign req_last   = op_finishing && !op_isfetch && !op_posted;
   assign fetch_last = op_finishing &&  op_isfetch;
 
   // ==========================================================================
@@ -790,6 +822,10 @@ module rd68021_biu #(
       req_ack    <= 1'b0;
       req_end_q  <= rd68021_pkg::CE_NONE;
       rst_pend_q <= 1'b0;
+      rst_post_q <= 1'b0;
+      op_posted  <= 1'b0;
+      req_taken  <= 1'b0;
+      req_fault_post <= 1'b0;
       fetch_ack  <= 1'b0;
       rdata_q    <= '0;
       frdata_q   <= '0;
@@ -803,19 +839,31 @@ module rd68021_biu #(
     end else begin
       st_p      <= st_p_nxt;
       req_ack   <= 1'b0;
+      req_taken <= 1'b0;
 
-      if (rst_op_valid)          rst_pend_q <= 1'b1;
-      else if (take_rst)         rst_pend_q <= 1'b0;
+      if (rst_op_valid) begin
+        rst_pend_q <= 1'b1;
+        rst_post_q <= rst_post;
+      end else if (take_rst && (st_p_nxt == rd68021_pkg::ST_S0))
+        rst_pend_q <= 1'b0;
       else if (rst_done) begin
         rst_pend_q <= 1'b0;
-        req_ack    <= 1'b1;
+        // A posted microword is satisfied by being taken, not acknowledged; an
+        // acknowledge would be read by the microword after it.
+        req_ack    <= !req_post;
+        req_taken  <= req_post;
         req_end_q  <= rd68021_pkg::CE_DSACK;
         rdata_q    <= {8'd0, rst_dob};
-      end else if (rst_cancel)   rst_pend_q <= 1'b0;
+      end else if (rst_pend_q && rst_post_q && (rst_bytes == 3'd0))
+        // The handler wrote it -- UM 6.2.2 -- and there is nothing to run.
+        rst_pend_q <= 1'b0;
+      else if (rst_cancel && !rst_post_q)
+        rst_pend_q <= 1'b0;
 
       fetch_ack <= 1'b0;
       req_fault    <= 1'b0;
       req_fault_wr <= 1'b0;
+      req_fault_post <= 1'b0;
       fetch_fault  <= 1'b0;
 
       arb <= arb_nxt;
@@ -848,7 +896,8 @@ module rd68021_biu #(
             fetch_fault <= term_err;
             if (op_rw) frdata_q <= rd_merged[31:0];
           end else begin
-            req_ack      <= 1'b1;
+            // A posted write is acknowledged to nobody.
+            req_ack      <= !op_posted;
             req_end_q    <= end_now;
             // A bus error on a CPU-SPACE cycle is not a bus error. UM 6.1.9
             // makes one on an interrupt acknowledge the spurious interrupt, and
@@ -861,6 +910,7 @@ module rd68021_biu #(
             req_fault_wr <= term_err && ((op_fc != rd68021_pkg::FC_CPU)
                                          || op_cpflt)
                                      && !op_rw;
+            req_fault_post <= term_err && op_posted;
             if (op_rw) rdata_q <= rd_merged;
           end
         end
@@ -888,6 +938,11 @@ module rd68021_biu #(
           op_rmc     <= next_rmc;
           op_first   <= 1'b1;
           op_isfetch <= take_fetch;
+          // Posted: the operand RTE reruns by itself, or a posted request --
+          // which may be taking a hand-back of its own.
+          op_posted  <= take_rst ? (rst_post_q || req_post)
+                                 : (take_req && req_post);
+          req_taken  <= req_post && (take_req || (take_rst && !rst_post_q));
           // An operand RTE hands back in CPU space can only be a coprocessor
           // access that faulted, so it faults again if it has to.
           op_cpflt   <= take_rst ? 1'b1 : (take_req && req_cpfault);
@@ -975,6 +1030,7 @@ module rd68021_biu #(
       // or a retry, and the residual after it is known. Everything the sequencer
       // does with it is a half clock -- the early retire, doc/timing-divergences.md.
       early_q <= (st_n_nxt == rd68021_pkg::ST_S5) && op_active && !op_isfetch
+              && !op_posted
               && !term_err && !term_rty && !berr_s && (op_rem == xfer_n);
 
       // "The BG signal transitions on the falling edge of the clock after a state

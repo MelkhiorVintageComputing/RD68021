@@ -199,6 +199,8 @@ module rd68021_top #(
   logic        reset_req;
   logic        reset_busy;
   logic        dbf;            // double bus fault
+  // Posted writes -- doc/checkpoint.md rule 9.
+  logic        req_post, req_taken, post_busy, req_fault_post, rst_post;
 
   rd68021_seq #(.COPROCESSOR (COPROCESSOR)) u_seq (
       .clk            (clk),
@@ -221,6 +223,10 @@ module rd68021_top #(
       .req_end        (req_end),
       .req_fault      (req_fault),
       .req_fault_wr   (req_fault_wr),
+      .req_post       (req_post),
+      .req_taken      (req_taken),
+      .post_busy      (post_busy),
+      .req_fault_post (req_fault_post),
       .req_dsack      (req_dsack),
 
       .flt_addr       (flt_addr),
@@ -232,6 +238,7 @@ module rd68021_top #(
       .flt_dib        (flt_dib),
       .rst_op_valid   (rst_op_valid),
       .rst_cancel     (rst_cancel),
+      .rst_post       (rst_post),
       .rst_addr       (rst_addr),
       .rst_bytes      (rst_bytes),
       .rst_fc         (rst_fc),
@@ -340,6 +347,10 @@ module rd68021_top #(
       .req_end        (req_end),
       .req_fault      (req_fault),
       .req_fault_wr   (req_fault_wr),
+      .req_post       (req_post),
+      .req_taken      (req_taken),
+      .post_busy      (post_busy),
+      .req_fault_post (req_fault_post),
       .req_dsack      (req_dsack),
 
       .flt_addr       (flt_addr),
@@ -351,6 +362,7 @@ module rd68021_top #(
       .flt_dib        (flt_dib),
       .rst_op_valid   (rst_op_valid),
       .rst_cancel     (rst_cancel),
+      .rst_post       (rst_post),
       .rst_addr       (rst_addr),
       .rst_bytes      (rst_bytes),
       .rst_fc         (rst_fc),

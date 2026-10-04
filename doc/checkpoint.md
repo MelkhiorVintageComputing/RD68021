@@ -164,8 +164,9 @@ This is a cycle-count divergence, measured and justified in
 | `+$40` | 31:0 | `pc_fetch` | the next long word the pipe will fetch |
 | `+$44` | 15:0 | `link` | the return address of the subroutine under way |
 | `+$4A` | 15:0 | `cprim` | the coprocessor response primitive being served |
+| `+$08` | 5 | `posted` | the faulted access was a posted write, which RTE reruns by itself |
 
-**492 bits available, 349 used, 8 words spare** (`+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
+**492 bits available, 350 used, 8 words spare** (`+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
 
 ### The frozen set
 
@@ -211,6 +212,7 @@ This is a cycle-count divergence, measured and justified in
 | `seq` | `pc_kept_q` | 1 | `pc_kept` | pc_prev_q was taken at a flush, so the decode must not overwrite it |
 | `seq` | `sr_q` | 16 | `sr` | frame +$00 |
 | `seq` | `cprim_q` | 16 | `cprim` | UM 7.5.2.8: a bus error on any CIR access but the first, or on an operand a primitive moves, is an ordinary bus error, and RTE goes back to the primitive it interrupted |
+| `seq` | `post_flt_q` | 1 | `posted` | doc/checkpoint.md rule 9: the faulted access belongs to no microword -- the write was posted and the instruction went on -- so RTE runs it on its own and resumes at the microword that was interrupted |
 
 ### Not checkpointed, and why
 
@@ -272,7 +274,7 @@ interrupted operand transfer with its own primitive's length
 
 ## The rules this imposes on the microcode
 
-Eight, and the microcode is written to them rather than audited against them
+Nine, and the microcode is written to them rather than audited against them
 afterwards.
 
 1. **No state outside the set.** A microword may not stash a value anywhere but
@@ -324,6 +326,37 @@ afterwards.
 8. **Recompute the budget on every addition.** The table above is printed from the
    source, so it cannot be out of date; the discipline is that the number is
    looked at.
+
+9. **A posted write belongs to no microword.** UM 8.1.3: a write is queued and
+   the bus controller runs it while the sequencer goes on. The microword that
+   asked for it retires the clock after the bus unit takes it, and its commits
+   stand -- the register step, the pipe advance, the condition codes. One is
+   outstanding at most: the bus unit takes nothing else until it is done.
+   - Its bus error is taken at whatever microword M is presented when it
+     arrives, as a data fault on M's own access would be: M commits nothing,
+     `upc` is M, the frame has DF, the residual, DOB and the write's function
+     code, and **`posted`** at +$08 bit 5.
+   - RTE with `posted` and DF set hands the residual to the bus unit, which
+     runs it by itself as a posted write again -- not for M's request -- and
+     RESUME goes to M. With DF clear the handler did it (UM 6.2.2), and RTE
+     only resumes. If the rerun faults, the new frame describes M with a write
+     outstanding, which is UM 6.2.3's "new stack frame after deallocating the
+     previous frame".
+   - So any microword may be M, and one that reads state no frame carries may
+     not: it **waits** for the write instead. `mark_sync` in
+     `tools/ucode/assemble.py` marks them -- readers of `ea_save`, of the
+     interrupt level being acknowledged, of RTE's taken-apart status word, of
+     the divider, of an earlier read's data or end code; RESUME, RTE's
+     hand-back, STOP and RESET; and NOP, which PRM 4 makes wait. Three more
+     wait in the RTL: a decode that may take an interrupt, whose level is not
+     in the frame either; a microword about to take a prefetch fault, so that
+     the write, which came first, faults first; and a posted microword that has
+     not yet retired for one of those reasons, whose write's fault is then an
+     ordinary one on its own request.
+   - Not posted: read-modify-write (indivisible), CPU space (its bus errors are
+     answers), and anything that waits itself. `check_posted` holds the marking
+     to that, and every core testbench checks that no waiting microword ever
+     retires with a write outstanding.
 
 ---
 

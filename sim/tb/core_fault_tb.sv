@@ -87,8 +87,14 @@ module core_fault_tb;
     // UM table 6-5 and doc/checkpoint.md, field by field.
     check(peek_w(base + 32'h00) === 16'h2700,
           "write fault: +$00 the status register as it was");
-    check(peek_l(base + 32'h02) === CODE + 8,
-          "write fault: +$02 the instruction that was executing");
+    // The write is posted -- UM 8.1.3, doc/checkpoint.md rule 9: the
+    // instruction ends when the bus unit takes it, and its bus error is taken
+    // at the instruction that is running when it arrives, which here is the
+    // next one. +$08 says the faulted access was posted.
+    check(peek_l(base + 32'h02) === CODE + 10,
+          "write fault: +$02 the instruction its bus error interrupted, the next one");
+    check((peek_w(base + 32'h08) & 16'h0020) !== 16'h0,
+          "write fault: +$08 the faulted write was posted");
     check(peek_w(base + 32'h06) === 16'hB008,
           "write fault: +$06 format $B, vector offset $008");
     // doc/ssw.md: a data write fault, four bytes, supervisor data space.
@@ -106,8 +112,8 @@ module core_fault_tb;
           "write fault: +$18 the data output buffer");
     check(peek_w(base + 32'h36) >> 12 === 4'h1,
           "write fault: +$36 the frame version");
-    check(peek_l(base + 32'h46) === CODE + 6,
-          "write fault: +$46 the instruction before this one");
+    check(peek_l(base + 32'h46) === CODE + 8,
+          "write fault: +$46 the instruction before that one: the write");
 
     // ======================================================================
     // The same write, but the bus error comes late: DSACK first, and BERR only
@@ -134,8 +140,8 @@ module core_fault_tb;
     check(dut.u_seq.dreg[3] === 32'h0, "late write fault: the instruction after it did not run");
     base = ISP0 - 32'h5C;
     check(dut.u_seq.isp_q === base, "late write fault: a 46-word frame");
-    check(peek_l(base + 32'h02) === CODE + 8,
-          "late write fault: +$02 the instruction that was executing");
+    check(peek_l(base + 32'h02) === CODE + 10,
+          "late write fault: +$02 the instruction it interrupted, which had not committed");
     check((peek_w(base + 32'h0A) & 16'h0FFF) === 12'h105,
           "late write fault: +$0A the special status word");
     check(peek_l(base + 32'h10) === GONE, "late write fault: +$10 the fault address");
@@ -559,7 +565,9 @@ module core_fault_tb;
     dut.u_seq.dreg[0] = 32'hCAFE_F00D;
     run_until(HAND + 0, 3000, reached);
     check(reached, "fast -(An) write fault: the bus error is taken");
-    check(dut.u_seq.areg[1] === GONE + 8, "fast -(An) write fault: A1 has not moved");
+    // Posted: the instruction ended when the write was taken, so its step of
+    // A1 stands, and RTE reruns the write alone.
+    check(dut.u_seq.areg[1] === GONE + 4, "fast -(An) write fault: A1 stepped, the write posted");
     check(peek_l(ISP0 - 32'h5C + 32'h10) === GONE + 4,
           "fast -(An) write fault: +$10 the address it wrote to");
     berr_en = 1'b0;
@@ -806,8 +814,8 @@ module core_fault_tb;
     // it is moving -- and the long frame's continuation finishes them.
     check(peek_w(base + 32'h00) >> 8 === 8'h00,
           "user-mode write fault: +$00 is the USER's status register");
-    check(peek_l(base + 32'h02) === CODE + 18,
-          "user-mode write fault: +$02 is the faulted instruction");
+    check(peek_l(base + 32'h02) === CODE + 20,
+          "user-mode write fault: +$02 is the instruction the posted write's fault interrupted");
     check(user_on_sstack == 0,
           "user-mode write fault: no user-space cycle touched the supervisor stack");
 
@@ -834,6 +842,95 @@ module core_fault_tb;
     if (pipe_fails != 0)
       $display("  FAIL: the pipe invariant broke %0d times", pipe_fails);
     $display("core_fault_tb: %0d checks, %0d failed", checks, fails);
+    // ======================================================================
+    // Posted writes -- UM 8.1.3, doc/checkpoint.md rule 9. The write's
+    // instruction ends when the bus unit takes it, the next ones go on, and
+    // its bus error is taken at whatever microword is running when it comes.
+    // RTE reruns the write by itself and resumes that microword.
+    // ======================================================================
+
+    // An instruction with extension words runs while the write is out, and is
+    // interrupted part-way: after RTE it finishes, and the one after it runs.
+    base_setup();
+    poke_w(CODE + 0,  16'h207C);           // MOVEA.L #GONE,A0
+    poke_l(CODE + 2,  GONE);
+    poke_w(CODE + 6,  16'h2080);           // MOVE.L D0,(A0) -- posted, faults
+    poke_w(CODE + 8,  16'h223C);           // MOVE.L #$11223344,D1
+    poke_l(CODE + 10, 32'h1122_3344);
+    poke_w(CODE + 14, 16'h5281);           // ADDQ.L #1,D1
+    poke_w(CODE + 16, 16'h7A07);           // MOVEQ #7,D5
+    poke_w(CODE + 18, 16'h60FE);
+    poke_w(HAND + 0,  16'h4E73);           // RTE, DF still set
+    reset_dut();
+    dut.u_seq.dreg[0] = 32'h0BAD_F00D;
+    run_until(HAND + 0, 3000, reached);
+    check(reached, "posted: the bus error is taken");
+    check((peek_w(ISP0 - 32'h5C + 32'h08) & 16'h0020) !== 16'h0,
+          "posted: +$08 says the write was posted");
+    check(peek_l(ISP0 - 32'h5C + 32'h02) !== CODE + 6,
+          "posted: +$02 is not the write's instruction: it had ended");
+    berr_en = 1'b0;
+    run_until(CODE + 18, 3000, reached);
+    check(reached, "posted: RTE, and the program runs on");
+    check(peek_l(GONE) === 32'h0BAD_F00D, "posted: RTE wrote the posted operand");
+    check(dut.u_seq.dreg[1] === 32'h1122_3345,
+          "posted: the instruction it interrupted ran exactly once");
+    check(dut.u_seq.dreg[5] === 32'h0000_0007, "posted: and the one after it ran");
+    check(dut.u_seq.isp_q === ISP0, "posted: the frame came off the stack");
+
+    // A second write and a read queue behind the posted one -- UM 8.1.3. The
+    // first faults while they wait: neither may run, and after RTE both do,
+    // in order, after the rerun.
+    base_setup();
+    poke_w(CODE + 0,  16'h207C);           // MOVEA.L #GONE,A0
+    poke_l(CODE + 2,  GONE);
+    poke_w(CODE + 6,  16'h227C);           // MOVEA.L #$3000,A1
+    poke_l(CODE + 8,  32'h0000_3000);
+    poke_w(CODE + 12, 16'h2080);           // MOVE.L D0,(A0) -- posted, faults
+    poke_w(CODE + 14, 16'h22C1);           // MOVE.L D1,(A1)+ -- waits behind it
+    poke_w(CODE + 16, 16'h2621);           // MOVE.L -(A1),D3 -- and this read
+    poke_w(CODE + 18, 16'h60FE);
+    poke_w(HAND + 0,  16'h4E73);
+    poke_l(32'h0000_3000, 32'h0);
+    reset_dut();
+    dut.u_seq.dreg[0] = 32'h1111_2222;
+    dut.u_seq.dreg[1] = 32'h3333_4444;
+    run_until(HAND + 0, 3000, reached);
+    check(reached, "posted, queued: the bus error is taken");
+    check(peek_l(32'h0000_3000) === 32'h0,
+          "posted, queued: the write behind it had not gone");
+    berr_en = 1'b0;
+    run_until(CODE + 18, 3000, reached);
+    check(reached, "posted, queued: RTE, and the program runs on");
+    check(peek_l(GONE) === 32'h1111_2222, "posted, queued: the first write, rerun");
+    check(peek_l(32'h0000_3000) === 32'h3333_4444, "posted, queued: the second write");
+    check(dut.u_seq.areg[1] === 32'h0000_3000, "posted, queued: A1 stepped up and back, once each");
+    check(dut.u_seq.dreg[3] === 32'h3333_4444, "posted, queued: the read saw the second write");
+
+    // The handler completes the posted write itself and clears DF -- UM
+    // 6.2.2 -- so RTE runs nothing, and only resumes.
+    base_setup();
+    poke_w(CODE + 0,  16'h207C);
+    poke_l(CODE + 2,  GONE);
+    poke_w(CODE + 6,  16'h2080);           // MOVE.L D0,(A0) -- posted, faults
+    poke_w(CODE + 8,  16'h7C11);           // MOVEQ #$11,D6
+    poke_w(CODE + 10, 16'h60FE);
+    poke_w(HAND + 0,  16'h026F);           // ANDI.W #$FEFF,($0A,A7): DF off
+    poke_w(HAND + 2,  16'hFEFF);
+    poke_w(HAND + 4,  16'h000A);
+    poke_w(HAND + 6,  16'h4E73);
+    reset_dut();
+    dut.u_seq.dreg[0] = 32'h7777_8888;
+    run_until(HAND + 6, 3000, reached);
+    check(reached, "posted, repaired: the handler reaches its RTE");
+    poke_l(GONE, 32'h5A5A_5A5A);           // what the handler "wrote"
+    berr_en = 1'b0;
+    run_until(CODE + 10, 3000, reached);
+    check(reached, "posted, repaired: the program runs on");
+    check(peek_l(GONE) === 32'h5A5A_5A5A, "posted, repaired: RTE did not write it again");
+    check(dut.u_seq.dreg[6] === 32'h0000_0011, "posted, repaired: the program went on");
+    check(dut.u_seq.isp_q === ISP0, "posted, repaired: the frame came off the stack");
+
     if (fails == 0) $display("PASS: core_fault_tb");
     else            $display("FAIL: core_fault_tb");
     $finish;

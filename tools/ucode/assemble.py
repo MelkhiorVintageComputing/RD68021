@@ -1051,6 +1051,73 @@ def mark_early():
 EARLY = None
 
 
+# State a fault frame does not carry, live from one microword to a later one.
+# A fault on a posted write can land on ANY microword -- doc/checkpoint.md
+# rule 9 -- and the microword it lands on is re-executed after RTE, so one that
+# reads such state would read whatever the handler left there. Each of these
+# waits for a posted write to finish before it starts, and then no fault can
+# land on it.
+SYNC_SRC = ('EA_SAVE', 'IRQLEVEL', 'AUTOVEC')
+SYNC_COND = ('SSW_DF', 'SSW_RB', 'SSW_RC', 'SSW_RW', 'SSW_RM',
+             'AVEC', 'BERR', 'DIVZERO')
+
+
+def needs_sync(f):
+    """The microword reads something a fault frame does not put back."""
+    return (f.get('sync')
+            or any(f.get(k) in SYNC_SRC for k in ('asrc', 'bsrc', 'asel'))
+            or f.get('cond') in SYNC_COND
+            or f.get('mdop') == 'DIV'
+            or f.get('seq') == 'RESUME'
+            or any(f.get(k) for k in ('rstop', 'rsto', 'stop'))
+            # the read data of an EARLIER read: rdata_q is not in the frame.
+            or (reads_rdata(f) and f.get('bus') != 'READ'))
+
+
+def mark_sync():
+    n = 0
+    for f, _c in program.WORDS:
+        if needs_sync(f):
+            f['sync'] = 1
+            n += 1
+    return n
+
+
+def mark_posted():
+    """Every plain write in a data space is posted -- UM 8.1.3.
+
+    Not a read-modify-write, which is indivisible; not CPU space, whose bus
+    errors are answers the microcode reads; not RTE's rerun or RESET; and not a
+    microword that waits for posted writes itself, which would gain nothing.
+    """
+    n = 0
+    for f, _c in program.WORDS:
+        if (f.get('bus') == 'WRITE'
+                and f.get('cpuspace', 'NONE') == 'NONE'
+                and not any(f.get(k) for k in ('rmc', 'rstop', 'rsto', 'stop'))
+                and not f.get('sync')):
+            f['post'] = 1
+            f['early'] = 0
+            n += 1
+    return n
+
+
+def check_posted():
+    bad = []
+    for i, (f, c) in enumerate(program.WORDS):
+        if f.get('post') and (f.get('bus') != 'WRITE' or f.get('sync')
+                              or f.get('cpuspace', 'NONE') != 'NONE'
+                              or f.get('rmc')):
+            bad.append('microword %d is posted and may not be -- %s' % (i, c))
+        if f.get('post') and f.get('early'):
+            bad.append('microword %d is both posted and early -- %s' % (i, c))
+    return bad
+
+
+POSTED = None
+SYNCED = None
+
+
 def uses_pipe(f):
     return (f.get('pf') in ('ADV', 'CONSUME')
             or f.get('asrc') in ('STG_C', 'STG_C_HI', 'PC_C', 'EABASE')
@@ -1183,10 +1250,13 @@ def main():
 
     global EARLY
     EARLY = mark_early()
+    global POSTED, SYNCED
+    SYNCED = mark_sync()
+    POSTED = mark_posted()
 
     bad = (frames.check() + isa.check() + check_cond_dst() + check_live_shape() + check_bf_shape() + check_mul_shape() + check_shift_src()
            + check_ea_live() + check_ea_set() + check_rdata_restart() + check_read_no_pipe()
-           + check_areg_size() + check_restore_order() + check_frame_fields())
+           + check_areg_size() + check_restore_order() + check_frame_fields() + check_posted())
     if bad:
         print('FAIL: the tables are not self-consistent')
         for b in bad:
@@ -1238,9 +1308,11 @@ def main():
     else:
         have, use, spare = frames.budget()
         _lay, uww = isa.layout()
-        print('  ucode: %d files; %d microwords of %d bits (%d retire early), '
+        early = sum(1 for f, _c in program.WORDS if f.get('early'))
+        print('  ucode: %d files; %d microwords of %d bits (%d retire early, '
+              '%d posted, %d wait for a posted write), '
               '%d opcode patterns, %d of %d checkpoint bits used, %d words spare'
-              % (len(OUTPUTS), len(program.WORDS), uww, EARLY,
+              % (len(OUTPUTS), len(program.WORDS), uww, early, POSTED, SYNCED,
                  len(program.PATTERNS), use, have, len(spare)))
     return 0
 

@@ -769,6 +769,18 @@ FIELDS = OrderedDict([
     # data itself: that is latched on the same edge. Set by assemble.py, never
     # by hand -- mark_early.
     ('early', (1,  None,  0)),
+    # A posted write -- UM 8.1.3, "the bus cycle is queued and the bus
+    # controller runs the cycle when the current cycle is complete". The
+    # microword retires when the bus unit takes the operand, and the sequencer
+    # goes on while the cycle runs. A fault on it is taken at whatever
+    # microword is running then -- doc/checkpoint.md rule 9. Set by assemble.py,
+    # never by hand -- mark_posted.
+    ('post',  (1,  None,  0)),
+    # Wait for a posted write to finish before starting. For a microword that
+    # reads state a fault frame does not carry, which a fault landing on it
+    # would lose -- mark_sync -- and for NOP, which PRM 4 makes wait for the
+    # bus.
+    ('sync',  (1,  None,  0)),
 ])
 
 

@@ -47,6 +47,13 @@ module rd68021_seq #(
     input  logic        req_fault,
     input  logic        req_fault_wr,
     input  logic  [1:0] req_dsack,
+    // Posted writes -- UM 8.1.3, doc/checkpoint.md rule 9. This microword's
+    // write is posted; the bus unit has taken it; a posted write is still
+    // outstanding; and the fault being reported is on one.
+    output logic        req_post,
+    input  logic        req_taken,
+    input  logic        post_busy,
+    input  logic        req_fault_post,
 
     // The faulted operand's residual, and the way back in --------------------
     input  logic [31:0] flt_addr,
@@ -58,6 +65,9 @@ module rd68021_seq #(
     input  logic [31:0] flt_dib,
     output logic        rst_op_valid,
     output logic        rst_cancel,
+    // ... and the operand handed back is a posted write, which the bus unit
+    // reruns by itself rather than for the resumed microword's request.
+    output logic        rst_post,
     output logic [31:0] rst_addr,
     output logic  [2:0] rst_bytes,
     output logic  [2:0] rst_fc,
@@ -245,6 +255,8 @@ module rd68021_seq #(
   logic [31:0] ea_save;
   logic        flt_odd_q;
   logic [rd68021_ucode_pkg::UADDR-1:0] flt_upc;
+  // The fault was on a posted write -- doc/checkpoint.md rule 9. Frame +$08.
+  logic        post_flt_q;
   logic [15:0] ssw;
   logic [1:0] flt_siz;
   logic [15:0] int08;
@@ -1489,6 +1501,7 @@ module rd68021_seq #(
     int08[rd68021_frame_pkg::I_OPSIZE_LO     +: 2] = size_q;
     int08[rd68021_frame_pkg::I_EADST_LO      +: 1] = eadst_q;
     int08[rd68021_frame_pkg::I_DVALID_LO     +: 1] = pf_dvalid;
+    int08[rd68021_frame_pkg::I_POSTED_LO     +: 1] = post_flt_q;
   end
 
   always_comb begin
@@ -1779,8 +1792,13 @@ module rd68021_seq #(
   // the microword stalled for exactly that reason, and the write had already
   // gone out carrying the address of the displacement instead of the address of
   // the next instruction.
+  // A posted write is outstanding and this microword may not run until it is
+  // done -- either one before it, or (wait_own) its own. Assigned below, with
+  // the pipe-fault terms they read.
+  logic wait_prev, wait_own;
   logic other_stall;
-  assign other_stall = div_stall
+  assign other_stall = wait_prev
+                    || div_stall
                     || dbf_q
                     || stopped_q
                     || (`UF(RSTO) && reset_busy)
@@ -1797,9 +1815,14 @@ module rd68021_seq #(
   // or a retry, req_early stays low, and the ordinary handshake takes it.
   logic early_hit, early_q, bus_done;
   assign early_hit = `UF(EARLY) && req_early;
-  assign bus_done  = (req_ack && !early_q) || early_hit;
+  // A posted write is done with as far as this microword is concerned when the
+  // bus unit has taken it: own_q holds that across the clocks it may still wait.
+  logic own_q, post_own;
+  assign post_own  = `UF(POST) && (req_taken || own_q);
+  assign bus_done  = `UF(POST) ? post_own
+                               : ((req_ack && !early_q) || early_hit);
 
-  assign stall = (bus_req && !bus_done) || other_stall;
+  assign stall = (bus_req && !bus_done) || other_stall || wait_own;
 
   assign retire = !stall;
 
@@ -1841,9 +1864,38 @@ module rd68021_seq #(
                   || (at_decode && (`UF(PF) != rd68021_ucode_pkg::U_PF_ADV)
                       && !pf_dvalid);
 
+  // ==========================================================================
+  // Posted writes -- UM 8.1.3, doc/checkpoint.md rule 9
+  //
+  // A posted write's fault is taken at whatever microword is running when it
+  // arrives, and that microword is re-executed after RTE. So a microword that
+  // must not be one waits for the write instead:
+  //   - `sync`: it reads state a frame does not carry (assemble.py, mark_sync),
+  //     or it is NOP, which PRM 4 makes wait for the bus;
+  //   - one about to take a prefetch fault: the write came first, so its fault
+  //     does -- and a prefetch fault taken first would make the write's a
+  //     double bus fault;
+  //   - a decode that may take an interrupt: the level it latches is not in
+  //     the frame either. Judged against the status register as it stands,
+  //     and on any decode that writes it, rather than through sr_eff, which
+  //     reads `retire`.
+  // A microword whose OWN posted write is outstanding waits too, without
+  // presenting it again; a fault then is an ordinary one on its own request.
+  // ==========================================================================
+  logic post_hold, pipe_flt_raw;
+  assign pipe_flt_raw = (uses_c_word && stg_c_fault) || (pipe_wait && pf_stuck);
+  assign post_hold = `UF(SYNC) || pipe_flt_raw
+                  || (at_decode
+                      && ((irq_level > sr_q[rd68021_pkg::SR_I0 +: 3])
+                          || (irq_level == 3'd7)
+                          || (`UF(DST) == rd68021_ucode_pkg::U_DST_SR)));
+  assign wait_prev = post_hold && post_busy && !post_own;
+  assign wait_own  = post_hold && post_busy &&  post_own;
+
   logic pipe_fault;
-  assign pipe_fault = (retire && uses_c_word && stg_c_fault)
-                   || (pipe_wait && pf_stuck);
+  assign pipe_fault = ((retire && uses_c_word && stg_c_fault)
+                       || (pipe_wait && pf_stuck))
+                   && !post_busy;
 
   // Every fault takes the long frame -- doc/divergences.md. In this design a
   // prefetch fault is taken by the instruction's own last microword, which RTE
@@ -1938,7 +1990,12 @@ module rd68021_seq #(
   // second term the same read runs twice, which is how the reset vectors came
   // back as the stack pointer twice over.
   assign req_valid    = bus_req && !other_stall && !req_last
-                     && !(req_ack && !early_q);
+                     && !(req_ack && !early_q) && !post_own
+                     // A posted write's fault is reported while some other
+                     // microword is presented, and that one is about to be
+                     // abandoned -- its request must not start.
+                     && !req_fault;
+  assign req_post     = `UF(POST);
   assign req_kind     = (`UF(BUS) == rd68021_ucode_pkg::U_BUS_WRITE)
                         ? rd68021_pkg::CT_WRITE : rd68021_pkg::CT_READ;
   assign req_addr     = req_addr_sel;
@@ -2579,8 +2636,15 @@ module rd68021_seq #(
       g0_q      <= 1'b0;
       ea_save   <= '0;
       flt_upc   <= '0;
+      post_flt_q <= 1'b0;
+      own_q     <= 1'b0;
     end else begin
+      // The microword's posted write has been taken and it has not retired.
+      own_q <= post_own && !retire && !fault_now;
       if (fault_now) begin
+        // A fault on a write posted by a microword that has since retired.
+        // One on the write of the microword still waiting is its own.
+        post_flt_q <= req_fault_post && !post_own;
         // "The least significant half of the SSW applies to data cycles only",
         // so only a data fault sets DF -- doc/ssw.md.
         df_q    <= req_fault;
@@ -2602,6 +2666,8 @@ module rd68021_seq #(
         g0_q    <= 1'b0;
       end else if (commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_EA_SAVE)) begin
         ea_save <= y;
+      end else if (commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_INT08)) begin
+        post_flt_q <= y[rd68021_frame_pkg::I_POSTED_LO];
       end
     end
   end
@@ -2719,6 +2785,7 @@ module rd68021_seq #(
   assign rst_rw       = rs_rw_q;
   assign rst_rmc      = rs_rm_q;
   assign rst_dob      = rst_data_q;
+  assign rst_post     = post_flt_q;
 
   // The microword RESUME jumped to is the one retiring. If it asked for an
   // operand it has taken the hand-back by now; if it did not, the fault was a

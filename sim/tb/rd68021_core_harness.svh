@@ -344,6 +344,26 @@ endtask
 // Run until the program counter settles on `spin`, or give up.
 // A while loop rather than a for with a return: iverilog rejects `return` in a
 // task ("Cannot return from tasks").
+// doc/checkpoint.md rule 9: a microword that waits for posted writes never
+// runs while one is outstanding -- in every core testbench, all the time.
+always @(posedge clk)
+  if (rst_n && dut.u_seq.retire && dut.u_seq.uw[rd68021_ucode_pkg::U_SYNC_LSB]
+      && dut.u_biu.post_busy)
+    check(1'b0, $sformatf("a sync microword (%0d) retired with a posted write out",
+                          dut.u_seq.upc));
+
+// RTE is unwinding a fault frame: from its write of the program counter until
+// the microword it resumes at has retired -- or, for a frame that resumes
+// nothing (a coprocessor midinstruction frame), until something decodes.
+bit rte_walk;
+initial rte_walk = 1'b0;
+always @(posedge clk)
+  if (!rst_n) rte_walk <= 1'b0;
+  else if (dut.u_ifu.ckpt_wr && dut.u_ifu.ckpt_sel == rd68021_pkg::CK_PC_D)
+    rte_walk <= 1'b1;
+  else if (dut.u_seq.retire && (dut.u_seq.resumed_q || dut.u_seq.at_decode))
+    rte_walk <= 1'b0;
+
 task automatic run_until(input logic [31:0] spin, input int limit,
                          output bit reached);
   int n;
@@ -351,9 +371,16 @@ task automatic run_until(input logic [31:0] spin, input int limit,
   n       = 0;
   while (!reached && n < limit) begin
     @(negedge clk);
-    if (dut.u_ifu.pc_d === spin && dut.u_ifu.pf_dvalid) reached = 1'b1;
+    // Not while RTE is unwinding a fault frame: it puts the program counter
+    // back first, and a fault on a posted write is often taken at the very
+    // spin a test waits for -- doc/checkpoint.md rule 9.
+    if (dut.u_ifu.pc_d === spin && dut.u_ifu.pf_dvalid && !rte_walk)
+      reached = 1'b1;
     n = n + 1;
   end
+  // A posted write may still be on the bus when the program reaches its spin
+  // -- doc/checkpoint.md rule 9 -- and a test then looks at memory.
+  while (reached && dut.u_biu.post_busy) @(negedge clk);
 endtask
 
 // ---------------------------------------------------------------------------

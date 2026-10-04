@@ -63,11 +63,16 @@ Execution in Progress".
 **This design gives every bus error and address error the long frame, format
 `$B`.** RTE still takes a short frame apart.
 
-- A *data* fault always has an instruction in progress here: the microcode stalls
-  until its operand completes -- a microword that retires early does so only when
-  the bus unit has seen the operand finish with no fault -- so the bus unit never
-  runs ahead of the sequencer the way a real MC68020's does, which is how a real
-  part produces a short frame for a data access.
+- A *read* fault always has an instruction in progress here: the microcode
+  stalls until a read completes.
+- A *write* is posted (`doc/checkpoint.md` rule 9) and the bus unit does run
+  ahead of the sequencer with it, the way a real MC68020's does -- which is how
+  a real part produces a short frame for a data access, at the boundary the
+  instruction after the write had reached. Here the fault is taken wherever the
+  sequencer has got to, often in the middle of a later instruction, and the
+  long frame is what can describe that: it carries the working registers of the
+  microword it interrupted, and `posted` at +$08 tells RTE to rerun the write on
+  its own before resuming it.
 - A *prefetch* fault is taken by the microword that needs the missing word -- in
   practice the instruction's last microword, which writes the result and advances
   the pipe. RTE re-executes it, and it reads the working registers, which only
@@ -156,8 +161,9 @@ system that relies on either behaviour should say which.
 
 `req_last` is combinational and true throughout S5 of an operand's final cycle: the
 operand completes at the rising edge that ends S5, and a request already presented
-then gets a back-to-back cycle. The sequencer never has one ready: it presents a
-microword's request only once the microword before has retired. A microword that
+then gets a back-to-back cycle. After a posted write the sequencer can have one
+ready, since it went on while the write ran. After a read it never has: it presents a microword's request only once the
+microword before has retired. A microword that
 retires early (`doc/timing-divergences.md`) does so on the edge that ends S5, which
 leaves **one** idle clock before the next operand's S0; one that takes its read
 data retires on `req_ack` a clock later, which leaves **two**.

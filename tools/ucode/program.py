@@ -133,7 +133,11 @@ u('no pattern for this opcode -- UM 6.1.5, vector 4',
 # ==========================================================================
 label('nop')
 opcode('0100111001110001', 'nop', 'NOP')
-u('nothing but the pipe', pf='ADV', seq='DECODE')
+# PRM 4: "the processor's pipeline is synchronized prior to the NOP instruction
+# being executed", so that a write before it has reached the bus -- UM 8.1.4
+# relies on it to clear an interrupt before lowering the mask.
+u('nothing but the pipe, once the bus has caught up',
+  pf='ADV', seq='DECODE', sync=1)
 
 # ==========================================================================
 # MOVEQ -- PRM 4. The byte in the instruction word, sign extended to a long word.

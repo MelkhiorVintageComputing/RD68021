@@ -47,6 +47,33 @@ module core_cosim_tb;
               dut.u_biu.op_isfetch ? "F" : "D", fc_o, a_o, siz_o,
               rw_o ? "R" : "W", rw_o ? 32'd0 : d_o);
 
+  // Where the clocks go, for doc/timing-divergences.md: +stalls counts, from
+  // reset to the end, the clocks a bus microword spends stalled, by direction,
+  // and how many of each retired -- the ceiling for overlapping operand cycles
+  // with the microcode around them.
+  bit          stalls;
+  longint unsigned st_clk, st_wr, st_rd, n_wr, n_rd, st_other, st_fetch;
+  initial begin
+    stalls = $test$plusargs("stalls");
+    st_clk = 0; st_wr = 0; st_rd = 0; n_wr = 0; n_rd = 0; st_other = 0;
+    st_fetch = 0;
+  end
+  always @(posedge clk) if (stalls && rst_n) begin
+    st_clk = st_clk + 1;
+    if (dut.u_seq.bus_req) begin
+      if (!dut.u_seq.retire) begin
+        if (dut.u_seq.other_stall)                     st_other = st_other + 1;
+        else if (dut.u_seq.req_kind == rd68021_pkg::CT_WRITE) st_wr = st_wr + 1;
+        else                                           st_rd = st_rd + 1;
+        if (dut.u_biu.op_active && dut.u_biu.op_isfetch) st_fetch = st_fetch + 1;
+      end else if (dut.u_seq.req_kind == rd68021_pkg::CT_WRITE) n_wr = n_wr + 1;
+      else                                             n_rd = n_rd + 1;
+    end
+  end
+  final if (stalls)
+    $display("core_cosim_tb: stalls: %0d clocks; %0d writes stalled %0d clocks, %0d reads %0d, %0d waiting on other things, %0d of the bus stalls behind a prefetch",
+             st_clk, n_wr, st_wr, n_rd, st_rd, st_other, st_fetch);
+
   initial begin
     if ($value$plusargs("buslog=%s", bus_file)) bus_log = $fopen(bus_file, "w");
     if (!$value$plusargs("image=%s", image)) image = "build/programs/arith.hex";

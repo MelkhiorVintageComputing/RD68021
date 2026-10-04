@@ -143,6 +143,7 @@ INTERNAL = [
     (0x40, 31,  0, 'pc_fetch',  32,  'the next long word the pipe will fetch'),
     (0x44, 15,  0, 'link',      16,  'the return address of the subroutine under way'),
     (0x4A, 15,  0, 'cprim',     16,  'the coprocessor response primitive being served'),
+    (0x08,  5,  5, 'posted',     1,  'the faulted access was a posted write, which RTE reruns by itself'),
 ]
 
 # --------------------------------------------------------------------------
@@ -201,6 +202,7 @@ CHECKPOINT = [
     ('seq', 'pc_kept_q',         1, 'pc_kept',      'pc_prev_q was taken at a flush, so the decode must not overwrite it'),
     ('seq', 'sr_q',             16, 'sr',            'frame +$00'),
     ('seq', 'cprim_q',          16, 'cprim',         'UM 7.5.2.8: a bus error on any CIR access but the first, or on an operand a primitive moves, is an ordinary bus error, and RTE goes back to the primitive it interrupted'),
+    ('seq', 'post_flt_q',        1, 'posted',        'doc/checkpoint.md rule 9: the faulted access belongs to no microword -- the write was posted and the instruction went on -- so RTE runs it on its own and resumes at the microword that was interrupted'),
 ]
 
 # Rows of CHECKPOINT whose register the RTL does not have YET, and the milestone
@@ -294,6 +296,17 @@ EXEMPT = [
     ('biu', 'frdata_q',     '... and of the last prefetch'),
     ('biu', 'req_ack',      'the handshake back to the sequencer'),
     ('biu', 'early_q',      '... and its half-clock early form, for one S5'),
+    ('seq', 'own_q',        "this microword's posted write has been taken and it "
+                            'has not retired; lives until it does, and a fault '
+                            'on the write meanwhile is an ordinary one on its '
+                            'own request'),
+    ('biu', 'op_posted',    'the operand now running is a posted write -- '
+                            'doc/checkpoint.md rule 9'),
+    ('biu', 'rst_post_q',   'the operand RTE handed back is a posted write; '
+                            'lives with rst_pend_q'),
+    ('biu', 'req_taken',    'a posted request has been taken: the handshake, '
+                            'for one clock'),
+    ('biu', 'req_fault_post', '... and the fault being reported is on one'),
     ('seq', 'early_q',      'the last microword retired early; lives one clock, '
                             'and no fault is taken in it from its own bus cycle'),
     ('seq', 'resumed_q',    'the microword now presented is the one RTE resumed; '

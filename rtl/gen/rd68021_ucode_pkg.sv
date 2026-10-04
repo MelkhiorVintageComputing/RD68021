@@ -18,7 +18,7 @@
 
 package rd68021_ucode_pkg;
 
-  localparam int UW    = 103;   // microword width
+  localparam int UW    = 105;   // microword width
   localparam int UADDR = 12;   // micro-address width
 
   localparam int U_SEQ_LSB = 0;
@@ -85,6 +85,10 @@ package rd68021_ucode_pkg;
   localparam int U_EAPC_W   = 1;
   localparam int U_EARLY_LSB = 102;
   localparam int U_EARLY_W   = 1;
+  localparam int U_POST_LSB = 103;
+  localparam int U_POST_W   = 1;
+  localparam int U_SYNC_LSB = 104;
+  localparam int U_SYNC_W   = 1;
 
   localparam logic [2:0] U_SEQ_NEXT = 3'd0;
   localparam logic [2:0] U_SEQ_DECODE = 3'd1;
@@ -460,11 +464,11 @@ package rd68021_ucode_pkg;
   // Named entry points.
   localparam logic [UADDR-1:0] ENTRY_RESET = 12'd0;
   localparam logic [UADDR-1:0] ENTRY_ILLEGAL = 12'd4;
-  localparam logic [UADDR-1:0] ENTRY_TRACE = 12'd1343;
-  localparam logic [UADDR-1:0] ENTRY_IRQ = 12'd1346;
-  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 12'd1374;
-  localparam logic [UADDR-1:0] ENTRY_LINE_F = 12'd1184;
-  localparam logic [UADDR-1:0] ENTRY_CP_IRQ = 12'd1843;
+  localparam logic [UADDR-1:0] ENTRY_TRACE = 12'd1344;
+  localparam logic [UADDR-1:0] ENTRY_IRQ = 12'd1347;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 12'd1375;
+  localparam logic [UADDR-1:0] ENTRY_LINE_F = 12'd1185;
+  localparam logic [UADDR-1:0] ENTRY_CP_IRQ = 12'd1844;
 
 endpackage
 
