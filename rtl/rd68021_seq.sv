@@ -134,6 +134,9 @@ module rd68021_seq #(
   // a bus error can land in the middle of one.
   logic [15:0] cprim_q;
   logic [rd68021_ucode_pkg::UADDR-1:0] cp_entry;
+  // The effective address as the primitive decoder sees it -- assigned with
+  // the addressing-mode signals below.
+  logic [4:0] cp_ea;
   logic [15:0] cp_int;
 
   rd68021_ucode_rom u_urom (
@@ -214,7 +217,7 @@ module rd68021_seq #(
   assign cp_cond = (stg_d[8:6] != 3'b000);
 
   rd68021_cpdec_rom u_cpdec (
-      .cond_cat (cp_cond), .prim (cprim_q), .entry (cp_entry));
+      .cond_cat (cp_cond), .prim (cprim_q), .ea (cp_ea), .entry (cp_entry));
 
   // ==========================================================================
   // Architectural state
@@ -1581,6 +1584,25 @@ module rd68021_seq #(
     endcase
   end
 
+  // ... and for the primitive decoder, so that a primitive that takes an
+  // effective address goes straight to the handler for the kind it is, rather
+  // than asking microword by microword: in the class (table 7-4); suitable for
+  // multiple coprocessor registers (UM 7.4.16: to the coprocessor control or
+  // (An)+, from it control alterable or -(An)); and which kind. Everything
+  // here is a function of stage D and the primitive, both registers.
+  logic       cp_mea_ok;
+  logic [2:0] cp_eakind;
+  assign cp_mea_ok = cprim_q[13] ? (ea_ctlalt || ea_pre) : (ea_ctl || ea_post);
+  always_comb begin
+    if      (ea_dn)   cp_eakind = 3'd0;
+    else if (ea_an)   cp_eakind = 3'd1;
+    else if (ea_imm)  cp_eakind = 3'd2;
+    else if (ea_post) cp_eakind = 3'd3;
+    else if (ea_pre)  cp_eakind = 3'd4;
+    else              cp_eakind = 3'd5;
+  end
+  assign cp_ea = {cp_ea_ok, cp_mea_ok, cp_eakind};
+
   // ==========================================================================
   // The conditional tests -- PRM table 3-19
   //
@@ -1733,8 +1755,7 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_COND_EACTLALT: cond_true = ea_ctlalt;
       // UM 7.4.16: to the coprocessor, control or (An)+; from it, control
       // alterable or -(An).
-      rd68021_ucode_pkg::U_COND_CPMEAOK:
-        cond_true = cprim_q[13] ? (ea_ctlalt || ea_pre) : (ea_ctl || ea_post);
+      rd68021_ucode_pkg::U_COND_CPMEAOK:  cond_true = cp_mea_ok;
       rd68021_ucode_pkg::U_COND_CPLEN124:
         cond_true = (cprim_q[7:0] == 8'd1) || (cprim_q[7:0] == 8'd2)
                  || (cprim_q[7:0] == 8'd4);

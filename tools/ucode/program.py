@@ -86,14 +86,20 @@ def extword(pattern, target, what):
     EAPATTERNS.append((pattern, target, what))
 
 
-def cpprim(pattern, target, what):
+def cpprim(pattern, target, what, ea='-----'):
     """A response primitive pattern, for the seq = CPDEC arm.
 
     Seventeen characters: the category bit (1 for a conditional instruction),
-    then bits 15 down to 0 of the primitive -- UM figure 7-22.
+    then bits 15 down to 0 of the primitive -- UM figure 7-22. And five more
+    about the instruction's effective address, `ea`: in the class the
+    primitive names (UM table 7-4), suitable for a transfer of multiple
+    coprocessor registers (UM 7.4.16), and three for which kind it is -- 000
+    Dn, 001 An, 010 #imm, 011 (An)+, 100 -(An), 101 the other memory modes.
     """
-    if len(pattern) != 17 or any(c not in '01-' for c in pattern):
-        raise SystemExit('program: %r is not seventeen of 0, 1 and -' % pattern)
+    pattern = pattern + ea
+    if len(pattern) != 22 or any(c not in '01-' for c in pattern):
+        raise SystemExit('program: %r is not seventeen and five of 0, 1 and -'
+                         % pattern)
     CPPATTERNS.append((pattern, target, what))
 
 
@@ -4224,6 +4230,115 @@ u('... and the operand is written up from there', asrc='AREG', alu='A',
   dst='T2')
 xfer_loop('cp_mcreg_pr', False, 'EASP', 'cp_mcreg_nx')
 
+
+# ---- The common shapes, dispatched by the decoder ------------------------------
+# The decoder sees the effective address (cpprim's `ea`) and the length, so the
+# shapes an MC68881 asks for most -- a control register, four bytes; a register
+# of the extended format, twelve -- go straight to handlers with no questions
+# and no loop. Everything else still goes through the general ones above.
+
+# Evaluate effective address and transfer data, four bytes to the coprocessor
+# from memory -- FMOVE <ea>,FPcr.
+label('cp_ead_rd4')
+u('evaluate it', call=1, seq='EAMODE')
+label('cp_ead_rd4_go')
+u('four bytes from memory', bus='READ', fc='EASP', asel='EA', bytes=4)
+cir_write('... to the operand CIR', CIR_OPERAND, 4, asrc='RDATA', next='cp_next')
+label('cp_ead_post4')
+u('the address register is the address', asrc='AREG', alu='A', dst='EA')
+u('... and steps on by four', asrc='AREG', bsrc='CPSTEP', alu='ADD',
+  dst='AREG_EA_ADDR', next='cp_ead_rd4_go')
+label('cp_ead_pre4')
+u('the address register steps back by four first',
+  asrc='AREG', bsrc='CPSTEP', alu='SUB', dst='AREG_EA_ADDR')
+u('... and that is the address', asrc='AREG', alu='A', dst='EA',
+  next='cp_ead_rd4_go')
+
+
+# Transfer multiple coprocessor registers, twelve bytes each -- FMOVEM.X. One
+# loop per direction and addressing shape, each register three long words.
+# T0 is the mask, T2 the address; from the coprocessor the write's ALU carries
+# its data, so the address steps on the CIR read, into T3 and T2 by turns.
+def _m12_mask(stem):
+    label(stem + '_mask')
+    cir_read('the register select mask, into T0 -- its ones count the operands',
+             CIR_REGSEL, 2, asrc='RDATA', alu='A', dst='T0', size='WORD')
+    u('none?', seq='COND', cond='EMPTY', next='cp_next')
+
+
+label('cp_m12in_ctl')
+u('a control address', call=1, seq='EAMODE')
+u('... which the operands are walked from', asrc='EA', alu='A', dst='T2',
+  next='cp_m12in_mask')
+label('cp_m12in_post')
+u('the address register', asrc='AREG', alu='A', dst='EA')
+u('... is where they start', asrc='AREG', alu='A', dst='T2')
+_m12_mask('cp_m12in')
+label('cp_m12in_op')
+for _k in range(3):
+    u('four bytes of the register from memory, and the address moves on',
+      bus='READ', fc='EASP', asel='T2', bytes=4,
+      asrc='T2', bsrc='FOUR', alu='ADD', dst='T2')
+    if _k < 2:
+        cir_write('... to the operand CIR', CIR_OPERAND, 4, asrc='RDATA')
+    else:
+        cir_write('... to the operand CIR, and one register fewer to go',
+                  CIR_OPERAND, 4, asrc='RDATA', cnt='CLRLOW')
+u('(An)+: "incremented by the size of an operand after each operand" -- '
+  'harmless for a control address, whose register is not written',
+  seq='COND', cond='EAPOST', next='cp_m12in_upd')
+u('any left?', seq='COND', cond='NOTEMPTY', next='cp_m12in_op')
+u('no', next='cp_next')
+label('cp_m12in_upd')
+u('the address register follows, and any left?',
+  asrc='T2', alu='A', dst='AREG_EA_ADDR',
+  seq='COND', cond='NOTEMPTY', next='cp_m12in_op')
+u('no', next='cp_next')
+
+
+def _m12_out(first_from):
+    """Three long words from the operand CIR to T2, T2+4, T2+8, the address
+    stepping on the reads into T3 and T2 by turns; T3 ends one register on."""
+    cir_read('four bytes of the register, and the address after them',
+             CIR_OPERAND, 4, asrc='T2', bsrc='FOUR', alu='ADD', dst='T3')
+    u('... to memory', bus='WRITE', fc='EASP', asel='T2', bytes=4,
+      asrc='RDATA', alu='A')
+    cir_read('four more, and the address after them',
+             CIR_OPERAND, 4, asrc='T3', bsrc='FOUR', alu='ADD', dst='T2')
+    u('... to memory', bus='WRITE', fc='EASP', asel='T3', bytes=4,
+      asrc='RDATA', alu='A')
+    cir_read('the last four, and the address of the next register',
+             CIR_OPERAND, 4, asrc='T2', bsrc='FOUR', alu='ADD', dst='T3')
+    u('... to memory, and one register fewer to go',
+      bus='WRITE', fc='EASP', asel='T2', bytes=4, asrc='RDATA', alu='A',
+      cnt='CLRLOW')
+
+
+label('cp_m12out_ctl')
+u('a control alterable address', call=1, seq='EAMODE')
+u('... which the operands are walked from', asrc='EA', alu='A', dst='T2',
+  next='cp_m12out_mask')
+_m12_mask('cp_m12out')
+label('cp_m12out_op')
+_m12_out('T2')
+u('the next register\'s address, and any left?', asrc='T3', alu='A', dst='T2',
+  seq='COND', cond='NOTEMPTY', next='cp_m12out_op')
+u('no', next='cp_next')
+
+# -(An): "the processor decrements the address register by the size of an
+# operand before the operand is transferred", and writes its bytes upwards.
+label('cp_m12pre')
+u('the address register', asrc='AREG', alu='A', dst='EA')
+_m12_mask('cp_m12pre')
+label('cp_m12pre_op')
+u('the address register steps down by one operand',
+  asrc='AREG', bsrc='CPLEN', alu='SUB', dst='AREG_EA_ADDR')
+u('... and the operand is written up from there', asrc='AREG', alu='A',
+  dst='T2')
+_m12_out('T2')
+u('any left?', seq='COND', cond='NOTEMPTY', next='cp_m12pre_op')
+u('no', next='cp_next')
+
 # ---- Transfer status register and scanPC -- UM 7.4.17 --------------------------
 label('cp_srpc')
 u('which way?', seq='COND', cond='CPDR', next='cp_srpc_in')
@@ -4313,6 +4428,28 @@ cpprim(_prim('-', '-', '000100'), 'cp_svchk',    'supervisor check')
 cpprim(_prim('-', '-', '-00111'), 'cp_opword',   'transfer operation word')
 cpprim(_prim('-', '-', '-01111'), 'cp_stream',   'transfer from instruction stream')
 cpprim(_prim('-', '-', '001010'), 'cp_evalea',   'evaluate and transfer effective address')
+# Evaluate effective address and transfer data, by the effective address --
+# table 7-4 and UM 7.4.9: outside its class an F-line exception; then a handler
+# for each kind; four bytes from memory, the control registers, unrolled.
+cpprim(_prim('-', '-', '-10---'), 'cp_fline_abort', 'eadata, outside its class', ea='0----')
+cpprim(_prim('-', '-', '-10---'), 'cp_ead_dn',   'eadata, a data register',   ea='1-000')
+cpprim(_prim('-', '-', '-10---'), 'cp_ead_an',   'eadata, an address register', ea='1-001')
+cpprim(_prim('-', '-', '-10---'), 'cp_ead_imm',  'eadata, an immediate',      ea='1-010')
+cpprim(_prim('-', '-', '010---', '00000100'), 'cp_ead_post4', 'eadata, (An)+, four bytes in', ea='1-011')
+cpprim(_prim('-', '-', '-10---'), 'cp_ead_post', 'eadata, (An)+',             ea='1-011')
+cpprim(_prim('-', '-', '010---', '00000100'), 'cp_ead_pre4', 'eadata, -(An), four bytes in', ea='1-100')
+cpprim(_prim('-', '-', '-10---'), 'cp_ead_pre',  'eadata, -(An)',             ea='1-100')
+cpprim(_prim('-', '-', '110---'), 'cp_ead_wr',   'eadata, memory, from the coprocessor', ea='1-101')
+cpprim(_prim('-', '-', '010---', '00000100'), 'cp_ead_rd4', 'eadata, memory, four bytes in', ea='1-101')
+cpprim(_prim('-', '-', '010---'), 'cp_ead_calc', 'eadata, memory, to the coprocessor', ea='1-101')
+# Transfer multiple coprocessor registers, twelve bytes each: FMOVEM.X. UM
+# 7.4.16: to the coprocessor control or (An)+, from it control alterable or
+# -(An); anything else an F-line exception.
+cpprim(_prim('-', '-', '-00001'), 'cp_fline_abort', 'multiple registers, no such address', ea='-0---')
+cpprim(_prim('-', '-', '000001', '00001100'), 'cp_m12in_post', 'multiple registers in, twelve bytes, (An)+', ea='-1011')
+cpprim(_prim('-', '-', '000001', '00001100'), 'cp_m12in_ctl',  'multiple registers in, twelve bytes, control', ea='-1101')
+cpprim(_prim('-', '-', '100001', '00001100'), 'cp_m12pre',     'multiple registers out, twelve bytes, -(An)', ea='-1100')
+cpprim(_prim('-', '-', '100001', '00001100'), 'cp_m12out_ctl', 'multiple registers out, twelve bytes, control', ea='-1101')
 cpprim(_prim('-', '-', '-10---'), 'cp_eadata',   'evaluate effective address and transfer data')
 cpprim(_prim('-', '-', '100000'), 'cp_wprev',    'write to previously evaluated effective address')
 cpprim(_prim('-', '-', '-00101'), 'cp_takeaddr', 'take address and transfer data')

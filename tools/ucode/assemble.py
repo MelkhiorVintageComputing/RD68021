@@ -534,32 +534,37 @@ def cpdec_rom():
     """
     ordered = program.CPPATTERNS
     disjoint = make_disjoint(ordered)
-    bad = check_disjoint(ordered, disjoint, width=17)
+    bad = check_disjoint(ordered, disjoint, width=22)
     if bad:
         raise SystemExit('assemble: the disjoint primitive table does not agree '
                          'with the ordered one:\n  ' + '\n  '.join(bad))
     out = [BANNER]
     out.append("""// The coprocessor response primitive decoder -- UM 7.4 and table 7-6.
 //
-// Seventeen bits in: the instruction's category (1 for a conditional one, whose
-// dialogue allows less) and the sixteen-bit primitive read from the response
-// CIR. A micro-address out. Every encoding the manual leaves undefined, and
-// every one it forbids in a conditional instruction, lands on the protocol
-// violation -- UM 7.5.2.1.
+// Twenty-two bits in: the instruction's category (1 for a conditional one,
+// whose dialogue allows less), the sixteen-bit primitive read from the response
+// CIR, and the instruction's effective address as the primitives that take one
+// need it -- whether it is in the class the primitive names (UM table 7-4),
+// whether it suits a transfer of multiple coprocessor registers (UM 7.4.16),
+// and which of Dn, An, #imm, (An)+, -(An) or the other memory modes it is. A
+// micro-address out. Every encoding the manual leaves undefined, and every one
+// it forbids in a conditional instruction, lands on the protocol violation --
+// UM 7.5.2.1.
 //
 // %d ordered patterns became %d disjoint ones.
 
 module rd68021_cpdec_rom (
     input  logic        cond_cat,
     input  logic [15:0] prim,
+    input  logic  [4:0] ea,
     output logic [%d:0] entry
 );
 
   always_comb begin
-    casez ({cond_cat, prim})
+    casez ({cond_cat, prim, ea})
 """ % (len(ordered), len(disjoint), isa.UADDR_BITS - 1))
     for p, t, m in disjoint:
-        out.append("      17'b%s: entry = %d'd%d;   // %s"
+        out.append("      22'b%s: entry = %d'd%d;   // %s"
                    % (p.replace('-', '?'), isa.UADDR_BITS, program.entry(t), m))
     out.append("""      default: entry = %d'd%d;   // undefined: a protocol violation
     endcase

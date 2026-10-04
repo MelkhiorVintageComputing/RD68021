@@ -294,12 +294,12 @@ overlap with the prefetch of the next instruction, but it is close.
 | `FBEQ.W (taken)` | 20 | MC68881 8-7 20 | 21 | **+1** | 21 |
 | `FBEQ.W (not taken)` | 18 | MC68881 8-7 18 | 18 |  | 18 |
 | `FSEQ D0` | 18 | MC68881 8-7 18 | 22 | **+4** | 30 |
-| `FMOVE.L D0,FPCR` | 28 | MC68881 8-6 28 | 27 | -1 | 35 |
-| `FMOVE.L FPCR,D0` | 31 | MC68881 8-6 31 | 29 | -2 | 37 |
-| `FMOVE.L (A0),FPCR` | 35 | MC68881 8-6 33 + (An) 2 | 43 | **+8** | 51 |
-| `FMOVEM.L FPcr*3,(A0)` | 47 | MC68881 8-6 27+6n + (An) 2 | 61 | **+14** | 69 |
-| `FMOVEM.X (A0),FP0-FP2` | 130 | MC68881 8-6 35+31n + (An) 2 | 132 | **+2** | 140 |
-| `FMOVEM.X FP0-FP2,-(A7)` | 118 | MC68881 8-6 37+25n + -(An) 6 | 128 | **+10** | 136 |
+| `FMOVE.L D0,FPCR` | 28 | MC68881 8-6 28 | 25 | -3 | 33 |
+| `FMOVE.L FPCR,D0` | 31 | MC68881 8-6 31 | 27 | -4 | 35 |
+| `FMOVE.L (A0),FPCR` | 35 | MC68881 8-6 33 + (An) 2 | 29 | -6 | 37 |
+| `FMOVEM.L FPcr*3,(A0)` | 47 | MC68881 8-6 27+6n + (An) 2 | 54 | **+7** | 62 |
+| `FMOVEM.X (A0),FP0-FP2` | 130 | MC68881 8-6 35+31n + (An) 2 | 96 | -34 | 104 |
+| `FMOVEM.X FP0-FP2,-(A7)` | 118 | MC68881 8-6 37+25n + -(An) 6 | 97 | -21 | 105 |
 | `FSAVE -(A7) (idle)` | 58 | MC68881 8-8 52 + -(An) 6 | 70 | **+12** | 72 |
 | `FRESTORE (A7)+ (idle)` | 63 | MC68881 8-8 57 + (An)+ 6 | 78 | **+15** | 79 |
 <!-- cycles:end -->

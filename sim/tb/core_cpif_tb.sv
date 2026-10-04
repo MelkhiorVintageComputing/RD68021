@@ -39,7 +39,7 @@ module core_cpif_tb;
   bit          reached;
   logic [31:0] base;
   int unsigned li;       // the next log entry a test expects
-  int unsigned n;
+  int unsigned n, i;
 
   // An autovectoring interrupt source that drops its request when acknowledged.
   int unsigned iacks;
@@ -1012,6 +1012,75 @@ module core_cpif_tb;
       expect_cir(1'b0, R_OPND, 4, 32'hD000_0000 + n, "operand bus error: after RTE");
     expect_cir(1'b1, R_RESP, 2, 32'h0802, "operand bus error");
     expect_end("operand bus error");
+
+    // ======================================================================
+    // The shapes the decoder sends straight to their own handlers, each with
+    // a bus error part-way and RTE: twelve-byte registers FROM the
+    // coprocessor to a control address and to -(A1), the fifth long word's
+    // posted write faulted; and four bytes to the coprocessor from memory,
+    // the read faulted. Every operand CIR access happens once, and memory
+    // ends right.
+    // ======================================================================
+    for (n = 0; n < 2; n = n + 1) begin
+      base_setup();
+      poke_l(32'h0000_0008, HAND);
+      poke_w(CODE + 0,  n == 0 ? 16'hF210 : 16'hF221);  // cpGEN (A0) / -(A1)
+      poke_w(CODE + 2,  16'h0700);
+      poke_w(CODE + 4,  16'h60FE);
+      poke_w(HAND + 0,  16'h4E73);
+      cp.push_resp(16'hA10C);              // CA, from CP, twelve bytes each
+      cp.push_resp(16'h0802);
+      cp.push_rsel(16'h0007);              // three ones
+      for (i = 0; i < 9; i = i + 1) cp.push_opnd(32'hE000_0000 + i);
+      for (i = 0; i < 9; i = i + 1) poke_l(DATA + 4 * i, 32'h0);
+      reset_dut();
+      dut.u_seq.areg[0] = DATA;
+      dut.u_seq.areg[1] = DATA + 36;
+      berr_en   = 1'b1;
+      berr_base = DATA + 32'h10;
+      berr_mask = 32'hFFFF_FFFC;
+      run_until(HAND, 3000, reached);
+      check(reached, $sformatf("twelve out, %0d: the bus error is taken", n));
+      berr_en = 1'b0;
+      run_until(CODE + 4, 4000, reached);
+      check(reached, $sformatf("twelve out, %0d: RTE, and the dialogue ends", n));
+      // -(A1) writes the registers down from A1 and each one's bytes upwards
+      // -- figure 7-38 -- so the first register is the highest in memory.
+      for (i = 0; i < 9; i = i + 1)
+        check(peek_l(DATA + 4 * i) === 32'hE000_0000
+                                       + (n == 0 ? i : 3 * (2 - i / 3) + i % 3),
+              $sformatf("twelve out, %0d: long word %0d", n, i));
+      check(n == 0 || dut.u_seq.areg[1] === DATA,
+            "twelve out, -(A1): A1 down by 36, once");
+      li = 0;
+      for (i = 0; i < cp.log_n; i = i + 1) if (cp.log_off[i] == R_OPND) li = li + 1;
+      check(li == 9, $sformatf("twelve out, %0d: nine operand reads, got %0d", n, li));
+    end
+
+    base_setup();
+    poke_l(32'h0000_0008, HAND);
+    poke_w(CODE + 0,  16'hF210);           // cpGEN (A0)
+    poke_w(CODE + 2,  16'h9000);
+    poke_w(CODE + 4,  16'h60FE);
+    poke_w(HAND + 0,  16'h4E73);
+    cp.push_resp(16'h9504);                // CA, to CP, four bytes
+    cp.push_resp(16'h0802);
+    poke_l(DATA + 32'h10, 32'h1357_9BDF);
+    reset_dut();
+    dut.u_seq.areg[0] = DATA + 32'h10;
+    berr_en   = 1'b1;
+    berr_base = DATA + 32'h10;
+    berr_mask = 32'hFFFF_FFFC;
+    run_until(HAND, 3000, reached);
+    check(reached, "four in: the read's bus error is taken");
+    berr_en = 1'b0;
+    run_until(CODE + 4, 3000, reached);
+    check(reached, "four in: RTE, and the dialogue ends");
+    expect_cir(1'b0, R_CMD, 2, 32'h9000, "four in");
+    expect_cir(1'b1, R_RESP, 2, 32'h9504, "four in");
+    expect_cir(1'b0, R_OPND, 4, 32'h1357_9BDF, "four in: the operand, once");
+    expect_cir(1'b1, R_RESP, 2, 32'h0802, "four in");
+    expect_end("four in");
 
     // ======================================================================
     // Evaluate effective address and transfer data to registers and from an

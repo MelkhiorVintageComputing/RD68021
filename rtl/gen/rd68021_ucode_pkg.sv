@@ -470,7 +470,7 @@ package rd68021_ucode_pkg;
   localparam logic [UADDR-1:0] ENTRY_IRQ = 12'd1347;
   localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 12'd1375;
   localparam logic [UADDR-1:0] ENTRY_LINE_F = 12'd1185;
-  localparam logic [UADDR-1:0] ENTRY_CP_IRQ = 12'd1896;
+  localparam logic [UADDR-1:0] ENTRY_CP_IRQ = 12'd1950;
 
 endpackage
 
