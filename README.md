@@ -32,14 +32,14 @@ and floating-point programs using an MC68881 on the coprocessor interface.
 | Faults | bus errors, address errors and demand paging with full restart: misaligned and part-done operands, RTE reruns, the long fault frame |
 | Pins | the original's bidirectional and three-state pins split into `_i` / `_o` / `_oe` (`doc/pinout.md`) |
 | Microcode | assembled from Python (`tools/ucode/`) into a ROM of about 1,900 words, with build-time checks of the restart and timing rules the RTL relies on |
-| Speed | 1,182 clocks over a mix of one of each instruction, against 1,332 for the manual's cache case |
+| Speed | 1,117 clocks over a mix of one of each instruction, against 1,332 for the manual's cache case; writes are posted, as the MC68020's are (UM 8.1.3) |
 
 On FPGAs, with the coprocessor interface built and a 30 MHz constraint
 (`doc/implementation.md`):
 
 | | Logic | Block memory | Frequency |
 |---|--:|--:|--:|
-| Xilinx Artix-7 xc7a100t | 7,995 LUTs | 6 RAMB36 | 33.4 MHz |
+| Xilinx Artix-7 xc7a100t | 8,046 LUTs | 6 RAMB36 | 34.0 MHz |
 | Intel Cyclone V 5CSEMA5 | 7,890 ALMs | 21 M10K | 39.9 MHz |
 | Intel MAX 10 10M50 | 18,974 LEs | 26 M9K | 32.5 MHz |
 
