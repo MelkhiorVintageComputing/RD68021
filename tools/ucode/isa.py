@@ -167,6 +167,10 @@ COND = enc(
     # A trace will be taken when this instruction ends -- UM 7.5.2.5 keeps the
     # dialogue going until the coprocessor has finished, so that it is.
     'TRACEPEND',
+    # Come again: CA set, or a trace pending (UM 7.5.2.5), which holds a
+    # dialogue open until the coprocessor says it has finished. The one
+    # question at the end of every primitive -- program.py, u().
+    'CPAGAIN',
     # An interrupt the mask admits is waiting -- UM 7.5.2.6: a null primitive
     # with CA and IA set services it in the middle of the instruction.
     'IRQPEND',
@@ -407,6 +411,7 @@ BSRC = enc(
     'DIVQ',      # the quotient, for assembling the word divide's result
     'IRQLEVEL',  # the level of the interrupt being taken, for the mask
     'THREE',     # the tail of an operand three bytes long
+    'PCBIT',     # $4000: the PC bit of a coprocessor primitive -- UM figure 7-22
     # UM 7.4.9: an (An)+ or -(An) operand steps the register by its length,
     # and by two for a single byte through A7, "to maintain a word-aligned
     # stack".

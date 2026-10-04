@@ -115,7 +115,7 @@ ROWS = [
     ('BFFFO D4{0:8},D5',       [], [0xEDC4, 0x5008],         18, '18', 3),
     ('BFCHG D4{0:8}',          [], [0xEAC4, 0x0008],         12, '12', 4),
     ('BFEXTU (A0){0:8},D5',    [], [0xE9D0, 0x5008],         15, '13 + #.W,(An) 2', 12),
-    ('BFINS D5,(A0){0:8}',     [], [0xEFD0, 0x5008],         16, '14 + #.W,(An) 2', 17),
+    ('BFINS D5,(A0){0:8}',     [], [0xEFD0, 0x5008],         16, '14 + #.W,(An) 2', 14),
     ('BFTST (A0){4:32}',       [], [0xE8D0, 0x0100],         17, '15 (5 bytes) + #.W,(An) 2', 14),
     # --- 8.2.15
     ('BRA.S (taken)',          [], [0x6002],                 6,  '6', 6),
@@ -179,7 +179,7 @@ ROWS = [
     # sim/models/rd68021_cpmodel.sv answers "processing finished".
     ('RTE (coprocessor)',      [0x4878, 0x0000, 0x2F3C, 0x0000, 0xF200, 0x4855,
                                 0x3F3C, 0x9000, 0x4855, 0x3F3C, 0x2700],
-                               [0x4E73],                     31, '31', 67),
+                               [0x4E73],                     31, '31', 63),
     ('CHK.L D1,D4 (in range)', [], [0x4901],                 8,  '8 + Dn 0', 5),
     ('CHK2.L (A0),D4',         [], [0x04D0, 0x4800],         22, '18 + #.W,(An) 4', 22),
     ('CMP2.L (A0),D4',         [], [0x04D0, 0x4000],         22, '18 + #.W,(An) 4', 21),
@@ -202,19 +202,19 @@ ROWS = [
     # are the PROCESSOR's clocks; the manual's figures are MC68881UM tables
     # 8-6, 8-7 and 8-8 in the cache case, plus table 8-1's effective address,
     # and include the MC68881's own time -- a ceiling, not a target.
-    ('FNOP',                   [], [0xF280, 0x0000],         18, 'MC68881 8-7 18', 22),
-    ('FBEQ.W (taken)',         [], [0xF281, 0x0002],         20, 'MC68881 8-7 20', 25),
-    ('FBEQ.W (not taken)',     [], [0xF281, 0x0002],         18, 'MC68881 8-7 18', 22),
-    ('FSEQ D0',                [], [0xF240, 0x0001],         18, 'MC68881 8-7 18', 26),
-    ('FMOVE.L D0,FPCR',        [], [0xF200, 0x9000],         28, 'MC68881 8-6 28', 34),
-    ('FMOVE.L FPCR,D0',        [], [0xF200, 0xB000],         31, 'MC68881 8-6 31', 35),
-    ('FMOVE.L (A0),FPCR',      [], [0xF210, 0x9000],         35, 'MC68881 8-6 33 + (An) 2', 51),
-    ('FMOVEM.L FPcr*3,(A0)',   [], [0xF210, 0xBC00],         47, 'MC68881 8-6 27+6n + (An) 2', 75),
-    ('FMOVEM.X (A0),FP0-FP2',  [], [0xF210, 0xD0E0],        130, 'MC68881 8-6 35+31n + (An) 2', 165),
-    ('FMOVEM.X FP0-FP2,-(A7)', [], [0xF227, 0xE007],        118, 'MC68881 8-6 37+25n + -(An) 6', 161),
-    ('FSAVE -(A7) (idle)',     [], [0xF327],                 58, 'MC68881 8-8 52 + -(An) 6', 88),
+    ('FNOP',                   [], [0xF280, 0x0000],         18, 'MC68881 8-7 18', 18),
+    ('FBEQ.W (taken)',         [], [0xF281, 0x0002],         20, 'MC68881 8-7 20', 21),
+    ('FBEQ.W (not taken)',     [], [0xF281, 0x0002],         18, 'MC68881 8-7 18', 18),
+    ('FSEQ D0',                [], [0xF240, 0x0001],         18, 'MC68881 8-7 18', 22),
+    ('FMOVE.L D0,FPCR',        [], [0xF200, 0x9000],         28, 'MC68881 8-6 28', 27),
+    ('FMOVE.L FPCR,D0',        [], [0xF200, 0xB000],         31, 'MC68881 8-6 31', 29),
+    ('FMOVE.L (A0),FPCR',      [], [0xF210, 0x9000],         35, 'MC68881 8-6 33 + (An) 2', 43),
+    ('FMOVEM.L FPcr*3,(A0)',   [], [0xF210, 0xBC00],         47, 'MC68881 8-6 27+6n + (An) 2', 61),
+    ('FMOVEM.X (A0),FP0-FP2',  [], [0xF210, 0xD0E0],        130, 'MC68881 8-6 35+31n + (An) 2', 132),
+    ('FMOVEM.X FP0-FP2,-(A7)', [], [0xF227, 0xE007],        118, 'MC68881 8-6 37+25n + -(An) 6', 128),
+    ('FSAVE -(A7) (idle)',     [], [0xF327],                 58, 'MC68881 8-8 52 + -(An) 6', 70),
     ('FRESTORE (A7)+ (idle)',  [0x9EFC, 0x0018, 0x2F3C, 0x1F18, 0x0000],
-                               [0xF35F],                     63, 'MC68881 8-8 57 + (An)+ 6', 96),
+                               [0xF35F],                     63, 'MC68881 8-8 57 + (An)+ 6', 78),
 ]
 
 # What the scripted coprocessor answers, per pass, for the coprocessor rows:

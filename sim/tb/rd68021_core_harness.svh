@@ -345,10 +345,11 @@ endtask
 // A while loop rather than a for with a return: iverilog rejects `return` in a
 // task ("Cannot return from tasks").
 // doc/checkpoint.md rule 9: a microword that waits for posted writes never
-// runs while one is outstanding -- in every core testbench, all the time.
+// runs while one is outstanding -- in every core testbench, all the time. One
+// it has posted itself is the exception: that write has its data already.
 always @(posedge clk)
   if (rst_n && dut.u_seq.retire && dut.u_seq.uw[rd68021_ucode_pkg::U_SYNC_LSB]
-      && dut.u_biu.post_busy)
+      && dut.u_biu.post_busy && !dut.u_seq.post_own)
     check(1'b0, $sformatf("a sync microword (%0d) retired with a posted write out",
                           dut.u_seq.upc));
 

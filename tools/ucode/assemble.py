@@ -1062,22 +1062,39 @@ SYNC_COND = ('SSW_DF', 'SSW_RB', 'SSW_RC', 'SSW_RW', 'SSW_RM',
              'AVEC', 'BERR', 'DIVZERO')
 
 
+def sync_reasons(f):
+    """What the microword reads that a fault frame does not put back."""
+    why = set()
+    if f.get('sync'):
+        why.add('marked')
+    if any(f.get(k) in SYNC_SRC for k in ('asrc', 'bsrc', 'asel')):
+        why.add('unrestored source')
+    if f.get('cond') in SYNC_COND:
+        why.add('unrestored condition')
+    if f.get('mdop') == 'DIV':
+        why.add('divider')
+    if f.get('seq') == 'RESUME' or any(f.get(k) for k in ('rstop', 'rsto', 'stop')):
+        why.add('control')
+    # the read data of an EARLIER read: rdata_q is not in the frame.
+    if reads_rdata(f) and f.get('bus') != 'READ':
+        why.add('rdata')
+    return why
+
+
 def needs_sync(f):
-    """The microword reads something a fault frame does not put back."""
-    return (f.get('sync')
-            or any(f.get(k) in SYNC_SRC for k in ('asrc', 'bsrc', 'asel'))
-            or f.get('cond') in SYNC_COND
-            or f.get('mdop') == 'DIV'
-            or f.get('seq') == 'RESUME'
-            or any(f.get(k) for k in ('rstop', 'rsto', 'stop'))
-            # the read data of an EARLIER read: rdata_q is not in the frame.
-            or (reads_rdata(f) and f.get('bus') != 'READ'))
+    return bool(sync_reasons(f))
+
+
+# Why each microword waits, by address -- taken before mark_sync sets the
+# field, which sync_reasons would otherwise count as a reason of its own.
+SYNC_WHY = {}
 
 
 def mark_sync():
     n = 0
-    for f, _c in program.WORDS:
-        if needs_sync(f):
+    for i, (f, _c) in enumerate(program.WORDS):
+        SYNC_WHY[i] = sync_reasons(f)
+        if SYNC_WHY[i]:
             f['sync'] = 1
             n += 1
     return n
@@ -1087,15 +1104,18 @@ def mark_posted():
     """Every plain write in a data space is posted -- UM 8.1.3.
 
     Not a read-modify-write, which is indivisible; not CPU space, whose bus
-    errors are answers the microcode reads; not RTE's rerun or RESET; and not a
-    microword that waits for posted writes itself, which would gain nothing.
+    errors are answers the microcode reads -- except a coprocessor interface
+    register past the first access, whose bus error is an ordinary one (UM
+    7.5.2.8); not RTE's rerun or RESET. A microword that waits for posted
+    writes only because it takes an earlier read's data is posted too: it has
+    its data by the time the bus unit takes it.
     """
     n = 0
-    for f, _c in program.WORDS:
+    for i, (f, _c) in enumerate(program.WORDS):
         if (f.get('bus') == 'WRITE'
-                and f.get('cpuspace', 'NONE') == 'NONE'
+                and f.get('cpuspace', 'NONE') in ('NONE', 'COPROC')
                 and not any(f.get(k) for k in ('rmc', 'rstop', 'rsto', 'stop'))
-                and not f.get('sync')):
+                and SYNC_WHY[i] <= {'rdata'}):
             f['post'] = 1
             f['early'] = 0
             n += 1
@@ -1105,8 +1125,9 @@ def mark_posted():
 def check_posted():
     bad = []
     for i, (f, c) in enumerate(program.WORDS):
-        if f.get('post') and (f.get('bus') != 'WRITE' or f.get('sync')
-                              or f.get('cpuspace', 'NONE') != 'NONE'
+        if f.get('post') and (f.get('bus') != 'WRITE'
+                              or not SYNC_WHY[i] <= {'rdata'}
+                              or f.get('cpuspace', 'NONE') not in ('NONE', 'COPROC')
                               or f.get('rmc')):
             bad.append('microword %d is posted and may not be -- %s' % (i, c))
         if f.get('post') and f.get('early'):

@@ -45,6 +45,17 @@ def u(comment='', **fields):
         if k not in isa.FIELDS:
             raise SystemExit('program: microword %d has no field %r -- the field '
                              'list is in isa.py' % (len(WORDS), k))
+    # The end of a coprocessor primitive -- doc/coprocessor.md. A primitive's
+    # last microword asks the one question cp_next used to ask in two: come
+    # again (CA set, or a trace pending -- UM 7.5.2.5)? Yes goes straight back
+    # to the response CIR; no falls into a release of its own, so the dialogue
+    # ends a clock after the primitive's last access rather than three.
+    if fields.get('next') == 'cp_next' and fields.get('seq', 'NEXT') == 'NEXT':
+        fields = dict(fields, seq='COND', cond='CPAGAIN', next='cp_resp')
+        WORDS.append((fields, comment))
+        WORDS.append(({'pf': 'ADV', 'seq': 'DECODE'},
+                      'released: the scanPC is the next instruction -- UM 7.4.1'))
+        return
     WORDS.append((dict(fields), comment))
 
 
@@ -3816,20 +3827,25 @@ opcode('1111------------', 'exc_line_f', 'an F-line instruction')
 # The dialogue -- UM 7.2.1.2, 7.2.2 and 7.4
 # --------------------------------------------------------------------------
 label('cp_resp')
-cir_read('read the response CIR -- UM 7.3.1', CIR_RESPONSE, 2)
-u('... and hold the primitive while it is served',
-  asrc='RDATA', alu='A', dst='CPRIM', size='WORD')
-u('PC set? UM 7.4.2: the program counter goes to the instruction address CIR '
-  '"as the first operation in servicing the primitive request" -- before an '
-  'exception it may lead to, too',
-  seq='COND', cond='CPPC', next='cp_passpc')
+cir_read('read the response CIR -- UM 7.3.1 -- and hold the primitive while it '
+         'is served', CIR_RESPONSE, 2,
+         asrc='RDATA', alu='A', dst='CPRIM', size='WORD')
 label('cp_dispatch')
-u('what the primitive asks for -- the decoder, UM 7.4 and table 7-6',
+u('what the primitive asks for -- the decoder, UM 7.4 and table 7-6. A '
+  'primitive with PC set goes to cp_passpc first',
   seq='CPDEC')
 
+# UM 7.4.2: the program counter goes to the instruction address CIR "as the
+# first operation in servicing the primitive request" -- before an exception
+# it may lead to, too. Then the bit is cleared, so that the decoder, asked
+# again, serves the rest; cprim is in the fault frame, so a fault on either
+# access resumes the right half.
 label('cp_passpc')
 cir_write('the address of the F-line operation word', CIR_IADDR, 4,
-          asrc='PC_D', next='cp_dispatch')
+          asrc='PC_D')
+u('... and the program counter has been passed',
+  asrc='CPRIM', bsrc='PCBIT', alu='EOR', dst='CPRIM', size='WORD',
+  next='cp_dispatch')
 
 # After a primitive that allows come-again. CA set: read the response CIR
 # again. CA clear: a general instruction is released -- the decoder refuses CA
@@ -3879,15 +3895,11 @@ u('... which is an instruction boundary',
   seq='DECODE')
 
 # ---- Null -- UM 7.4.4 and table 7-3 ------------------------------------------
-label('cp_null')
-u('come again?', seq='COND', cond='CPCA', next='cp_null_ca')
-u('the end of a general instruction?', seq='COND', cond='CPGEN',
-  next='cp_null_gen')
-u('a conditional one: the verdict is in TF', next='cp_cond_done')
-
-label('cp_null_gen')
-u('processing finished', seq='COND', cond='CPPF', next='cp_done')
-u('not finished: the dialogue only goes on if a trace is pending',
+# The null primitive is decoded completely -- CA, IA, PF and the category are
+# all the decoder's inputs -- so only the two questions that are not about the
+# primitive are asked here: a trace pending, an interrupt pending.
+label('cp_null_nf')
+u('not finished: the dialogue only goes on if a trace is pending -- UM 7.5.2.5',
   seq='COND', cond='TRACEPEND', next='cp_null_ca')
 u('... and none is', next='cp_done')
 
@@ -4270,6 +4282,9 @@ def _prim(cat, ca, fn, par='--------'):
     return cat + ca + '-' + fn + par
 
 
+# PC set: the program counter first, whatever the primitive -- UM 7.4.2.
+cpprim('--1--------------', 'cp_passpc', 'PC set: pass the program counter first')
+
 # Refused in a conditional instruction: every primitive but null that allows
 # come-again, with CA clear (the footnote to table 7-6) ...
 for _fn in ('000111', '100111', '001111', '101111', '-00101', '-01110',
@@ -4288,7 +4303,12 @@ cpprim(_prim('-', '-', '-00001', '-------1'), 'cp_protocol',
        'transfer multiple coprocessor registers, odd length')
 
 cpprim(_prim('-', '-', '100100'), 'cp_busy',     'busy')
-cpprim(_prim('-', '-', '00100-'), 'cp_null',     'null')
+# The null primitive, every case -- UM 7.4.2 and 7.5.2.5.
+cpprim(_prim('-', '1', '001000'), 'cp_resp',      'null, come again')
+cpprim(_prim('-', '1', '001001'), 'cp_null_ca',   'null, come again, interrupts allowed')
+cpprim(_prim('1', '0', '00100-'), 'cp_cond_done', 'null in a conditional: the verdict is in TF')
+cpprim(_prim('0', '0', '00100-', '------1-'), 'cp_done', 'null, processing finished')
+cpprim(_prim('0', '0', '00100-'), 'cp_null_nf',   'null, not finished')
 cpprim(_prim('-', '-', '000100'), 'cp_svchk',    'supervisor check')
 cpprim(_prim('-', '-', '-00111'), 'cp_opword',   'transfer operation word')
 cpprim(_prim('-', '-', '-01111'), 'cp_stream',   'transfer from instruction stream')

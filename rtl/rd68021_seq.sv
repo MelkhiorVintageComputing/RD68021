@@ -710,6 +710,7 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_BSRC_IMMQ:    b_bus = (stg_d[11:9] == 3'd0)
                                                  ? 32'd8 : {29'd0, stg_d[11:9]};
       rd68021_ucode_pkg::U_BSRC_THREE:   b_bus = 32'd3;
+      rd68021_ucode_pkg::U_BSRC_PCBIT:   b_bus = 32'h0000_4000;
       rd68021_ucode_pkg::U_BSRC_TWENTY:  b_bus = 32'd20;
       rd68021_ucode_pkg::U_BSRC_CPLEN:   b_bus = {24'd0, cprim_q[7:0]};
       // UM 7.4.9 and 7.4.12: a one-byte operand through A7 steps it by two.
@@ -1717,6 +1718,7 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_COND_T1B0:   cond_true = t_q[1][0];
       rd68021_ucode_pkg::U_COND_T1ZERO: cond_true = (t_q[1] == 32'd0);
       rd68021_ucode_pkg::U_COND_TRACEPEND: cond_true = trace_take;
+      rd68021_ucode_pkg::U_COND_CPAGAIN:   cond_true = cprim_q[15] || trace_take;
       // Against the mask as it stands: nothing in the dialogue writes it on
       // the microword that asks.
       rd68021_ucode_pkg::U_COND_IRQPEND:   cond_true = irq_ipend;
@@ -1882,15 +1884,19 @@ module rd68021_seq #(
   // A microword whose OWN posted write is outstanding waits too, without
   // presenting it again; a fault then is an ordinary one on its own request.
   // ==========================================================================
-  logic post_hold, pipe_flt_raw;
+  // `sync` is about state the microword READS, so it waits only for a write
+  // posted before it: one it posts itself has its data already. The other two
+  // are about where a fault lands, so they wait for its own as well.
+  logic post_hold, own_hold, pipe_flt_raw;
   assign pipe_flt_raw = (uses_c_word && stg_c_fault) || (pipe_wait && pf_stuck);
-  assign post_hold = `UF(SYNC) || pipe_flt_raw
+  assign own_hold  = pipe_flt_raw
                   || (at_decode
                       && ((irq_level > sr_q[rd68021_pkg::SR_I0 +: 3])
                           || (irq_level == 3'd7)
                           || (`UF(DST) == rd68021_ucode_pkg::U_DST_SR)));
+  assign post_hold = `UF(SYNC) || own_hold;
   assign wait_prev = post_hold && post_busy && !post_own;
-  assign wait_own  = post_hold && post_busy &&  post_own;
+  assign wait_own  = own_hold  && post_busy &&  post_own;
 
   logic pipe_fault;
   assign pipe_fault = ((retire && uses_c_word && stg_c_fault)

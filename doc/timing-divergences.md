@@ -225,7 +225,7 @@ overlap with the prefetch of the next instruction, but it is close.
 | `BFFFO D4{0:8},D5` | 18 | 18 | 3 | -15 | 9 |
 | `BFCHG D4{0:8}` | 12 | 12 | 4 | -8 | 10 |
 | `BFEXTU (A0){0:8},D5` | 15 | 13 + #.W,(An) 2 | 12 | -3 | 18 |
-| `BFINS D5,(A0){0:8}` | 16 | 14 + #.W,(An) 2 | 17 | **+1** | 23 |
+| `BFINS D5,(A0){0:8}` | 16 | 14 + #.W,(An) 2 | 14 | -2 | 20 |
 | `BFTST (A0){4:32}` | 17 | 15 (5 bytes) + #.W,(An) 2 | 14 | -3 | 20 |
 | `BRA.S (taken)` | 6 | 6 | 6 |  | 13 |
 | `BRA.W (taken)` | 6 | 6 | 6 |  | 15 |
@@ -275,7 +275,7 @@ overlap with the prefetch of the next instruction, but it is close.
 | `RTR` | 14 | 14 | 17 | **+3** | 19 |
 | `RTD #4` | 10 | 10 | 12 | **+2** | 12 |
 | `RTE (format 0)` | 21 | 21 | 31 | **+10** | 31 |
-| `RTE (coprocessor)` | 31 | 31 | 67 | **+36** | 68 |
+| `RTE (coprocessor)` | 31 | 31 | 63 | **+32** | 64 |
 | `CHK.L D1,D4 (in range)` | 8 | 8 + Dn 0 | 5 | -3 | 7 |
 | `CHK2.L (A0),D4` | 22 | 18 + #.W,(An) 4 | 22 |  | 29 |
 | `CMP2.L (A0),D4` | 22 | 18 + #.W,(An) 4 | 21 | -1 | 28 |
@@ -290,17 +290,17 @@ overlap with the prefetch of the next instruction, but it is close.
 | `ILLEGAL` | 20 | 20 | 32 | **+12** | 32 |
 | `line A` | 20 | 20 | 32 | **+12** | 32 |
 | `RESET` | 518 | 518 | 515 | -3 | 515 |
-| `FNOP` | 18 | MC68881 8-7 18 | 22 | **+4** | 22 |
-| `FBEQ.W (taken)` | 20 | MC68881 8-7 20 | 25 | **+5** | 25 |
-| `FBEQ.W (not taken)` | 18 | MC68881 8-7 18 | 22 | **+4** | 22 |
-| `FSEQ D0` | 18 | MC68881 8-7 18 | 26 | **+8** | 34 |
-| `FMOVE.L D0,FPCR` | 28 | MC68881 8-6 28 | 34 | **+6** | 42 |
-| `FMOVE.L FPCR,D0` | 31 | MC68881 8-6 31 | 35 | **+4** | 43 |
-| `FMOVE.L (A0),FPCR` | 35 | MC68881 8-6 33 + (An) 2 | 51 | **+16** | 59 |
-| `FMOVEM.L FPcr*3,(A0)` | 47 | MC68881 8-6 27+6n + (An) 2 | 75 | **+28** | 83 |
-| `FMOVEM.X (A0),FP0-FP2` | 130 | MC68881 8-6 35+31n + (An) 2 | 165 | **+35** | 173 |
-| `FMOVEM.X FP0-FP2,-(A7)` | 118 | MC68881 8-6 37+25n + -(An) 6 | 161 | **+43** | 169 |
-| `FSAVE -(A7) (idle)` | 58 | MC68881 8-8 52 + -(An) 6 | 88 | **+30** | 90 |
-| `FRESTORE (A7)+ (idle)` | 63 | MC68881 8-8 57 + (An)+ 6 | 96 | **+33** | 97 |
+| `FNOP` | 18 | MC68881 8-7 18 | 18 |  | 18 |
+| `FBEQ.W (taken)` | 20 | MC68881 8-7 20 | 21 | **+1** | 21 |
+| `FBEQ.W (not taken)` | 18 | MC68881 8-7 18 | 18 |  | 18 |
+| `FSEQ D0` | 18 | MC68881 8-7 18 | 22 | **+4** | 30 |
+| `FMOVE.L D0,FPCR` | 28 | MC68881 8-6 28 | 27 | -1 | 35 |
+| `FMOVE.L FPCR,D0` | 31 | MC68881 8-6 31 | 29 | -2 | 37 |
+| `FMOVE.L (A0),FPCR` | 35 | MC68881 8-6 33 + (An) 2 | 43 | **+8** | 51 |
+| `FMOVEM.L FPcr*3,(A0)` | 47 | MC68881 8-6 27+6n + (An) 2 | 61 | **+14** | 69 |
+| `FMOVEM.X (A0),FP0-FP2` | 130 | MC68881 8-6 35+31n + (An) 2 | 132 | **+2** | 140 |
+| `FMOVEM.X FP0-FP2,-(A7)` | 118 | MC68881 8-6 37+25n + -(An) 6 | 128 | **+10** | 136 |
+| `FSAVE -(A7) (idle)` | 58 | MC68881 8-8 52 + -(An) 6 | 70 | **+12** | 72 |
+| `FRESTORE (A7)+ (idle)` | 63 | MC68881 8-8 57 + (An)+ 6 | 78 | **+15** | 79 |
 <!-- cycles:end -->
 
