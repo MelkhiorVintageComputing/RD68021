@@ -196,15 +196,58 @@ ROWS = [
     ('ILLEGAL',                [], [0x4AFC],                 20, '20', 32),
     ('line A',                 [], [0xA000],                 20, '20', 32),
     ('RESET',                  [], [0x4E70],                 518, '518', 515),
+    # --- The coprocessor interface, against the scripted coprocessor of
+    # sim/models/rd68021_cpmodel.sv answering as an MC68881 does (CP_SCRIPTS
+    # below), at no wait states and with no time of its own. So these rows
+    # are the PROCESSOR's clocks; the manual's figures are MC68881UM tables
+    # 8-6, 8-7 and 8-8 in the cache case, plus table 8-1's effective address,
+    # and include the MC68881's own time -- a ceiling, not a target.
+    ('FNOP',                   [], [0xF280, 0x0000],         18, 'MC68881 8-7 18', 22),
+    ('FBEQ.W (taken)',         [], [0xF281, 0x0002],         20, 'MC68881 8-7 20', 25),
+    ('FBEQ.W (not taken)',     [], [0xF281, 0x0002],         18, 'MC68881 8-7 18', 22),
+    ('FSEQ D0',                [], [0xF240, 0x0001],         18, 'MC68881 8-7 18', 26),
+    ('FMOVE.L D0,FPCR',        [], [0xF200, 0x9000],         28, 'MC68881 8-6 28', 34),
+    ('FMOVE.L FPCR,D0',        [], [0xF200, 0xB000],         31, 'MC68881 8-6 31', 35),
+    ('FMOVE.L (A0),FPCR',      [], [0xF210, 0x9000],         35, 'MC68881 8-6 33 + (An) 2', 51),
+    ('FMOVEM.L FPcr*3,(A0)',   [], [0xF210, 0xBC00],         47, 'MC68881 8-6 27+6n + (An) 2', 75),
+    ('FMOVEM.X (A0),FP0-FP2',  [], [0xF210, 0xD0E0],        130, 'MC68881 8-6 35+31n + (An) 2', 165),
+    ('FMOVEM.X FP0-FP2,-(A7)', [], [0xF227, 0xE007],        118, 'MC68881 8-6 37+25n + -(An) 6', 161),
+    ('FSAVE -(A7) (idle)',     [], [0xF327],                 58, 'MC68881 8-8 52 + -(An) 6', 88),
+    ('FRESTORE (A7)+ (idle)',  [0x9EFC, 0x0018, 0x2F3C, 0x1F18, 0x0000],
+                               [0xF35F],                     63, 'MC68881 8-8 57 + (An)+ 6', 96),
 ]
+
+# What the scripted coprocessor answers, per pass, for the coprocessor rows:
+# R a response, O an operand it hands over, S a register select, V a save
+# format word. Once the script runs out it answers "processing finished"
+# ($0802) to the response CIR, and a restore CIR reads back what was written --
+# a valid format. The primitives are an MC68881's (MC68881UM section 7):
+# $9504 evaluate <ea> and transfer four bytes in, $B104 out, $B20C three
+# control registers out, $810C / $A10C transfer multiple registers in / out,
+# twelve bytes each, and $0801 a null whose condition is true. A dialogue that
+# comes again ends on an explicit $0802, so that each pass takes its own.
+CP_SCRIPTS = {
+    'FBEQ.W (taken)':         ['R0801'],
+    'FSEQ D0':                ['R0801'],
+    'FMOVE.L D0,FPCR':        ['R9504', 'R0802'],
+    'FMOVE.L FPCR,D0':        ['RB104', 'O00000000', 'R0802'],
+    'FMOVE.L (A0),FPCR':      ['R9504', 'R0802'],
+    'FMOVEM.L FPcr*3,(A0)':   ['RB20C', 'O00000000', 'O00000000', 'O00000000',
+                               'R0802'],
+    'FMOVEM.X (A0),FP0-FP2':  ['R810C', 'S00E0', 'R0802'],
+    'FMOVEM.X FP0-FP2,-(A7)': ['RA10C', 'S0007'] + ['O00000000'] * 9 + ['R0802'],
+    'FSAVE -(A7) (idle)':     ['V1F18'] + ['O00000000'] * 6,
+}
 
 
 def gen():
     print(len(ROWS))
-    for k, (name, pre, ins, cc, how, ours) in enumerate(ROWS):
+    for k, row in enumerate(ROWS):
+        name, pre, ins, cc, how, ours = row[:6]
+        script = CP_SCRIPTS.get(name, [])
         tag = 'r%d' % k
         words = [len(pre)] + pre + [len(ins)] + ins
-        print(tag, ' '.join('%x' % w for w in words))
+        print(tag, ' '.join('%x' % w for w in words), len(script), ' '.join(script))
 
 
 def load(path):
@@ -240,15 +283,24 @@ def check(path, doc=None):
         rows.append((name, how, cc, warm, cold))
     if doc:
         splice(doc, rows)
-    n = len(rows)
-    same = sum(1 for r in rows if r[3] == r[2])
-    faster = sum(1 for r in rows if r[3] < r[2])
+    # The coprocessor rows are against MC68881UM section 8, whose totals
+    # include the FPU's own time; they are reported apart from UM 8's mix.
+    cp = [r for r in rows if r[0] in CP_SCRIPTS or r[1].startswith('MC68881')]
+    um = [r for r in rows if r not in cp]
+    n = len(um)
+    same = sum(1 for r in um if r[3] == r[2])
+    faster = sum(1 for r in um if r[3] < r[2])
     slower = n - same - faster
-    tot_m = sum(r[2] for r in rows if r[2] < 500)
-    tot_o = sum(r[3] for r in rows if r[2] < 500)
+    tot_m = sum(r[2] for r in um if r[2] < 500)
+    tot_o = sum(r[3] for r in um if r[2] < 500)
     print(f'  cycles: {n} instructions -- {same} exact, {faster} faster, '
           f'{slower} slower; {tot_o} clocks against the manual\'s {tot_m} '
           f'(RESET aside)')
+    if cp:
+        print(f'  coprocessor: {len(cp)} instructions, {sum(r[3] for r in cp)} '
+              f'clocks with the scripted coprocessor; MC68881UM section 8, '
+              f'whose totals include the FPU\'s own time, adds up to '
+              f'{sum(r[2] for r in cp)}')
     if bad:
         print('FAIL: cycles')
         return 1

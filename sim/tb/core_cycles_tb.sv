@@ -41,6 +41,14 @@ module core_cycles_tb;
   int unsigned nrows, r, i, npre, nins;
   logic [15:0] pre [0:15];
   logic [15:0] ins [0:7];
+  // The scripted coprocessor's part, per pass -- tools/cycles.py, CP_SCRIPTS.
+  int unsigned nscr, j;
+  // iverilog 12 cannot $fscanf into an array of strings: each token is taken
+  // apart as it is read, into its kind and its value.
+  logic  [1:0] scr_k [0:31];
+  logic [31:0] scr_v [0:31];
+  string       tok, num;
+  logic [31:0] sv;
   string       tag, what;
   logic [31:0] at, x, loop_at, done_at;
   bit          reached;
@@ -113,6 +121,28 @@ module core_cycles_tb;
       for (i = 0; i < npre; i++) void'($fscanf(vec, "%h", pre[i]));
       void'($fscanf(vec, "%h", nins));
       for (i = 0; i < nins; i++) void'($fscanf(vec, "%h", ins[i]));
+      void'($fscanf(vec, "%d", nscr));
+      for (i = 0; i < nscr; i++) begin
+        void'($fscanf(vec, "%s", tok));
+        num = tok.substr(1, tok.len() - 1);
+        scr_v[i] = num.atohex();
+        if      (tok.substr(0, 0) == "R") scr_k[i] = 2'd0;
+        else if (tok.substr(0, 0) == "O") scr_k[i] = 2'd1;
+        else if (tok.substr(0, 0) == "S") scr_k[i] = 2'd2;
+        else if (tok.substr(0, 0) == "V") scr_k[i] = 2'd3;
+        else $display("FAIL: %s: a script token %s", tag, tok);
+      end
+      cp.clear();
+      for (j = 0; j < 2; j++)
+        for (i = 0; i < nscr; i++) begin
+          sv = scr_v[i];
+          case (scr_k[i])
+            2'd0: cp.push_resp(sv[15:0]);
+            2'd1: cp.push_opnd(sv);
+            2'd2: cp.push_rsel(sv[15:0]);
+            default: cp.push_save(sv[15:0]);
+          endcase
+        end
 
       // Everything a row touches is below $4000: vectors, code at $400, the
       // stack under $1000, data at $2000-$2300 and the handlers at $3000.
