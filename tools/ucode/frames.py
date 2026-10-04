@@ -144,6 +144,7 @@ INTERNAL = [
     (0x44, 15,  0, 'link',      16,  'the return address of the subroutine under way'),
     (0x4A, 15,  0, 'cprim',     16,  'the coprocessor response primitive being served'),
     (0x08,  5,  5, 'posted',     1,  'the faulted access was a posted write, which RTE reruns by itself'),
+    (0x08, 12, 10, 'irqlvl',     3,  'the level of the interrupt being taken'),
 ]
 
 # --------------------------------------------------------------------------
@@ -203,6 +204,7 @@ CHECKPOINT = [
     ('seq', 'sr_q',             16, 'sr',            'frame +$00'),
     ('seq', 'cprim_q',          16, 'cprim',         'UM 7.5.2.8: a bus error on any CIR access but the first, or on an operand a primitive moves, is an ordinary bus error, and RTE goes back to the primitive it interrupted'),
     ('seq', 'post_flt_q',        1, 'posted',        'doc/checkpoint.md rule 9: the faulted access belongs to no microword -- the write was posted and the instruction went on -- so RTE runs it on its own and resumes at the microword that was interrupted'),
+    ('seq', 'irq_taking_q',      3, 'irqlvl',        'the level of the interrupt being taken, from the dispatch to the acknowledge. A posted write\'s fault can land in between -- doc/checkpoint.md rule 9 -- and the acknowledge after RTE has to ask for the same level'),
 ]
 
 # Rows of CHECKPOINT whose register the RTL does not have YET, and the milestone
@@ -344,12 +346,6 @@ EXEMPT = [
                             'outside world is asking for, and UM 6.1.9 requires '
                             'the device to hold the level until it is '
                             'acknowledged.'),
-    ('seq', 'irq_taking_q', 'the level of the interrupt being taken. Live only '
-                            'between the dispatch and the acknowledge cycle, '
-                            'and nothing in that span makes a DATA access that '
-                            'could fault -- the acknowledge itself is in CPU '
-                            'space and a fault there is a spurious interrupt, '
-                            'not a bus fault. M9 revisits it.'),
     # PRM 6 STOP. The processor runs no bus cycle while stopped, so no fault can
     # be recognised there, and the interrupt that ends the stopped state clears
     # the bit on the same clock it enters exception processing. A stopped

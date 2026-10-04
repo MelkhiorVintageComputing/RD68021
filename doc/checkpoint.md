@@ -165,8 +165,9 @@ This is a cycle-count divergence, measured and justified in
 | `+$44` | 15:0 | `link` | the return address of the subroutine under way |
 | `+$4A` | 15:0 | `cprim` | the coprocessor response primitive being served |
 | `+$08` | 5 | `posted` | the faulted access was a posted write, which RTE reruns by itself |
+| `+$08` | 12:10 | `irqlvl` | the level of the interrupt being taken |
 
-**492 bits available, 350 used, 8 words spare** (`+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
+**492 bits available, 353 used, 8 words spare** (`+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
 
 ### The frozen set
 
@@ -213,6 +214,7 @@ This is a cycle-count divergence, measured and justified in
 | `seq` | `sr_q` | 16 | `sr` | frame +$00 |
 | `seq` | `cprim_q` | 16 | `cprim` | UM 7.5.2.8: a bus error on any CIR access but the first, or on an operand a primitive moves, is an ordinary bus error, and RTE goes back to the primitive it interrupted |
 | `seq` | `post_flt_q` | 1 | `posted` | doc/checkpoint.md rule 9: the faulted access belongs to no microword -- the write was posted and the instruction went on -- so RTE runs it on its own and resumes at the microword that was interrupted |
+| `seq` | `irq_taking_q` | 3 | `irqlvl` | the level of the interrupt being taken, from the dispatch to the acknowledge. A posted write's fault can land in between -- doc/checkpoint.md rule 9 -- and the acknowledge after RTE has to ask for the same level |
 
 ### Not checkpointed, and why
 
@@ -343,18 +345,20 @@ afterwards.
      outstanding, which is UM 6.2.3's "new stack frame after deallocating the
      previous frame".
    - So any microword may be M, and one that reads state no frame carries may
-     not: it **waits** for the write instead. `mark_sync` in
-     `tools/ucode/assemble.py` marks them -- readers of `ea_save`, of the
-     interrupt level being acknowledged, of RTE's taken-apart status word, of
-     the divider, of an earlier read's data or end code; RESUME, RTE's
-     hand-back, STOP and RESET; and NOP, which PRM 4 makes wait. Three more
-     wait in the RTL: a decode that may take an interrupt, whose level is not
-     in the frame either; a microword about to take a prefetch fault, so that
-     the write, which came first, faults first; and a posted microword that has
-     not yet retired for one of those reasons, whose write's fault is then an
-     ordinary one on its own request.
-   - Not posted: read-modify-write (indivisible), CPU space (its bus errors are
-     answers), and anything that waits itself. `check_posted` holds the marking
+     not: it **waits** for writes posted before it instead. `mark_sync` in
+     `tools/ucode/assemble.py` marks them -- readers of `ea_save`, of RTE's
+     taken-apart status word, of the divider, of an earlier read's data or end
+     code; RESUME, RTE's hand-back, STOP and RESET; and NOP, which PRM 4 makes
+     wait. The level of an interrupt being taken is in the frame (+$08 bits
+     12:10), so the interrupt entry needs no wait and may be M like any other.
+     One more waits in the RTL: a microword about to take a prefetch fault --
+     for its own posted write too -- so that the write, which came first,
+     faults first; its write's fault is then an ordinary one on its own
+     request.
+   - Not posted: read-modify-write (indivisible), CPU space other than a
+     coprocessor interface register past the first access (its bus errors are
+     answers), and anything that waits for some other reason than an earlier
+     read's data. `check_posted` holds the marking
      to that, and every core testbench checks that no waiting microword ever
      retires with a write outstanding.
 

@@ -1062,7 +1062,7 @@ EARLY = None
 # reads such state would read whatever the handler left there. Each of these
 # waits for a posted write to finish before it starts, and then no fault can
 # land on it.
-SYNC_SRC = ('EA_SAVE', 'IRQLEVEL', 'AUTOVEC')
+SYNC_SRC = ('EA_SAVE',)
 SYNC_COND = ('SSW_DF', 'SSW_RB', 'SSW_RC', 'SSW_RW', 'SSW_RM',
              'AVEC', 'BERR', 'DIVZERO')
 

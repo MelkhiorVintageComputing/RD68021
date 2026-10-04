@@ -1506,6 +1506,7 @@ module rd68021_seq #(
     int08[rd68021_frame_pkg::I_EADST_LO      +: 1] = eadst_q;
     int08[rd68021_frame_pkg::I_DVALID_LO     +: 1] = pf_dvalid;
     int08[rd68021_frame_pkg::I_POSTED_LO     +: 1] = post_flt_q;
+    int08[rd68021_frame_pkg::I_IRQLVL_LO     +: 3] = irq_taking_q;
   end
 
   always_comb begin
@@ -1898,23 +1899,16 @@ module rd68021_seq #(
   //   - one about to take a prefetch fault: the write came first, so its fault
   //     does -- and a prefetch fault taken first would make the write's a
   //     double bus fault;
-  //   - a decode that may take an interrupt: the level it latches is not in
-  //     the frame either. Judged against the status register as it stands,
-  //     and on any decode that writes it, rather than through sr_eff, which
-  //     reads `retire`.
   // A microword whose OWN posted write is outstanding waits too, without
   // presenting it again; a fault then is an ordinary one on its own request.
   // ==========================================================================
   // `sync` is about state the microword READS, so it waits only for a write
-  // posted before it: one it posts itself has its data already. The other two
-  // are about where a fault lands, so they wait for its own as well.
+  // posted before it: one it posts itself has its data already. A prefetch
+  // fault is about where a fault lands, so it waits for its own as well. The
+  // interrupt being taken needs no wait: its level is in the frame.
   logic post_hold, own_hold, pipe_flt_raw;
   assign pipe_flt_raw = (uses_c_word && stg_c_fault) || (pipe_wait && pf_stuck);
-  assign own_hold  = pipe_flt_raw
-                  || (at_decode
-                      && ((irq_level > sr_q[rd68021_pkg::SR_I0 +: 3])
-                          || (irq_level == 3'd7)
-                          || (`UF(DST) == rd68021_ucode_pkg::U_DST_SR)));
+  assign own_hold  = pipe_flt_raw;
   assign post_hold = `UF(SYNC) || own_hold;
   assign wait_prev = post_hold && post_busy && !post_own;
   assign wait_own  = own_hold  && post_busy &&  post_own;
@@ -2730,6 +2724,10 @@ module rd68021_seq #(
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n)          irq_taking_q <= 3'd0;
     else if (irq_enter)  irq_taking_q <= irq_level;
+    // ... and put back by RTE: a posted write's fault may have been taken
+    // between the dispatch and the acknowledge -- doc/checkpoint.md rule 9.
+    else if (commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_INT08))
+      irq_taking_q <= y[rd68021_frame_pkg::I_IRQLVL_LO +: 3];
   end
 
   assign cacr      = cacr_q;

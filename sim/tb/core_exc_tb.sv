@@ -706,6 +706,46 @@ module core_exc_tb;
       $display("  FAIL: the pipe invariant broke %0d times", pipe_fails);
     $display("core_exc_tb: %0d checks, %0d failed, %0d pipe checks",
              checks, fails, pipe_checks);
+    // ======================================================================
+    // A posted write whose bus error lands between an interrupt's dispatch
+    // and its acknowledge -- doc/checkpoint.md rule 9. The level being taken
+    // is in the frame (+$08 bits 12:10), so after the bus error handler's RTE
+    // the acknowledge asks for the same level, and the write is rerun.
+    // ======================================================================
+    base_setup();
+    poke_l(32'h0000_0074, HAND);           // vector 29 = 24 + 5
+    poke_l(32'h0000_0008, 32'h0000_0600);  // vector 2, bus error: just RTE
+    poke_w(32'h0000_0600, 16'h4E73);
+    poke_w(CODE + 0, 16'h46FC);            // MOVE #$2000,SR -- mask 0
+    poke_w(CODE + 2, 16'h2000);
+    poke_w(CODE + 4, 16'h207C);            // MOVEA.L #$8000,A0
+    poke_l(CODE + 6, 32'h0000_8000);
+    poke_w(CODE + 10, 16'h2080);           // MOVE.L D0,(A0) -- posted, faults
+    poke_w(CODE + 12, 16'h7001);           // MOVEQ #1,D0 -- one of these decodes
+    poke_w(CODE + 14, 16'h7202);           // MOVEQ #2,D1    into the interrupt
+    poke_w(CODE + 16, 16'h7403);           // MOVEQ #3,D2    while the write is
+    poke_w(CODE + 18, 16'h7604);           // MOVEQ #4,D3    still on the bus
+    poke_w(CODE + 20, 16'h60FE);
+    poke_w(HAND + 0, 16'h7222);            // MOVEQ #$22,D1
+    poke_w(HAND + 2, 16'h60FE);
+    reset_dut();
+    dut.u_seq.dreg[0] = 32'hFACE_B00C;
+    berr_en   = 1'b1;
+    berr_base = 32'h0000_8000;
+    berr_mask = 32'hFFFF_F000;
+    // The device asserts its level as the write is presented.
+    while (!(dut.u_seq.req_valid && dut.u_seq.req_post)) @(posedge clk);
+    request(5, IACK_AUTO, 8'd0);
+    run_until(32'h0000_0600, 2000, reached);
+    check(reached, "posted, interrupt: the bus error is taken");
+    check(((peek_w(ISP0 - 32'h5C + 32'h08) >> 10) & 16'h7) === 16'h5,
+          "posted, interrupt: +$08 carries level 5 -- the fault came in the entry");
+    berr_en = 1'b0;
+    run_until(HAND + 2, 3000, reached);
+    check(reached, "posted, interrupt: RTE, and the autovector handler runs");
+    check(iack_level === 3'd5, "posted, interrupt: the acknowledge asked for level 5");
+    check(peek_l(32'h0000_8000) === 32'hFACE_B00C, "posted, interrupt: the write was rerun");
+
     if (fails == 0 && pipe_fails == 0) $display("PASS: core_exc_tb");
     else                               $display("FAIL: core_exc_tb");
     $finish;

@@ -1419,11 +1419,11 @@ module rd68021_ucode_rom (
         11'd1345 : rom_q <= 105'h000000000001060008410150800;   // the instruction that was traced
         11'd1346 : rom_q <= 105'h000000000001040003810123C00;   // and the frame carries the address of the next one
         11'd1347 : rom_q <= 105'h000000000000880003C10151000;   // a copy of the status register as it was, before anything moves
-        11'd1348 : rom_q <= 105'h100000000000927BE3C10151400;   // the mask goes up to this level -- UM 6.1 step one, second half
+        11'd1348 : rom_q <= 105'h000000000000927BE3C10151400;   // the mask goes up to this level -- UM 6.1 step one, second half
         11'd1349 : rom_q <= 105'h1002000000010000000A055210A;   // the acknowledge cycle: CPU space, type $F, the level on A3-A1
         11'd1350 : rom_q <= 105'h100000000001000000010152512;   // ... or nobody answered at all
         11'd1351 : rom_q <= 105'h100000000001020008010152800;   // the device supplied a vector number
-        11'd1352 : rom_q <= 105'h100000000001020007C10152800;   // the autovector for this level -- UM table 6-1, vectors 25 to 31
+        11'd1352 : rom_q <= 105'h000000000001020007C10152800;   // the autovector for this level -- UM table 6-1, vectors 25 to 31
         11'd1353 : rom_q <= 105'h000003000001020006410152800;   // a spurious interrupt -- vector 24
         11'd1354 : rom_q <= 105'h0000000000010400038101530AA;   // the frame carries the address of the next instruction -- UM table 6-5
         11'd1355 : rom_q <= 105'h000000000000927003C10121000;   // supervisor, and no tracing of the handler -- UM 6.1 step one again; the copy the frame carries was taken above
@@ -2022,11 +2022,11 @@ module rd68021_ucode_rom (
         11'd1948 : rom_q <= 105'h1400000000010000025189E7400;   // ... written there
         11'd1949 : rom_q <= 105'h10000000000110000E810123000;   // and the stack pointer is where the frame begins
         11'd1950 : rom_q <= 105'h000000000000880003C101E7C00;   // a copy of the status register as it was
-        11'd1951 : rom_q <= 105'h100000000000927BE3C101E8000;   // the mask goes up to this level
+        11'd1951 : rom_q <= 105'h000000000000927BE3C101E8000;   // the mask goes up to this level
         11'd1952 : rom_q <= 105'h1002000000010000000A05E8D0A;   // the acknowledge cycle
         11'd1953 : rom_q <= 105'h1000000000010000000101E9112;   // ... or nobody answered
         11'd1954 : rom_q <= 105'h1000000000010200080101E9400;   // the device supplied a vector number
-        11'd1955 : rom_q <= 105'h100000000001020007C101E9400;   // the autovector
+        11'd1955 : rom_q <= 105'h000000000001020007C101E9400;   // the autovector
         11'd1956 : rom_q <= 105'h0000030000010200064101E9400;   // a spurious interrupt
         11'd1957 : rom_q <= 105'h0000000000010000000101ED8AA;   // the master stack?
         11'd1958 : rom_q <= 105'h000000000000927003C101E9C00;   // supervisor, and no tracing of the handler

@@ -71,7 +71,7 @@ package rd68021_frame_pkg;
   // ==========================================================================
   // This design's own state, in the long frame's internal words
   //
-  // 492 bits available, 350 used, 8 words spare. Recompute this whenever
+  // 492 bits available, 353 used, 8 words spare. Recompute this whenever
   // something is added: doc/checkpoint.md carries the same table, printed from
   // the same source.
   // ==========================================================================
@@ -144,6 +144,9 @@ package rd68021_frame_pkg;
   localparam int OFF_I_POSTED    = 'h08;   //  1 bits, the faulted access was a posted write, which RTE reruns by itself
   localparam int I_POSTED_HI     = 5;
   localparam int I_POSTED_LO     = 5;
+  localparam int OFF_I_IRQLVL    = 'h08;   //  3 bits, the level of the interrupt being taken
+  localparam int I_IRQLVL_HI     = 12;
+  localparam int I_IRQLVL_LO     = 10;
 
 endpackage
 
