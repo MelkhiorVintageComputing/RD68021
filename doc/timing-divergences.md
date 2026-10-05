@@ -111,6 +111,23 @@ microcode now follows rather than a special case:
   slower for it: `RTS` 8 to 9, because its setup's `PEA` now leaves the push
   still on the bus when RTS reads it back -- the overlap moves the wait, it
   does not add one, and PEA's own row is two faster.
+- **The coprocessor dialogue.** RD68884, an MC68881 replica, measured
+  control-register moves, FMOVEM, the conditionals and FSAVE/FRESTORE at 1.5
+  to 2 times MC68881UM's counts, every clock of it between bus cycles. Twelve
+  rows against the scripted coprocessor now measure the processor's own share,
+  and it went from 800 clocks to 533, against 584 for MC68881UM's totals with
+  the FPU's own time in them (`doc/coprocessor.md`):
+  - the primitive decoder serves the PC bit, every case of the null
+    primitive, the instruction's effective address and the common lengths,
+    so that a primitive goes straight to the handler for its shape;
+  - a primitive ends on one question, CPAGAIN;
+  - CIR writes are posted, as data writes are;
+  - FMOVEM.X, FMOVEM of the control registers and the four-byte transfers are
+    unrolled, a long word per memory access and CIR access;
+  - FSAVE and FRESTORE take three microwords a long word, not four.
+
+  RTE into a dialogue 67 to 63, BFINS to memory 17 to 14. None of it costs a
+  clock -- `doc/size-and-speed.md`.
 
 ---
 

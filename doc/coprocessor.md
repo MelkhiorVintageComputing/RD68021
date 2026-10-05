@@ -34,11 +34,32 @@ register is read next, which way an operand moves, and whether the effective
 address is evaluated. All of those are decisions that steer the bus. So the
 primitive is held in `cprim` and decoded in hardware into a micro-address,
 `rd68021_cpdec_rom`, reached with `seq = CPDEC`. This is the extension-word
-decoder's trick on a different word. Its seventeenth input bit is the
-instruction's category, because most primitives with CA clear, and some
-primitives at all, are protocol violations in a conditional instruction (UM
-table 7-6). Everything the manual leaves undefined is decoded as a protocol
-violation.
+decoder's trick on a different word. Its inputs are twenty-two bits:
+
+- **the category**, because most primitives with CA clear, and some
+  primitives at all, are protocol violations in a conditional instruction
+  (UM table 7-6);
+- **the primitive itself**, all sixteen bits, so that the decoder also
+  serves:
+  - the PC bit, first, through `cp_passpc`, which passes the program counter
+    and clears the bit before dispatching again;
+  - every case of the null primitive: come again, come again with interrupts
+    allowed, a conditional's verdict, finished, not finished;
+  - the length: four bytes (a control register) and twelve (the extended
+    format) have handlers of their own, with no count and no loop;
+- **five bits about the instruction's effective address**: in the class the
+  primitive names (table 7-4), suitable for transferring multiple coprocessor
+  registers (UM 7.4.16), and which of Dn, An, #imm, (An)+, -(An) or the other
+  memory modes it is. A primitive that takes an effective address goes
+  straight to the handler for its kind.
+
+Everything the manual leaves undefined is decoded as a protocol violation.
+The decoder's inputs are all registers -- `cprim` and stage D -- and it costs
+no clock: `doc/size-and-speed.md`.
+
+**The end of a primitive** is one question, `CPAGAIN` -- CA set, or a trace
+pending (UM 7.5.2.5) -- on the primitive's own last microword: back to the
+response CIR, or a release that is the next microword.
 
 **The dialogue's state** is four things, and they are the four that the
 midinstruction frame (UM figure 7-43) saves. That is what lets an interrupt be
@@ -72,6 +93,19 @@ three bytes. The count is a microword constant, so the tail is a branch on the
 low two bits of the count. Every part goes to or from offset $10, which puts it
 on the top lanes of the operand CIR (UM figure 7-21). The bus unit splits any
 part that is misaligned on the memory side, as it does for any operand.
+
+The interface register writes past the first are posted, as data writes are
+(`doc/checkpoint.md` rule 9): their bus error is an ordinary one, and RTE
+reruns it in CPU space. So is a memory write that carries what an operand CIR
+read just returned.
+
+Four and twelve bytes, the shapes an MC68881 asks for most, go through
+unrolled handlers: one memory access and one CIR access per long word.
+- **To the coprocessor:** the read steps the address.
+- **From it:** the write's ALU carries the data, so the CIR read steps the
+  address, into T3 and T2 by turns.
+
+Other lengths use the general loop.
 
 ---
 
@@ -241,6 +275,28 @@ words F-line exceptions. `doc/implementation.md`.
 ## Cycle counts
 
 UM section 8 gives no counts for coprocessor instructions, which depend on the
-coprocessor. It gives one for RTE out of a coprocessor frame, 31 clocks; this
-design takes 75, including the response CIR read that resumes the dialogue.
-`doc/timing-divergences.md`.
+coprocessor. It gives one for RTE out of a coprocessor frame, 31 clocks.
+
+`make cycles` measures twelve instructions against the scripted coprocessor.
+It answers as an MC68881 does, at once and with no time of its own, so the
+rows are the processor's own clocks. MC68881UM tables 8-6, 8-7 and 8-8 are
+listed beside them for scale; they include the FPU's own time, so they are a
+ceiling, not a like-for-like.
+
+| | before | now | MC68881UM, cache case |
+|---|--:|--:|--:|
+| FNOP | 22 | 18 | 18 |
+| FBEQ.W taken / not taken | 25 / 22 | 21 / 18 | 20 / 18 |
+| FSEQ D0 | 26 | 22 | 18 |
+| FMOVE.L D0,FPCR | 34 | 25 | 28 |
+| FMOVE.L FPCR,D0 | 35 | 27 | 31 |
+| FMOVE.L (A0),FPCR | 51 | 29 | 33 + 2 |
+| FMOVEM.L FPcr*3,(A0) | 75 | 45 | 27 + 18 + 2 |
+| FMOVEM.X (A0),FP0-FP2 | 165 | 96 | 35 + 93 + 2 |
+| FMOVEM.X FP0-FP2,-(A7) | 161 | 97 | 37 + 75 + 6 |
+| FSAVE -(A7), idle | 88 | 63 | 52 + 6 |
+| FRESTORE (A7)+, idle | 96 | 72 | 57 + 6 |
+| **the twelve** | **800** | **533** | **584** |
+
+RTE out of a coprocessor frame went from 67 to 63 clocks.
+`doc/timing-divergences.md` has every row.
