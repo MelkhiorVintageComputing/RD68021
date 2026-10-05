@@ -40,7 +40,7 @@ On FPGAs, with the coprocessor interface built and a 30 MHz constraint
 | | Logic | Block memory | Frequency |
 |---|--:|--:|--:|
 | Xilinx Artix-7 xc7a100t | 8,216 LUTs | 6 RAMB36 | 33.7 MHz |
-| Intel Cyclone V 5CSEMA5 | 7,890 ALMs | 21 M10K | 39.9 MHz |
+| Intel Cyclone V 5CSEMA5 | 8,085 ALMs | 21 M10K | 38.6 MHz |
 | Intel MAX 10 10M50 | 18,974 LEs | 26 M9K | 32.5 MHz |
 
 ## Rules the RTL follows

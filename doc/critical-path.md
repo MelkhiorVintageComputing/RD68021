@@ -12,7 +12,7 @@ indexed by the bits the program uses, after the AVEC and RTE fixes:
 | **33.333 ns, 30 MHz** (`scripts/rd68021.xdc`) | **33.40 MHz** (29.94 ns) | +1.70 ns | 7,995 |
 | 30 ns, 33.33 MHz (a trial, not checked in) | **35.94 MHz** (27.82 ns) | +1.30 ns | 7,998 |
 
-The Cyclone V makes 39.86 MHz at 33.333 ns and a MAX 10 10M50 32.51 MHz
+The Cyclone V makes 38.57 MHz at 33.333 ns and a MAX 10 10M50 32.51 MHz (the latter before posted writes)
 (`doc/implementation.md`).
 
 There are no exclusions: static timing is the real answer. The constraint still

@@ -22,12 +22,16 @@ coprocessor interface built:
 
 | | Artix-7 xc7a100t-1 (Vivado) | Cyclone V 5CSEMA5 (Quartus) | MAX 10 10M50DAF484C6GES (Quartus) |
 |---|--:|--:|--:|
-| logic | **7,995 Slice LUTs (12.6 %)** | **7,890 ALMs (25 %)** | **18,974 LEs (38 %)** |
-| registers | 1,874 | 5,869 | 5,525 |
-| block memory | **6 RAMB36** (the microcode store) | **21 M10K**, 210,944 bits (the store) | **26 M9K**, 210,944 bits (the store) |
+| logic | **8,216 LUTs (13.0 %)** | **8,085 ALMs (25 %)** | **18,974 LEs (38 %)** ¹ |
+| registers | 1,880 | 5,876 | 5,525 ¹ |
+| block memory | **6 RAMB36** (the microcode store) | **21 M10K**, 215,040 bits (the store) | **26 M9K**, 210,944 bits (the store) ¹ |
 | distributed RAM | 76 LUTs (the instruction cache) | -- | -- |
 | DSP | 4 (the multiplier) | 3 | 8 9-bit multipliers |
-| **frequency, static** | **33.40 MHz** (29.94 ns) | **39.86 MHz** | **32.51 MHz** (slow 1200 mV 85 °C) |
+| **frequency, static** | **33.68 MHz** (29.69 ns) | **38.57 MHz** | **32.51 MHz** (slow 1200 mV 85 °C) ¹ |
+
+¹ The MAX 10 column is from before posted writes and the coprocessor dialogue
+work (`doc/size-and-speed.md`); it has not been run since. The other two are
+this tree's.
 
 **All three meet 30 MHz on static timing, and the Artix-7 and the Cyclone V the
 MC68020's top speed grade, 33.33 MHz**, and there is no other kind of timing to
@@ -40,7 +44,7 @@ Vivado stops optimising once a constraint is met, so the 60 ns figure measured
 the constraint as much as the design.
 
 **Asked for more**, the Artix-7 gives more: a 30 ns trial of this tree makes
-35.94 MHz, and a 25 ns trial of the tree before the AVEC, RTE and store changes
+36.19 MHz, and a 25 ns trial of the tree before the AVEC, RTE and store changes
 made 41.57 MHz. What limits it there, and what comes next, is in
 `doc/critical-path.md`. The manual has no grade above 33.33 MHz, and the bus
 unit's own timing is the other half of a speed grade: `make timing`
