@@ -4314,6 +4314,16 @@ def _m12_out(first_from):
       cnt='CLRLOW')
 
 
+# Evaluate effective address and transfer data, twelve bytes FROM the
+# coprocessor to memory -- FMOVEM of the three control registers.
+label('cp_ead_wr12')
+u('UM table 7-6: not alterable is a protocol violation',
+  seq='COND', cond='EAUNALT', next='cp_protocol')
+u('evaluate it', call=1, seq='EAMODE')
+u('... and the operand goes there', asrc='EA', alu='A', dst='T2')
+_m12_out('T2')
+u('all twelve bytes', next='cp_next')
+
 label('cp_m12out_ctl')
 u('a control alterable address', call=1, seq='EAMODE')
 u('... which the operands are walked from', asrc='EA', alu='A', dst='T2',
@@ -4439,6 +4449,7 @@ cpprim(_prim('-', '-', '010---', '00000100'), 'cp_ead_post4', 'eadata, (An)+, fo
 cpprim(_prim('-', '-', '-10---'), 'cp_ead_post', 'eadata, (An)+',             ea='1-011')
 cpprim(_prim('-', '-', '010---', '00000100'), 'cp_ead_pre4', 'eadata, -(An), four bytes in', ea='1-100')
 cpprim(_prim('-', '-', '-10---'), 'cp_ead_pre',  'eadata, -(An)',             ea='1-100')
+cpprim(_prim('-', '-', '110---', '00001100'), 'cp_ead_wr12', 'eadata, memory, twelve bytes out', ea='1-101')
 cpprim(_prim('-', '-', '110---'), 'cp_ead_wr',   'eadata, memory, from the coprocessor', ea='1-101')
 cpprim(_prim('-', '-', '010---', '00000100'), 'cp_ead_rd4', 'eadata, memory, four bytes in', ea='1-101')
 cpprim(_prim('-', '-', '010---'), 'cp_ead_calc', 'eadata, memory, to the coprocessor', ea='1-101')
@@ -4606,12 +4617,13 @@ u('the format word first, at the lowest address -- figure 7-14',
   bus='WRITE', fc='DATA', asel='EA', asrc='FWLONG', alu='A', bytes=4)
 u('the state goes in from the top down: its last long word is at EA + length',
   asrc='EA', bsrc='T1', alu='ADD', dst='T2')
+u('none of it?', seq='COND', cond='T1ZERO', next='cp_done')
 label('cp_save_loop')
-u('all of it?', seq='COND', cond='T1ZERO', next='cp_done')
 cir_read('a long word from the operand CIR, and four fewer', CIR_OPERAND, 4,
          asrc='T1', bsrc='FOUR', alu='SUB', dst='T1')
-u('... to memory', bus='WRITE', fc='DATA', asel='T2', asrc='RDATA', alu='A',
-  bytes=4)
+u('... to memory -- and was that the last?', bus='WRITE', fc='DATA',
+  asel='T2', asrc='RDATA', alu='A', bytes=4,
+  seq='COND', cond='T1ZERO', next='cp_done')
 u('... and down', asrc='T2', bsrc='FOUR', alu='SUB', dst='T2',
   next='cp_save_loop')
 
@@ -4624,15 +4636,15 @@ u('... where the frame is', next='cp_rest_fw')
 label('cp_rest_an')
 u('the address register', asrc='AREG', alu='A', dst='EA')
 label('cp_rest_fw')
-u('the format word from memory', bus='READ', fc='EASP', asel='EA', bytes=2)
-u('... kept, for its length -- UM figure 7-18 note 2', asrc='RDATA', alu='A',
-  dst='T1', size='WORD')
+u('the format word from memory, kept for its length -- UM figure 7-18 note 2',
+  bus='READ', fc='EASP', asel='EA', bytes=2,
+  asrc='RDATA', alu='A', dst='T1', size='WORD')
 cir_write('... and written to the restore CIR', CIR_RESTORE, 2, init=True,
           asrc='T1')
 u('no coprocessor', seq='COND', cond='BERR', next='exc_line_f')
 label('cp_rest_rd')
-cir_read('what the coprocessor makes of it', CIR_RESTORE, 2)
-u('... held', asrc='RDATA', alu='A', dst='T0', size='WORD')
+cir_read('what the coprocessor makes of it, held', CIR_RESTORE, 2,
+         asrc='RDATA', alu='A', dst='T0', size='WORD')
 u('not ready: read it again, without servicing interrupts -- UM 7.2.3.2.2',
   seq='COND', cond='FWNOTRDY', next='cp_rest_rd')
 u('invalid', seq='COND', cond='FWBAD', next='cp_format_abort')
@@ -4644,14 +4656,18 @@ u('... and must be a multiple of four -- UM 7.5.2.7', seq='COND',
 u('the length', asrc='FWLEN', alu='A', dst='T1')
 u('the state follows the format word and its reserved word',
   asrc='EA', bsrc='FOUR', alu='ADD', dst='T2')
+u('none of it?', seq='COND', cond='T1ZERO', next='cp_rest_end')
 label('cp_rest_loop')
-u('all of it?', seq='COND', cond='T1ZERO', next='cp_rest_end')
 u('a long word from memory, going up, and four fewer',
   bus='READ', fc='EASP', asel='T2', bytes=4,
   asrc='T1', bsrc='FOUR', alu='SUB', dst='T1')
-cir_write('... to the operand CIR', CIR_OPERAND, 4, asrc='RDATA')
+cir_write('... to the operand CIR -- and was that the last?', CIR_OPERAND, 4,
+          asrc='RDATA', seq='COND', cond='T1ZERO', next='cp_rest_last')
 u('... and up', asrc='T2', bsrc='FOUR', alu='ADD', dst='T2',
   next='cp_rest_loop')
+label('cp_rest_last')
+u('... and past it', asrc='T2', bsrc='FOUR', alu='ADD', dst='T2',
+  next='cp_rest_end')
 label('cp_rest_empty')
 u('the frame is the format word and its reserved word', asrc='EA',
   bsrc='FOUR', alu='ADD', dst='T2')

@@ -209,12 +209,12 @@ ROWS = [
     ('FMOVE.L D0,FPCR',        [], [0xF200, 0x9000],         28, 'MC68881 8-6 28', 25),
     ('FMOVE.L FPCR,D0',        [], [0xF200, 0xB000],         31, 'MC68881 8-6 31', 27),
     ('FMOVE.L (A0),FPCR',      [], [0xF210, 0x9000],         35, 'MC68881 8-6 33 + (An) 2', 29),
-    ('FMOVEM.L FPcr*3,(A0)',   [], [0xF210, 0xBC00],         47, 'MC68881 8-6 27+6n + (An) 2', 54),
+    ('FMOVEM.L FPcr*3,(A0)',   [], [0xF210, 0xBC00],         47, 'MC68881 8-6 27+6n + (An) 2', 45),
     ('FMOVEM.X (A0),FP0-FP2',  [], [0xF210, 0xD0E0],        130, 'MC68881 8-6 35+31n + (An) 2', 96),
     ('FMOVEM.X FP0-FP2,-(A7)', [], [0xF227, 0xE007],        118, 'MC68881 8-6 37+25n + -(An) 6', 97),
-    ('FSAVE -(A7) (idle)',     [], [0xF327],                 58, 'MC68881 8-8 52 + -(An) 6', 70),
+    ('FSAVE -(A7) (idle)',     [], [0xF327],                 58, 'MC68881 8-8 52 + -(An) 6', 63),
     ('FRESTORE (A7)+ (idle)',  [0x9EFC, 0x0018, 0x2F3C, 0x1F18, 0x0000],
-                               [0xF35F],                     63, 'MC68881 8-8 57 + (An)+ 6', 78),
+                               [0xF35F],                     63, 'MC68881 8-8 57 + (An)+ 6', 72),
 ]
 
 # What the scripted coprocessor answers, per pass, for the coprocessor rows:

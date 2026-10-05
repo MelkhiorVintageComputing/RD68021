@@ -21,7 +21,7 @@
 // it forbids in a conditional instruction, lands on the protocol violation --
 // UM 7.5.2.1.
 //
-// 56 ordered patterns became 116 disjoint ones.
+// 57 ordered patterns became 124 disjoint ones.
 
 module rd68021_cpdec_rom (
     input  logic        cond_cat,
@@ -55,7 +55,7 @@ module rd68021_cpdec_rom (
       22'b??0100100?????????????: entry = 12'd1447;   // busy
       22'b?10001000?????????????: entry = 12'd1436;   // null, come again
       22'b?10001001?????????????: entry = 12'd1450;   // null, come again, interrupts allowed
-      22'b10000100??????????????: entry = 12'd1837;   // null in a conditional: the verdict is in TF
+      22'b10000100??????????????: entry = 12'd1848;   // null in a conditional: the verdict is in TF
       22'b00000100???????1??????: entry = 12'd1442;   // null, processing finished
       22'b00000100???????0??????: entry = 12'd1448;   // null, not finished
       22'b0?0000100?????????????: entry = 12'd1454;   // supervisor check
@@ -89,7 +89,15 @@ module rd68021_cpdec_rom (
       22'b0?0010???000000??1?100: entry = 12'd1526;   // eadata, -(An)
       22'b0?0010???0000011?1?100: entry = 12'd1526;   // eadata, -(An)
       22'b0?0010???000001011?100: entry = 12'd1526;   // eadata, -(An)
-      22'b0?0110???????????1?101: entry = 12'd1522;   // eadata, memory, from the coprocessor
+      22'b0?0110???000011001?101: entry = 12'd1776;   // eadata, memory, twelve bytes out
+      22'b0?0110???1???????1?101: entry = 12'd1522;   // eadata, memory, from the coprocessor
+      22'b0?0110???01??????1?101: entry = 12'd1522;   // eadata, memory, from the coprocessor
+      22'b0?0110???001?????1?101: entry = 12'd1522;   // eadata, memory, from the coprocessor
+      22'b0?0110???0001????1?101: entry = 12'd1522;   // eadata, memory, from the coprocessor
+      22'b0?0110???00000???1?101: entry = 12'd1522;   // eadata, memory, from the coprocessor
+      22'b0?0110???000010??1?101: entry = 12'd1522;   // eadata, memory, from the coprocessor
+      22'b0?0110???0000111?1?101: entry = 12'd1522;   // eadata, memory, from the coprocessor
+      22'b0?0110???000011011?101: entry = 12'd1522;   // eadata, memory, from the coprocessor
       22'b0?0010???000001001?101: entry = 12'd1749;   // eadata, memory, four bytes in
       22'b0?0010???1???????1?101: entry = 12'd1480;   // eadata, memory, to the coprocessor
       22'b0?0010???01??????1?101: entry = 12'd1480;   // eadata, memory, to the coprocessor
@@ -102,8 +110,8 @@ module rd68021_cpdec_rom (
       22'b0?0?00001???????0?0???: entry = 12'd1443;   // multiple registers, no such address
       22'b0?000000100001100?1011: entry = 12'd1759;   // multiple registers in, twelve bytes, (An)+
       22'b0?000000100001100?1101: entry = 12'd1757;   // multiple registers in, twelve bytes, control
-      22'b0?010000100001100?1100: entry = 12'd1789;   // multiple registers out, twelve bytes, -(An)
-      22'b0?010000100001100?1101: entry = 12'd1776;   // multiple registers out, twelve bytes, control
+      22'b0?010000100001100?1100: entry = 12'd1800;   // multiple registers out, twelve bytes, -(An)
+      22'b0?010000100001100?1101: entry = 12'd1787;   // multiple registers out, twelve bytes, control
       22'b0?0110???????????1?11?: entry = 12'd1472;   // evaluate effective address and transfer data
       22'b0?0010???1???????1?11?: entry = 12'd1472;   // evaluate effective address and transfer data
       22'b0?0010???01??????1?11?: entry = 12'd1472;   // evaluate effective address and transfer data
@@ -145,10 +153,10 @@ module rd68021_cpdec_rom (
       22'b0?000000100001100?1100: entry = 12'd1682;   // transfer multiple coprocessor registers
       22'b0?000000100001100?100?: entry = 12'd1682;   // transfer multiple coprocessor registers
       22'b0?000000100001100?1010: entry = 12'd1682;   // transfer multiple coprocessor registers
-      22'b0?0?0001??????????????: entry = 12'd1803;   // transfer status register and scanPC
-      22'b??0?11100?????????????: entry = 12'd1814;   // take preinstruction exception
-      22'b??0?11101?????????????: entry = 12'd1816;   // take midinstruction exception
-      22'b??0?11110?????????????: entry = 12'd1818;   // take postinstruction exception
+      22'b0?0?0001??????????????: entry = 12'd1814;   // transfer status register and scanPC
+      22'b??0?11100?????????????: entry = 12'd1825;   // take preinstruction exception
+      22'b??0?11101?????????????: entry = 12'd1827;   // take midinstruction exception
+      22'b??0?11110?????????????: entry = 12'd1829;   // take postinstruction exception
       default: entry = 12'd1446;   // undefined: a protocol violation
     endcase
   end

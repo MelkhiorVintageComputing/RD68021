@@ -297,10 +297,10 @@ overlap with the prefetch of the next instruction, but it is close.
 | `FMOVE.L D0,FPCR` | 28 | MC68881 8-6 28 | 25 | -3 | 33 |
 | `FMOVE.L FPCR,D0` | 31 | MC68881 8-6 31 | 27 | -4 | 35 |
 | `FMOVE.L (A0),FPCR` | 35 | MC68881 8-6 33 + (An) 2 | 29 | -6 | 37 |
-| `FMOVEM.L FPcr*3,(A0)` | 47 | MC68881 8-6 27+6n + (An) 2 | 54 | **+7** | 62 |
+| `FMOVEM.L FPcr*3,(A0)` | 47 | MC68881 8-6 27+6n + (An) 2 | 45 | -2 | 53 |
 | `FMOVEM.X (A0),FP0-FP2` | 130 | MC68881 8-6 35+31n + (An) 2 | 96 | -34 | 104 |
 | `FMOVEM.X FP0-FP2,-(A7)` | 118 | MC68881 8-6 37+25n + -(An) 6 | 97 | -21 | 105 |
-| `FSAVE -(A7) (idle)` | 58 | MC68881 8-8 52 + -(An) 6 | 70 | **+12** | 72 |
-| `FRESTORE (A7)+ (idle)` | 63 | MC68881 8-8 57 + (An)+ 6 | 78 | **+15** | 79 |
+| `FSAVE -(A7) (idle)` | 58 | MC68881 8-8 52 + -(An) 6 | 63 | **+5** | 65 |
+| `FRESTORE (A7)+ (idle)` | 63 | MC68881 8-8 57 + (An)+ 6 | 72 | **+9** | 73 |
 <!-- cycles:end -->
 

@@ -1057,6 +1057,63 @@ module core_cpif_tb;
       check(li == 9, $sformatf("twelve out, %0d: nine operand reads, got %0d", n, li));
     end
 
+    // Twelve bytes FROM the coprocessor to a control address by evaluate
+    // effective address and transfer data -- FMOVEM of the three control
+    // registers -- the second long word's posted write faulted.
+    base_setup();
+    poke_l(32'h0000_0008, HAND);
+    poke_w(CODE + 0,  16'hF210);           // cpGEN (A0)
+    poke_w(CODE + 2,  16'hBC00);
+    poke_w(CODE + 4,  16'h60FE);
+    poke_w(HAND + 0,  16'h4E73);
+    cp.push_resp(16'hB20C);                // CA, from CP, memory alterable, 12
+    cp.push_resp(16'h0802);
+    for (i = 0; i < 3; i = i + 1) cp.push_opnd(32'hC000_0000 + i);
+    for (i = 0; i < 3; i = i + 1) poke_l(DATA + 4 * i, 32'h0);
+    reset_dut();
+    dut.u_seq.areg[0] = DATA;
+    berr_en   = 1'b1;
+    berr_base = DATA + 32'h4;
+    berr_mask = 32'hFFFF_FFFC;
+    run_until(HAND, 3000, reached);
+    check(reached, "twelve out by eadata: the bus error is taken");
+    berr_en = 1'b0;
+    run_until(CODE + 4, 4000, reached);
+    check(reached, "twelve out by eadata: RTE, and the dialogue ends");
+    for (i = 0; i < 3; i = i + 1)
+      check(peek_l(DATA + 4 * i) === 32'hC000_0000 + i,
+            $sformatf("twelve out by eadata: long word %0d", i));
+    li = 0;
+    for (i = 0; i < cp.log_n; i = i + 1) if (cp.log_off[i] == R_OPND) li = li + 1;
+    check(li == 3, $sformatf("twelve out by eadata: three operand reads, got %0d", li));
+
+    // cpSAVE of a six-long-word state to a control address, the state's
+    // third long word's posted write faulted.
+    base_setup();
+    poke_l(32'h0000_0008, HAND);
+    poke_w(CODE + 0,  16'hF310);           // cpSAVE (A0)
+    poke_w(CODE + 2,  16'h60FE);
+    poke_w(HAND + 0,  16'h4E73);
+    cp.push_save(16'h1F18);                // format $1F, 24 bytes
+    for (i = 0; i < 6; i = i + 1) cp.push_opnd(32'h5A00_0000 + i);
+    for (i = 0; i < 7; i = i + 1) poke_l(DATA + 4 * i, 32'h0);
+    reset_dut();
+    dut.u_seq.areg[0] = DATA;
+    berr_en   = 1'b1;
+    berr_base = DATA + 32'h10;
+    berr_mask = 32'hFFFF_FFFC;
+    run_until(HAND, 3000, reached);
+    check(reached, "cpSAVE, faulted: the bus error is taken");
+    berr_en = 1'b0;
+    run_until(CODE + 2, 4000, reached);
+    check(reached, "cpSAVE, faulted: RTE, and it ends");
+    check(peek_l(DATA) === 32'h1F18_0000, "cpSAVE, faulted: the format word");
+    // The state goes in from the top down: the first long word read is the
+    // highest in memory -- figure 7-14.
+    for (i = 0; i < 6; i = i + 1)
+      check(peek_l(DATA + 4 + 4 * i) === 32'h5A00_0000 + (5 - i),
+            $sformatf("cpSAVE, faulted: state long word %0d", i));
+
     base_setup();
     poke_l(32'h0000_0008, HAND);
     poke_w(CODE + 0,  16'hF210);           // cpGEN (A0)
