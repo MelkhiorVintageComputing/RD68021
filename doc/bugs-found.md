@@ -2021,3 +2021,22 @@ with no A7 rule.
 **Stops it coming back:** `core_insn_tb` checks from the operand-access
 recorder that CMP2.B (d16,PC) and BFTST (d16,PC) read in program space, and
 runs CHK2.B (A7),D0 in and out of bounds.
+
+## Post-M13 · MOVEM to -(An) stored An's initial value
+
+**What:** with An in the list, MOVEM to -(An) wrote An as it was before the
+instruction. PRM 4, MOVEM: "For the MC68020 ... if the addressing register is
+also moved to memory, the value written is the initial register value
+decremented by the size of the operation. The MC68000 and MC68010 write the
+initial register value (not decremented)." The core did the MC68010's, and so
+does the Musashi oracle, which is why the sweep never caught it.
+
+**Found by:** RD68031 (its M6 entry), with its sweep and the cputest corpus.
+Here its `core_insn_tb` case failed.
+
+**Fixed by:** the predecrement form's register source, `REGNR`, gives An less
+the operand size when the register it names is the addressing register; An is
+not written until the loop is over, so that is the initial value less two or
+four. The sweep now leaves A3 out of its -(A3) masks (`doc/divergences.md`).
+
+**Stops it coming back:** `core_insn_tb`'s MOVEM.L and MOVEM.W D0-A7,-(A3).

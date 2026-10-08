@@ -768,10 +768,18 @@ module rd68021_seq #(
     else                        regn_val = areg[regn[2:0]];
   end
 
+  // REGNR is the predecrement MOVEM's source, and PRM 4 says what it stores
+  // for the addressing register itself: "for the MC68020 ... the value written
+  // is the initial register value decremented by the size of the operation"
+  // (the MC68000 and MC68010 stored it undecremented). An is not written until
+  // the loop is over, so here it is still the initial value.
+  logic [31:0] regnr_reg;
   always_comb begin
-    if (!regnr[3])               regnr_val = dreg[regnr[2:0]];
-    else if (regnr[2:0] == 3'd7) regnr_val = sp_read;
-    else                         regnr_val = areg[regnr[2:0]];
+    if (!regnr[3])               regnr_reg = dreg[regnr[2:0]];
+    else if (regnr[2:0] == 3'd7) regnr_reg = sp_read;
+    else                         regnr_reg = areg[regnr[2:0]];
+    if (regnr[3] && (regnr[2:0] == rsel)) regnr_val = regnr_reg - opsize_bytes;
+    else                                  regnr_val = regnr_reg;
   end
 
   // Which of the two the destination names. Worked out HERE and not inside the

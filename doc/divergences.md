@@ -330,6 +330,18 @@ emits such a branch, because the manual says not to.
 
 ---
 
+## Musashi stores MOVEM's predecrement register undecremented
+
+With the addressing register in the list, MOVEM to -(An) stores, PRM 4, "for
+the MC68020 ... the initial register value decremented by the size of the
+operation. The MC68000 and MC68010 write the initial register value (not
+decremented)." This core stores the decremented value; Musashi, even as an
+MC68020, stores the MC68010's. The sweep leaves the addressing register out
+of its predecrement masks, and `core_insn_tb` checks MOVEM.L and MOVEM.W
+D0-A7,-(A3) against the manual.
+
+---
+
 ## Musashi reduces BFFFO's register offset modulo 32
 
 `BFFFO <ea>{Dn:w},Dm` puts "the bit offset in the instruction plus the offset

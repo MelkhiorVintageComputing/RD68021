@@ -963,7 +963,12 @@ static void g_movem(void)
             unsigned int pre = mask[m];
             /* registers to memory, and the predecrement form */
             sweep(0x4880 | sz, EA_CTL, N_EA_CTL, 1, &pre, 2, 0);
-            plain2(0x4880 | sz | (4 << 3) | 3, mask[m], 2, 0);
+            /* -(A3) without A3 in the list (bit 4, reversed): with it, PRM 4
+             * stores "the initial register value decremented by the size of
+             * the operation" on the MC68020, and Musashi stores it
+             * undecremented, as an MC68010 does -- doc/divergences.md.
+             * core_insn_tb checks that case. */
+            plain2(0x4880 | sz | (4 << 3) | 3, mask[m] & ~0x0010u, 2, 0);
             /* memory to registers, and the postincrement form */
             sweep(0x4C80 | sz, EA_CTL, N_EA_CTL, 1, &pre, 2, 0);
             plain2(0x4C80 | sz | (3 << 3) | 2, mask[m], 2, 0);
