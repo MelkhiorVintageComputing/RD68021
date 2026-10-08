@@ -1943,3 +1943,18 @@ the two RTE has no use for. Either half of this fix reverted fails it. In
 word; the handler moves a word through a dialogue of its own, and every operand
 after RTE has to be a long word with the right data. That test failed before the
 fix exactly as RD68884 reported.
+
+## Post-M13 · The bus harness left four of the bus unit's inputs floating
+
+**What:** `rd68021_bus_harness.svh` did not connect `req_cpfault`, `req_post`,
+`rst_cancel` or `rst_post`, which iverilog floats to z, so the posted-write
+bookkeeping ran on x in every bus testbench, and they passed anyway.
+
+**Found by:** RD68031, which inherited the harness and found it while
+connecting new ports by name (its `doc/rd68021-inherited-bugs.md`).
+
+**Fixed by:** every input tied to its inactive value, every output named.
+
+**Stops it coming back:** nothing automatic for a testbench: iverilog does not
+warn about an unconnected input. The RTL side is covered by Verilator's
+`PINMISSING` under `make lint`.

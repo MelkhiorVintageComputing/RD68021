@@ -138,6 +138,12 @@ rd68021_biu dut (
     .req_ack (req_ack), .req_last (req_last), .req_rdata (req_rdata),
     .req_end (req_end), .req_fault (req_fault), .req_fault_wr (req_fault_wr),
     .req_dsack (req_dsack),
+    // Every input tied to its inactive value and every output named: iverilog
+    // floats an unconnected input to z, and the posted-write bookkeeping then
+    // ran on x in every bus testbench -- and passed.
+    .req_cpfault (1'b0), .req_post (1'b0),
+    .req_early (), .req_taken (), .post_busy (), .req_fault_post (),
+    .rst_cancel (1'b0), .rst_post (1'b0),
     .flt_addr (flt_addr), .flt_bytes (flt_bytes), .flt_fc (flt_fc),
     .flt_rw (flt_rw), .flt_rmc (flt_rmc), .flt_dob (flt_dob), .flt_dib (flt_dib),
     .rst_op_valid (1'b0), .rst_addr (32'd0), .rst_bytes (3'd0), .rst_fc (3'd0),
