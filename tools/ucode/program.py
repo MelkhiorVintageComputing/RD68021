@@ -3094,11 +3094,14 @@ def exc_here(stem, vec, executed=False):
       asrc='PC_D', alu='A', dst='T1', size='LONG', next='exc_f0')
 
 
-def exc_next(stem, vec, vecsrc='VECOFF'):
-    """Format $2: the next instruction, and this one at +$08."""
+def exc_next(stem, vec, vecsrc='VECOFF', ccr='NONE'):
+    """Format $2: the next instruction, and this one at +$08.
+
+    `ccr` is what the instruction leaves in the codes before the frame copies
+    the status register -- the zero divide's, below."""
     label(stem)
     u('the vector offset',
-      asrc=vecsrc, alu='A', dst='T0', size='LONG', vec=vec)
+      asrc=vecsrc, alu='A', dst='T0', size='LONG', vec=vec, ccr=ccr)
     u('the address of the instruction that caused it',
       asrc='PC_D', alu='A', dst='T2', size='LONG')
     u('and the frame carries the address of the NEXT one',
@@ -3111,7 +3114,9 @@ exc_here('exc_line_f',   11)
 exc_here('exc_priv',      8)
 exc_next('exc_chk',       6)
 exc_next('exc_trapcc',    7)
-exc_next('exc_divzero',   5)
+# PRM 4, DIVU and DIVS: "C -- Always cleared", with no exception for a zero
+# divisor; N, Z and V are undefined then, and are cleared too. X is untouched.
+exc_next('exc_divzero',   5, ccr='CLRNZVC')
 
 # TRAP #n. PRM 4: vector 32 + n, and the frame carries the address of the next
 # instruction, which for a one-word instruction is simply the word after it.

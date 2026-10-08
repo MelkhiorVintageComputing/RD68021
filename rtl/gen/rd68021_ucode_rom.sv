@@ -1263,7 +1263,7 @@ module rd68021_ucode_rom (
         11'd1189 : rom_q <= 105'h000000000001040001010123C00;   // and the frame carries the address of the NEXT one
         11'd1190 : rom_q <= 105'h000000E00001020006410129C00;   // the vector offset
         11'd1191 : rom_q <= 105'h000000000001060003810129400;   // the address of the instruction that caused it
-        11'd1192 : rom_q <= 105'h000000A0000102000641012A400;   // the vector offset
+        11'd1192 : rom_q <= 105'h000000A0002102000641012A400;   // the vector offset
         11'd1193 : rom_q <= 105'h000000000001060003810129400;   // the address of the instruction that caused it
         11'd1194 : rom_q <= 105'h00000000000102000741012AC00;   // the vector offset: 32 plus the four bits in the opcode, times four
         11'd1195 : rom_q <= 105'h000000000001040001010120800;   // and the frame carries the address of the next instruction

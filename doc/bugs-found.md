@@ -2040,3 +2040,19 @@ not written until the loop is over, so that is the initial value less two or
 four. The sweep now leaves A3 out of its -(A3) masks (`doc/divergences.md`).
 
 **Stops it coming back:** `core_insn_tb`'s MOVEM.L and MOVEM.W D0-A7,-(A3).
+
+## Post-M13 · A divide by zero left C as it was
+
+**What:** DIVU and DIVS with a zero divisor took the zero-divide exception
+with the condition codes untouched, so the stacked SR carried a C that was set
+before the instruction. PRM 4: "C -- Always cleared", with no exception for a
+zero divisor (only N, Z and V are "undefined" then).
+
+**Found by:** RD68031 (its M6 entry), with its sweep. Here its `core_insn_tb`
+case failed.
+
+**Fixed by:** the first microword of `exc_divzero`, before the status register
+is copied, clears N, Z, V and C and leaves X (`CLRNZVC`).
+
+**Stops it coming back:** `core_insn_tb`'s DIVU.W #0 with C set reads the
+stacked SR.
