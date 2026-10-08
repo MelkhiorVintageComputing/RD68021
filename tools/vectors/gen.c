@@ -915,6 +915,15 @@ static void g_bitfield(void)
     for (i = 0; i < 8; i++)
         for (j = 0; j < (int)(sizeof XW / sizeof XW[0]); j++) {
             unsigned int xw = XW[j] | 0x3000u;   /* D3 for the four that use one */
+            /* BFFFO with its offset in a register: the result is "the bit
+             * offset in the instruction plus the offset of the first one bit"
+             * (PRM 4), the register's whole value; Musashi adds the offset
+             * reduced modulo 32. The manual decides (doc/manual-
+             * contradictions.md), so these are left to core_insn_tb, which
+             * checks offsets 37 and -27; the immediate offsets, 0 to 31, are
+             * the same either way and stay here. */
+            if (OPS[i] == 0xEDC0u && (XW[j] & 0x0800u))
+                continue;
             plain2(OPS[i] | 0x0003u, xw, NPER, 0);        /* ... on D3 */
         }
 }

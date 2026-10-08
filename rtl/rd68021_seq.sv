@@ -648,14 +648,12 @@ module rd68021_seq #(
       // BFFFO: "the bit offset in the instruction plus the offset of the first
       // one bit", and the field's width when there is none.
       //
-      // For a DATA REGISTER the offset that goes into that sum is the one the
-      // field was actually taken at -- the low five bits -- and not the whole
-      // register. The two are congruent modulo 32, so either serves equally as
-      // an offset into the same field, and doc/manual-contradictions.md records
-      // that the manual does not choose between them.
-      rd68021_ucode_pkg::U_ASRC_BF_FFO:
-        bf_a = ((`UF(SZSEL) == rd68021_ucode_pkg::U_SZSEL_BFREG)
-                ? {27'd0, bf_offset[4:0]} : bf_offset) + {26'd0, bf_ffo};
+      // The whole offset, register field or memory field: PRM 4 sums "the bit
+      // offset in the instruction", which for a register offset is the
+      // register's value, in the range -2^31 to 2^31 - 1. The reduction modulo
+      // 32 is for locating the field, not for this sum (doc/manual-
+      // contradictions.md).
+      rd68021_ucode_pkg::U_ASRC_BF_FFO:     bf_a = bf_offset + {26'd0, bf_ffo};
       rd68021_ucode_pkg::U_ASRC_BF_MERGED:  bf_a = bf_merged_reg;
       rd68021_ucode_pkg::U_ASRC_MULLO:      bf_a = mul_full[31:0];
       rd68021_ucode_pkg::U_ASRC_MULHI:      bf_a = mul_full[63:32];

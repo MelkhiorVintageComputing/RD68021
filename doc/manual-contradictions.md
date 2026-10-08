@@ -182,12 +182,15 @@ later bit-field instruction on the same register and you address the same bits.
 The literal reading of "the bit offset in the instruction" is the whole value;
 the reading that matches how the field was located is the reduced one.
 
-**This core reduces**, for two reasons. A machine that locates the field by
-rotating has the reduced offset in hand and would have to keep the original
-specially to produce the other answer; and the oracle does the same, so the
-sweep can check the instruction rather than step around it. It is recorded here
-rather than in `doc/divergences.md` because it is not a divergence from anything
-the manual says — it is a gap in what it says.
+**This core used to reduce, and no longer does: it adds the instruction's whole
+offset**, reduced modulo 32 only to locate the field. The sentence names "the
+bit offset in the instruction", which for a register offset is the register's
+value, and nothing in the paragraph reduces it. RD68031, forked from this
+design, withdrew the reduced reading first (its own
+`doc/manual-contradictions.md`, entry 14): the cputest corpus, whose generator
+was validated against real processors, agrees with the literal reading, which
+is evidence about the part. `core_insn_tb` checks offsets 37 and -27 and an
+empty field.
 
 **The memory case is not affected.** Nothing is reduced there and the sum is the
 manual's, unambiguously.

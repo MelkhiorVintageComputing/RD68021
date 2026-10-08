@@ -1980,3 +1980,22 @@ here: its instruction sweep and the cputest corpus. Confirmed here by its
 
 **Stops it coming back:** `core_insn_tb`'s CAS.B, CAS.W and CAS2.W failed
 compares, which check the upper bits, and CAS2.L D3:D3.
+
+## Post-M13 · BFFFO summed a register offset modulo 32
+
+**What:** `BFFFO <ea>{Dn:w},Dm` with the offset in a register returned the
+offset modulo 32 plus the bit position. PRM 4 gives "the bit offset in the
+instruction plus the offset of the first one bit", and a register offset is
+"in the range of -2^31 to 2^31 - 1". This was a deliberate reading of a gap in
+the manual (`doc/manual-contradictions.md`), now withdrawn.
+
+**Found by:** RD68031 (its M6 entry), with its sweep and the cputest corpus,
+whose generator was validated against real processors. Here its
+`core_insn_tb` case failed.
+
+**Fixed by:** `BF_FFO` is the whole offset plus the position; the reduction
+stays where it belongs, in locating the field. The Musashi sweep, which
+reduces, no longer runs BFFFO's register-offset forms (`doc/divergences.md`).
+
+**Stops it coming back:** `core_insn_tb`'s BFFFO with offsets 37 and -27, and
+with an empty field.

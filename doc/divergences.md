@@ -330,6 +330,19 @@ emits such a branch, because the manual says not to.
 
 ---
 
+## Musashi reduces BFFFO's register offset modulo 32
+
+`BFFFO <ea>{Dn:w},Dm` puts "the bit offset in the instruction plus the offset
+of the first one bit" in Dm (PRM 4), and a register offset is "in the range of
+-2^31 to 2^31 - 1". This core adds the register's whole value, as RD68031 and
+the cputest corpus do (`doc/manual-contradictions.md`); Musashi adds the value
+reduced modulo 32, which is only how the field is located. The two agree for
+every offset from 0 to 31, so `tools/vectors/gen.c` sweeps BFFFO with its
+immediate offsets only, and `core_insn_tb` checks the register offsets 37 and
+-27 against the manual.
+
+---
+
 ## Musashi leaves C alone when a divide overflows
 
 The third place the oracle has to be corrected, and the clearest of the three,
