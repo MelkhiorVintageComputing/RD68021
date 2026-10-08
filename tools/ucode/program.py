@@ -906,16 +906,22 @@ def link(name, long_disp):
 link('link_w', False)
 link('link_l', True)
 
+# PRM 4, UNLK: "loads the stack pointer from the specified address register,
+# then loads the address register with the long word pulled from the top of
+# the stack". So the address register is the last thing written: for UNLK A7,
+# A7 is the long word itself. (The operation line, read literally, would add
+# four to it; the description and the part agree on the value pulled --
+# doc/manual-contradictions.md.)
 label('unlk')
 u('the stack pointer becomes the frame pointer',
   asrc='AREG', alu='A', dst='T1', size='LONG')
-u('read the frame pointer that was saved there',
-  bus='READ', fc='DATA', asel='T1', bytes=4)
-u('... back into the address register',
+u('the stack pointer is the four bytes past it',
+  asrc='T1', bsrc='FOUR', alu='ADD', dst='SP', size='LONG')
+u('read the frame pointer that was saved there, back into the address '
+  'register -- written only if the read completes',
+  bus='READ', fc='DATA', asel='T1', bytes=4,
   asrc='RDATA', alu='A', dst='AREG_EA', size='LONG')
-u('and the stack pointer is the four bytes past it',
-  asrc='T1', bsrc='FOUR', alu='ADD', dst='SP', size='LONG',
-  pf='ADV', seq='DECODE')
+u('done', pf='ADV', seq='DECODE')
 
 # ==========================================================================
 # BKPT -- PRM 4 and UM 5.4.2

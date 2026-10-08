@@ -286,3 +286,19 @@ it is "the number of bytes of state information, not including the format word a
 associated null word". The MC68881's own frames settle it: its idle frame has length $18
 and is "six long words from the operand CIR" (MC68881 UM 7.5.3.1) -- 24 bytes, not 96.
 
+
+---
+
+## What UNLK A7 leaves in A7
+
+**PRM 4**, UNLK: "Operation: An → SP; (SP) → An; SP + 4 → SP." Read literally
+with An = A7, the last step adds four to the long word just loaded. The
+description says the other order: "Loads the stack pointer from the specified
+address register, then loads the address register with the long word pulled
+from the top of the stack". The stack pointer is stepped as part of the pull,
+and the address register is loaded last. For any An but A7 the two are the same.
+
+**This core follows the description**: A7 is the long word pulled. It is the
+sentence that says what ends up in the address register, and the cputest
+corpus that RD68031 ran agrees with it. This core used to give a third
+answer, the old stack pointer plus four (`doc/bugs-found.md`).

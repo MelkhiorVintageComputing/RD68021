@@ -403,8 +403,8 @@ module rd68021_ucode_rom (
         11'd329  : rom_q <= 105'h000000000401023821810052800;   // ... and the low
         11'd330  : rom_q <= 105'h000000000001101205810043000;   // and the displacement, which is signed and usually negative, makes room on the stack
         11'd331  : rom_q <= 105'h000000000001040004410053000;   // the stack pointer becomes the frame pointer
-        11'd332  : rom_q <= 105'h000000000001360002A13453400;   // read the frame pointer that was saved there / ... back into the address register
-        11'd333  : rom_q <= 105'h000000000801101121C10053801;   // and the stack pointer is the four bytes past it
+        11'd332  : rom_q <= 105'h000000000001101121C10053400;   // the stack pointer is the four bytes past it
+        11'd333  : rom_q <= 105'h000000000001360002A13443000;   // read the frame pointer that was saved there, back into the address register -- written only if the read completes
         11'd334  : rom_q <= 105'h000400000001000000120453C00;   // the breakpoint acknowledge: CPU space type 0, the number on A4-A2, a word
         11'd335  : rom_q <= 105'h100000000001000000010128112;   // nobody had an instruction for it: an illegal instruction -- UM 5.4.2
         11'd336  : rom_q <= 105'h100000000000980002810000C00;   // the word that came back replaces the breakpoint in stage D

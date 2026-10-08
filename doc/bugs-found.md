@@ -2110,3 +2110,19 @@ interface built, `cp_save` and `cp_restore` already tested the S bit first.
 
 **Stops it coming back:** `core_insn_tb`'s user-mode cpSAVE -(A7) and cpRESTORE
 (A7), in both builds (`make sim` and `make sim COPROCESSOR=1`).
+
+## Post-M13 · UNLK A7 left the stack pointer stepped past the long word
+
+**What:** UNLK read the saved frame pointer into An and then wrote SP = An + 4.
+For UNLK A7 the last write won, so A7 ended as the old stack pointer plus four,
+where PRM 4's description makes the address register the last thing loaded
+(`doc/manual-contradictions.md`).
+
+**Found by:** RD68031 (its M6 entry), with the cputest corpus. Here its
+`core_insn_tb` case failed. It was hidden at first: `make sim` prints only the
+first thirty failures of a testbench, and it was the thirty-first.
+
+**Fixed by:** UNLK steps the stack pointer first and loads An last, from the
+read itself.
+
+**Stops it coming back:** `core_insn_tb`'s UNLK A7.
