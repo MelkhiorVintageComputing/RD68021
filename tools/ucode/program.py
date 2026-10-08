@@ -1678,6 +1678,20 @@ opcode('0000---101001---', 'movep_lr', 'MOVEP.L (d16,Ay),Dx')
 opcode('0000---110001---', 'movep_wm', 'MOVEP.W Dx,(d16,Ay)')
 opcode('0000---111001---', 'movep_lm', 'MOVEP.L Dx,(d16,Ay)')
 
+# BTST Dn,#<data>. PRM 4, BTST: the dynamic form's addressing-mode table lists
+# #<data> (mode 111, register 100) -- the only bit instruction that has it, since
+# the other three write their operand back. The operand is a byte, the low half
+# of the word after the opcode (PRM 2, immediate data), so the bit number is
+# taken modulo eight as for any byte operand. Claimed before BTST Dn,<ea>, whose
+# pattern covers it and whose addressing-mode dispatch has no immediate.
+label('btst_d_imm')
+u('the immediate byte, in the low half of the word after the opcode',
+  asrc='STG_C', alu='A', dst='T1', size='WORD', pf='CONSUME')
+u('the bit the register names, modulo eight',
+  asrc='T1', bsrc='BITMASK', alu='AND', ccr='ZBIT', size='BYTE', bitimm=0)
+u('BTST changes nothing', pf='ADV', seq='DECODE')
+opcode('0000---100111100', 'btst_d_imm', 'BTST Dn,#imm')
+
 for _n, _op, _stem in (('BTST', '00', 'btst'), ('BCHG', '01', 'bchg'),
                        ('BCLR', '10', 'bclr'), ('BSET', '11', 'bset')):
     opcode('0000---1' + _op + '000---', _stem + '_d_dn',  _n + ' Dn,Dn')

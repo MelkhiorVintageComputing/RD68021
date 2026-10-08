@@ -2076,3 +2076,18 @@ a byte's step through Ay and Ax, for ABCD and SBCD.
 
 **Stops it coming back:** `core_insn_tb` runs ABCD, ADDX.B, CMPM.B both ways and
 SBCD -(A7),-(A7), and checks each register's step.
+
+## Post-M13 · BTST Dn,#<data> was an illegal instruction
+
+**What:** PRM 4, BTST: the dynamic form's addressing-mode table lists #<data>,
+the only bit instruction that has it. The decoder sent it to the memory form,
+whose addressing-mode dispatch has no immediate, so it took vector 4.
+
+**Found by:** RD68031 (its M6 entry), with the cputest corpus. Here its
+`core_insn_tb` case failed.
+
+**Fixed by:** a pattern for `0000 ddd1 0011 1100` ahead of BTST Dn,<ea>, and
+three microwords: the immediate byte from the low half of the extension word,
+the bit modulo eight, the end.
+
+**Stops it coming back:** `core_insn_tb`'s two BTST Dn,#$A5.
