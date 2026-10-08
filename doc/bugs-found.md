@@ -1999,3 +1999,25 @@ reduces, no longer runs BFFFO's register-offset forms (`doc/divergences.md`).
 
 **Stops it coming back:** `core_insn_tb`'s BFFFO with offsets 37 and -27, and
 with an empty field.
+
+## Post-M13 · CMP2, CHK2 and the read-only bit fields read (d16,PC) in data space; CHK2.B through A7 read the upper bound at A7+2
+
+**What:** CMP2 and CHK2 read their bounds with the function code fixed at data
+space, so `CMP2.B (d16,PC),D2` read program-relative bounds as FC 5, and the
+memory read of BFTST, BFEXTU, BFEXTS and BFFFO did the same; PRM 2: a
+program-counter-relative reference is a program reference. And the step from
+the lower to the upper bound used the operand size with the A7 byte rule, so
+through any mode based on A7 a byte pair was read at A7 and A7+2; the rule is
+for stepping the register through (A7)+ and -(A7), and PRM 4 puts the bounds
+at consecutive operand-sized addresses.
+
+**Found by:** RD68031 (its M6 entries), with its sweep and the cputest corpus.
+Here its `core_insn_tb` cases failed.
+
+**Fixed by:** those reads take `fc = EASP`, the space of the effective address
+under way; CMP2 and CHK2 step between the bounds by `OPBYTES`, the operand size
+with no A7 rule.
+
+**Stops it coming back:** `core_insn_tb` checks from the operand-access
+recorder that CMP2.B (d16,PC) and BFTST (d16,PC) read in program space, and
+runs CHK2.B (A7),D0 in and out of bounds.

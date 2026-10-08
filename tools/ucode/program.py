@@ -2278,14 +2278,18 @@ u('the address of the bounds pair',
   call=1, seq='EAMODE', szsel='IR109')
 u('... and now the extension word can come back',
   asrc='T0', alu='A', dst='XW', size='WORD')
+# The bounds are read in the effective address's own space: (d16,PC) and
+# (d8,PC,Xn) are program references (PRM 2), like any read-only operand. And
+# they sit at consecutive operand-sized addresses: the A7 byte rule is for
+# stepping the register through (A7)+ and -(A7), not for this.
 u('the lower bound',
-  bus='READ', fc='DATA', asel='EA', szsel='IR109')
+  bus='READ', fc='EASP', asel='EA', szsel='IR109')
 u('... widened to thirty-two bits -- PRM 4',
   asrc='RDATA', alu='SX', dst='T1', szsel='IR109')
-u('step past it',
-  asrc='EA', bsrc='OPSIZE', alu='ADD', dst='EA', size='LONG', szsel='IR109')
+u('step past it, by the operand size and nothing else',
+  asrc='EA', bsrc='OPBYTES', alu='ADD', dst='EA', size='LONG', szsel='IR109')
 u('the upper bound',
-  bus='READ', fc='DATA', asel='EA', szsel='IR109')
+  bus='READ', fc='EASP', asel='EA', szsel='IR109')
 u('... likewise',
   asrc='RDATA', alu='SX', dst='T2', szsel='IR109')
 u('an address register is compared whole',
@@ -2404,8 +2408,11 @@ def bitfield(stem, ttt, ins=None, result=None, ccr='BF'):
               asrc='T0', alu='A', dst='XW', size='WORD')
             u('the first byte the field touches -- PRM 4, the offset over eight',
               asrc='EA', bsrc='BF_BYTEOFF', alu='ADD', dst='EA', size='LONG')
+            # In the effective address's own space: BFTST, BFEXTU, BFEXTS
+            # and BFFFO allow the PC-relative modes, which are program
+            # references (PRM 2). For the others it is data space anyway.
             u('read every byte it touches, and no others',
-              bus='READ', fc='DATA', asel='EA', szsel=sz)
+              bus='READ', fc='EASP', asel='EA', szsel=sz)
         else:
             u('the extension word: the field, and where its offset comes from',
               asrc='STG_C', alu='A', dst='XW', size='WORD', pf='CONSUME')

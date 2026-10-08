@@ -699,6 +699,14 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_BSRC_STG_C_U: b_bus = {16'd0, stg_c};
       rd68021_ucode_pkg::U_BSRC_STG_C_S: b_bus = {{16{stg_c[15]}}, stg_c};
       rd68021_ucode_pkg::U_BSRC_OPSIZE:  b_bus = opsize_bytes;
+      // ... and with no A7 rule: CMP2 and CHK2's bounds are at consecutive
+      // operand-sized addresses whatever register the address came from.
+      rd68021_ucode_pkg::U_BSRC_OPBYTES:
+        unique case (eff_size)
+          rd68021_ucode_pkg::U_SIZE_BYTE: b_bus = 32'd1;
+          rd68021_ucode_pkg::U_SIZE_WORD: b_bus = 32'd2;
+          default:                        b_bus = 32'd4;
+        endcase
       rd68021_ucode_pkg::U_BSRC_INDEX:   b_bus = xw_index;
       rd68021_ucode_pkg::U_BSRC_XWDISP8: b_bus = {{24{xw_q[7]}}, xw_q[7:0]};
       rd68021_ucode_pkg::U_BSRC_EA:      b_bus = ea_q;

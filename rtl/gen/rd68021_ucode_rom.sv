@@ -986,9 +986,9 @@ module rd68021_ucode_rom (
         11'd912  : rom_q <= 105'h0000000004008200030100E4400;   // the extension word: the register, and which of the two instructions this is
         11'd913  : rom_q <= 105'h0000000012810000000100E4804;   // the address of the bounds pair
         11'd914  : rom_q <= 105'h0000000000008A00018100E4C00;   // ... and now the extension word can come back
-        11'd915  : rom_q <= 105'h0000000002810490028174E5000;   // the lower bound / ... widened to thirty-two bits -- PRM 4
-        11'd916  : rom_q <= 105'h000000000281141060C100E5400;   // step past it
-        11'd917  : rom_q <= 105'h0000000002810690028174E5800;   // the upper bound / ... likewise
+        11'd915  : rom_q <= 105'h0000000002810490028574E5000;   // the lower bound / ... widened to thirty-two bits -- PRM 4
+        11'd916  : rom_q <= 105'h000000000281141440C100E5400;   // step past it, by the operand size and nothing else
+        11'd917  : rom_q <= 105'h0000000002810690028574E5800;   // the upper bound / ... likewise
         11'd918  : rom_q <= 105'h0000000000010000000100E604A;   // an address register is compared whole
         11'd919  : rom_q <= 105'h0000000002810890100100E6400;   // a data register, only as far as the operand size goes
         11'd920  : rom_q <= 105'h0000000000010800100100E6400;   // all thirty-two bits of it
@@ -1012,7 +1012,7 @@ module rd68021_ucode_rom (
         11'd938  : rom_q <= 105'h0000000010010000000100EAC04;   // the base address
         11'd939  : rom_q <= 105'h0000000000008A00018100EB000;   // ... and now the extension word can come back
         11'd940  : rom_q <= 105'h0000000000011411A0C100EB400;   // the first byte the field touches -- PRM 4, the offset over eight
-        11'd941  : rom_q <= 105'h0400000001C10000000174EB800;   // read every byte it touches, and no others
+        11'd941  : rom_q <= 105'h0400000001C10000000574EB800;   // read every byte it touches, and no others
         11'd942  : rom_q <= 105'h1000000001E5000000010043000;   // the codes come from the field as it was found -- PRM 3.1.6
         11'd943  : rom_q <= 105'h0000000004008A00030100EC000;   // the extension word: the field, and where its offset comes from
         11'd944  : rom_q <= 105'h0000000002250000000100EC400;   // the codes come from the field as it was found -- PRM 3.1.6
@@ -1021,7 +1021,7 @@ module rd68021_ucode_rom (
         11'd947  : rom_q <= 105'h0000000010010000000100ED004;   // the base address
         11'd948  : rom_q <= 105'h0000000000008A00018100ED400;   // ... and now the extension word can come back
         11'd949  : rom_q <= 105'h0000000000011411A0C100ED800;   // the first byte the field touches -- PRM 4, the offset over eight
-        11'd950  : rom_q <= 105'h0400000001C10000000174EDC00;   // read every byte it touches, and no others
+        11'd950  : rom_q <= 105'h0400000001C10000000574EDC00;   // read every byte it touches, and no others
         11'd951  : rom_q <= 105'h1000000001E50000000100EE000;   // the codes come from the field as it was found -- PRM 3.1.6
         11'd952  : rom_q <= 105'h1000000001C144000AC10043000;   // and the result goes to the register the extension word names
         11'd953  : rom_q <= 105'h0000000004008A00030100EE800;   // the extension word: the field, and where its offset comes from
@@ -1032,7 +1032,7 @@ module rd68021_ucode_rom (
         11'd958  : rom_q <= 105'h0000000010010000000100EFC04;   // the base address
         11'd959  : rom_q <= 105'h0000000000008A00018100F0000;   // ... and now the extension word can come back
         11'd960  : rom_q <= 105'h0000000000011411A0C100F0400;   // the first byte the field touches -- PRM 4, the offset over eight
-        11'd961  : rom_q <= 105'h0400000001C10000000174F0800;   // read every byte it touches, and no others
+        11'd961  : rom_q <= 105'h0400000001C10000000574F0800;   // read every byte it touches, and no others
         11'd962  : rom_q <= 105'h1000000001E50000000100F0C00;   // the codes come from the field as it was found -- PRM 3.1.6
         11'd963  : rom_q <= 105'h1000000001C108480AC100F1000;   // what goes back into the field
         11'd964  : rom_q <= 105'h1800000001C1000000017843000;   // the bytes back, with only the field changed
@@ -1043,7 +1043,7 @@ module rd68021_ucode_rom (
         11'd969  : rom_q <= 105'h0000000010010000000100F2804;   // the base address
         11'd970  : rom_q <= 105'h0000000000008A00018100F2C00;   // ... and now the extension word can come back
         11'd971  : rom_q <= 105'h0000000000011411A0C100F3000;   // the first byte the field touches -- PRM 4, the offset over eight
-        11'd972  : rom_q <= 105'h0400000001C10000000174F3400;   // read every byte it touches, and no others
+        11'd972  : rom_q <= 105'h0400000001C10000000574F3400;   // read every byte it touches, and no others
         11'd973  : rom_q <= 105'h1000000001E50000000100F3800;   // the codes come from the field as it was found -- PRM 3.1.6
         11'd974  : rom_q <= 105'h1000000001C144000B010043000;   // and the result goes to the register the extension word names
         11'd975  : rom_q <= 105'h0000000004008A00030100F4000;   // the extension word: the field, and where its offset comes from
@@ -1053,7 +1053,7 @@ module rd68021_ucode_rom (
         11'd979  : rom_q <= 105'h0000000010010000000100F5004;   // the base address
         11'd980  : rom_q <= 105'h0000000000008A00018100F5400;   // ... and now the extension word can come back
         11'd981  : rom_q <= 105'h0000000000011411A0C100F5800;   // the first byte the field touches -- PRM 4, the offset over eight
-        11'd982  : rom_q <= 105'h0400000001C10000000174F5C00;   // read every byte it touches, and no others
+        11'd982  : rom_q <= 105'h0400000001C10000000574F5C00;   // read every byte it touches, and no others
         11'd983  : rom_q <= 105'h1000000001E50000000100F6000;   // the codes come from the field as it was found -- PRM 3.1.6
         11'd984  : rom_q <= 105'h0000000001C10800000100F6400;   // what goes back into the field
         11'd985  : rom_q <= 105'h1800000001C1000000017843000;   // the bytes back, with only the field changed
@@ -1064,7 +1064,7 @@ module rd68021_ucode_rom (
         11'd990  : rom_q <= 105'h0000000010010000000100F7C04;   // the base address
         11'd991  : rom_q <= 105'h0000000000008A00018100F8000;   // ... and now the extension word can come back
         11'd992  : rom_q <= 105'h0000000000011411A0C100F8400;   // the first byte the field touches -- PRM 4, the offset over eight
-        11'd993  : rom_q <= 105'h0400000001C10000000174F8800;   // read every byte it touches, and no others
+        11'd993  : rom_q <= 105'h0400000001C10000000574F8800;   // read every byte it touches, and no others
         11'd994  : rom_q <= 105'h1000000001E50000000100F8C00;   // the codes come from the field as it was found -- PRM 3.1.6
         11'd995  : rom_q <= 105'h1000000001C144000B410043000;   // and the result goes to the register the extension word names
         11'd996  : rom_q <= 105'h0000000004008A00030100F9400;   // the extension word: the field, and where its offset comes from
@@ -1074,7 +1074,7 @@ module rd68021_ucode_rom (
         11'd1000 : rom_q <= 105'h0000000010010000000100FA404;   // the base address
         11'd1001 : rom_q <= 105'h0000000000008A00018100FA800;   // ... and now the extension word can come back
         11'd1002 : rom_q <= 105'h0000000000011411A0C100FAC00;   // the first byte the field touches -- PRM 4, the offset over eight
-        11'd1003 : rom_q <= 105'h0400000001C10000000174FB000;   // read every byte it touches, and no others
+        11'd1003 : rom_q <= 105'h0400000001C10000000574FB000;   // read every byte it touches, and no others
         11'd1004 : rom_q <= 105'h1000000001E50000000100FB400;   // the codes come from the field as it was found -- PRM 3.1.6
         11'd1005 : rom_q <= 105'h0000000001C10848000100FB800;   // what goes back into the field
         11'd1006 : rom_q <= 105'h1800000001C1000000017843000;   // the bytes back, with only the field changed
@@ -1085,7 +1085,7 @@ module rd68021_ucode_rom (
         11'd1011 : rom_q <= 105'h0000000010010000000100FD004;   // the base address
         11'd1012 : rom_q <= 105'h0000000000008A00018100FD400;   // ... and now the extension word can come back
         11'd1013 : rom_q <= 105'h0000000000011411A0C100FD800;   // the first byte the field touches -- PRM 4, the offset over eight
-        11'd1014 : rom_q <= 105'h0400000001C10000000174FDC00;   // read every byte it touches, and no others
+        11'd1014 : rom_q <= 105'h0400000001C10000000574FDC00;   // read every byte it touches, and no others
         11'd1015 : rom_q <= 105'h0000000001C108000A0100FE000;   // what goes back into the field
         11'd1016 : rom_q <= 105'h1000000001E70000000100FE400;   // BFINS sets the codes from the value it is inserting
         11'd1017 : rom_q <= 105'h1800000001C1000000017843000;   // the bytes back, with only the field changed
@@ -1596,8 +1596,8 @@ module rd68021_ucode_rom (
         11'd1522 : rom_q <= 105'h0000000000010000000101699F2;   // UM table 7-6: a write to an address that is not alterable is a protocol violation, even in a class the primitive declared
         11'd1523 : rom_q <= 105'h000000000001000000010172000;   // otherwise as for a read
         11'd1524 : rom_q <= 105'h00000000000114000441017D400;   // the address register is the address
-        11'd1525 : rom_q <= 105'h0000000000013A1444410172400;   // ... and steps on by the length, two for a byte through A7
-        11'd1526 : rom_q <= 105'h0000000000013A1C4441017DC00;   // the address register steps back by the length first
+        11'd1525 : rom_q <= 105'h0000000000013A1464410172400;   // ... and steps on by the length, two for a byte through A7
+        11'd1526 : rom_q <= 105'h0000000000013A1C6441017DC00;   // the address register steps back by the length first
         11'd1527 : rom_q <= 105'h000000000001140004410172400;   // ... and that is the address
         11'd1528 : rom_q <= 105'h00000000000100000001017EA12;   // one, two or four bytes?
         11'd1529 : rom_q <= 105'h000000000001000000010169800;   // no: a protocol violation
@@ -1802,7 +1802,7 @@ module rd68021_ucode_rom (
         11'd1728 : rom_q <= 105'h0000000000010000000101A702A;   // any left?
         11'd1729 : rom_q <= 105'h0000000000010000000101671BA;   // no
         11'd1730 : rom_q <= 105'h0000000008010000000101B0C01;   // released: the scanPC is the next instruction -- UM 7.4.1
-        11'd1731 : rom_q <= 105'h0000000000013A1C644101B1000;   // the address register steps down by one operand
+        11'd1731 : rom_q <= 105'h0000000000013A1C844101B1000;   // the address register steps down by one operand
         11'd1732 : rom_q <= 105'h0000000000010600044101B1400;   // ... and the operand is written up from there
         11'd1733 : rom_q <= 105'h0000000000010000000101B4992;   // four or more to go?
         11'd1734 : rom_q <= 105'h0000000000010000000101AFDAA;   // none?
@@ -1825,8 +1825,8 @@ module rd68021_ucode_rom (
         11'd1751 : rom_q <= 105'h180602000001000002A209671BA;   // ... to the operand CIR
         11'd1752 : rom_q <= 105'h0000000008010000000101B6401;   // released: the scanPC is the next instruction -- UM 7.4.1
         11'd1753 : rom_q <= 105'h0000000000011400044101B6800;   // the address register is the address
-        11'd1754 : rom_q <= 105'h0000000000013A14444101B5800;   // ... and steps on by four
-        11'd1755 : rom_q <= 105'h0000000000013A1C444101B7000;   // the address register steps back by four first
+        11'd1754 : rom_q <= 105'h0000000000013A14644101B5800;   // ... and steps on by four
+        11'd1755 : rom_q <= 105'h0000000000013A1C644101B7000;   // the address register steps back by four first
         11'd1756 : rom_q <= 105'h0000000000011400044101B5800;   // ... and that is the address
         11'd1757 : rom_q <= 105'h0000000010010000000101B7804;   // a control address
         11'd1758 : rom_q <= 105'h000000000001060000C101B8400;   // ... which the operands are walked from
@@ -1874,7 +1874,7 @@ module rd68021_ucode_rom (
         11'd1800 : rom_q <= 105'h0000000000011400044101C2400;   // the address register
         11'd1801 : rom_q <= 105'h0006028000008200029205C2800;   // the register select mask, into T0 -- its ones count the operands
         11'd1802 : rom_q <= 105'h000000000001000000010168022;   // none?
-        11'd1803 : rom_q <= 105'h0000000000013A1C644101C3000;   // the address register steps down by one operand
+        11'd1803 : rom_q <= 105'h0000000000013A1C844101C3000;   // the address register steps down by one operand
         11'd1804 : rom_q <= 105'h0000000000010600044101C3400;   // ... and the operand is written up from there
         11'd1805 : rom_q <= 105'h0406020000010811222205C3800;   // four bytes of the register, and the address after them
         11'd1806 : rom_q <= 105'h180000000001000002A549C3C00;   // ... to memory
@@ -2095,7 +2095,7 @@ module rd68021_ucode_rom (
         11'd2021 : rom_q <= 105'h0000000000010611020101F9800;   // +$10: the effective address
         11'd2022 : rom_q <= 105'h000000000001140002A145F9C00;   // ... read / ... back
         11'd2023 : rom_q <= 105'h0000000000008800029135FA000;   // +$00: the status register / ... held
-        11'd2024 : rom_q <= 105'h000000000001101481C101FA400;   // the stack pointer, past the frame, while it is still this stack
+        11'd2024 : rom_q <= 105'h0000000000011014A1C101FA400;   // the stack pointer, past the frame, while it is still this stack
         11'd2025 : rom_q <= 105'h0000000000009200024101FA800;   // the status register
         11'd2026 : rom_q <= 105'h00000000000154000181016AC00;   // the queue refills from the scanPC
         default:      rom_q <= 105'h000000000001000000010127800;   // the illegal entry

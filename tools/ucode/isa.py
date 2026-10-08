@@ -412,6 +412,7 @@ BSRC = enc(
     'IRQLEVEL',  # the level of the interrupt being taken, for the mask
     'THREE',     # the tail of an operand three bytes long
     'PCBIT',     # $4000: the PC bit of a coprocessor primitive -- UM figure 7-22
+    'OPBYTES',   # the operand size in bytes with no A7 rule: CMP2's bounds
     # UM 7.4.9: an (An)+ or -(An) operand steps the register by its length,
     # and by two for a single byte through A7, "to maintain a word-aligned
     # stack".
