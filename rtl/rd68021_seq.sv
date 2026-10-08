@@ -2405,7 +2405,15 @@ module rd68021_seq #(
             end
           end
           rd68021_ucode_pkg::U_DST_DREG_XQ: dreg[xw_q[14:12]] <= y_reg;
-          rd68021_ucode_pkg::U_DST_DREG_XR: dreg[xw_q[2:0]]   <= y_reg;
+          // At the operand size, as DREG is: CAS and CAS2 put a byte or word
+          // memory operand into Dc's low part only (PRM 4, PRM 2.2). The long
+          // multiplies and divides, the other users, are long word microwords.
+          rd68021_ucode_pkg::U_DST_DREG_XR:
+            unique case (eff_size)
+              rd68021_ucode_pkg::U_SIZE_BYTE: dreg[xw_q[2:0]][7:0]  <= y_reg[7:0];
+              rd68021_ucode_pkg::U_SIZE_WORD: dreg[xw_q[2:0]][15:0] <= y_reg[15:0];
+              default:                        dreg[xw_q[2:0]]       <= y_reg;
+            endcase
           rd68021_ucode_pkg::U_DST_CCR:
             sr_q[4:0] <= y[4:0];
           rd68021_ucode_pkg::U_DST_AREG: begin

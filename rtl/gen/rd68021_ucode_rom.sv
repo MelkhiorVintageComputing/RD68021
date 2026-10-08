@@ -1121,10 +1121,10 @@ module rd68021_ucode_rom (
         11'd1047 : rom_q <= 105'h00100000024100000A817906000;   // the first update goes there
         11'd1048 : rom_q <= 105'h0010000000008A0001C10106400;   // and the second address
         11'd1049 : rom_q <= 105'h001000000001140010010100800;   // ... likewise
-        11'd1050 : rom_q <= 105'h0000000000008A0001810106C00;   // one of them differed: the first extension word again
-        11'd1051 : rom_q <= 105'h000000000241460002010107000;   // the first destination goes into the first compare register
-        11'd1052 : rom_q <= 105'h0000000000008A0001C10107400;   // and the second extension word
-        11'd1053 : rom_q <= 105'h000000000A41460002410107801;   // the second destination into the second compare register
+        11'd1050 : rom_q <= 105'h0000000000008A0001C10106C00;   // one of them differed: the second extension word
+        11'd1051 : rom_q <= 105'h000000000241460002410107000;   // the second destination goes into the second compare register
+        11'd1052 : rom_q <= 105'h0000000000008A0001810107400;   // and the first extension word
+        11'd1053 : rom_q <= 105'h000000000A41460002010107801;   // the first destination into the first compare register, last, so that it is what a shared register holds
         11'd1054 : rom_q <= 105'h000000000400840003010107C00;   // the argument count, which is the word after the opcode, in T1 because the effective address may use T2 and T3
         11'd1055 : rom_q <= 105'h000000001001000000010108004;   // the address of the module descriptor
         11'd1056 : rom_q <= 105'h00000000000102F222A17508400;   // its first long word: the options, the type and the access level / ... held, with the argument count put in the low half the manual reserves, which is where the frame wants it

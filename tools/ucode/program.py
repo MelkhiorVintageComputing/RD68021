@@ -2566,14 +2566,19 @@ label('cas2_fail')
 # "If either comparison fails, the instruction writes the memory operands to
 # the compare operands." Both of them, whichever comparison it was that failed,
 # which is why both were read before either was compared.
-u('one of them differed: the first extension word again',
-  asrc='T0', alu='A', dst='XW', size='WORD')
-u('the first destination goes into the first compare register',
-  asrc='T2', alu='A', dst='DREG_XR', szsel='CAS')
-u('and the second extension word',
+#
+# The SECOND goes first. PRM 4, CAS2, the Dc1 and Dc2 fields: "If Dc1 and Dc2
+# specify the same data register and the comparison fails, memory operand 1 is
+# stored in the data register" -- so operand 1 is the write that lands last.
+u('one of them differed: the second extension word',
   asrc='T1', alu='A', dst='XW', size='WORD')
-u('the second destination into the second compare register',
-  asrc='T3', alu='A', dst='DREG_XR', szsel='CAS', pf='ADV', seq='DECODE')
+u('the second destination goes into the second compare register',
+  asrc='T3', alu='A', dst='DREG_XR', szsel='CAS')
+u('and the first extension word',
+  asrc='T0', alu='A', dst='XW', size='WORD')
+u('the first destination into the first compare register, last, so that it is '
+  'what a shared register holds',
+  asrc='T2', alu='A', dst='DREG_XR', szsel='CAS', pf='ADV', seq='DECODE')
 
 # CAS2 is an immediate-mode encoding of CAS, which CAS cannot use, so it is
 # claimed first -- PRM 8.

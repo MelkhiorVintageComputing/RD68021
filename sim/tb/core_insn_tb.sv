@@ -777,6 +777,346 @@ module core_insn_tb;
           "fast EA: MOVE.W (d16,A1),-(A0) moved the word");
     check(dut.u_seq.sr_q[2] === 1'b1, "fast EA: CMPI.W #3,(d16,A1) found it equal");
 
+    // ======================================================================
+    // Defects RD68031 found in code it inherited from this design
+    // (rd68021-inherited-bugs.md), each checked from the manual -- the cases
+    // are RD68031's core_insn_tb's, which RD68021 may reuse.
+    // ======================================================================
+
+    // ---- A1: CAS and CAS2 write a failed compare at the operand size -----
+    // PRM 4, CAS: "Destination -> Compare Operand"; PRM 2.2, a byte or word
+    // operation changes only the low-order part of a data register.
+    setup();
+    poke_w(DATA, 16'h1900);                // the byte at DATA is $19
+    poke_w(DATA + 4, 16'hAACA);            // the word at DATA+4
+    poke_w(CODE + 0, 16'h227C);            // MOVEA.L #DATA,A1
+    poke_l(CODE + 2, DATA);
+    poke_w(CODE + 6, 16'h243C);            // MOVE.L #$3E05A9F4,D2
+    poke_l(CODE + 8, 32'h3E05_A9F4);
+    poke_w(CODE + 12, 16'h0AD1);           // CAS.B D2,D5,(A1)
+    poke_w(CODE + 14, 16'h0142);
+    poke_w(CODE + 16, 16'h2C02);           // MOVE.L D2,D6
+    poke_w(CODE + 18, 16'h243C);           // MOVE.L #$40848A01,D2
+    poke_l(CODE + 20, 32'h4084_8A01);
+    poke_w(CODE + 24, 16'h5889);           // ADDQ.L #4,A1
+    poke_w(CODE + 26, 16'h0CD1);           // CAS.W D2,D5,(A1)
+    poke_w(CODE + 28, 16'h0142);
+    poke_w(CODE + 30, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 30, 2000, reached);
+    check(reached, "CAS: the program finishes");
+    check(dut.u_seq.dreg[6] === 32'h3E05_A919,
+          "CAS.B: a failed compare replaces only the low byte of Dc (PRM 4, UM 2.2.1)");
+    check(dut.u_seq.dreg[2] === 32'h4084_AACA,
+          "CAS.W: a failed compare replaces only the low word of Dc");
+
+    setup();
+    poke_w(DATA, 16'hFFAD);
+    poke_w(DATA + 4, 16'h5678);
+    poke_w(CODE + 0, 16'h227C);            // MOVEA.L #DATA,A1
+    poke_l(CODE + 2, DATA);
+    poke_w(CODE + 6, 16'h247C);            // MOVEA.L #DATA+4,A2
+    poke_l(CODE + 8, DATA + 4);
+    poke_w(CODE + 12, 16'h243C);           // MOVE.L #$C3000000,D2
+    poke_l(CODE + 14, 32'hC300_0000);
+    poke_w(CODE + 18, 16'h263C);           // MOVE.L #$12340000,D3
+    poke_l(CODE + 20, 32'h1234_0000);
+    poke_w(CODE + 24, 16'h0CFC);           // CAS2.W D2:D3,D4:D5,(A1):(A2)
+    poke_w(CODE + 26, 16'h9102);
+    poke_w(CODE + 28, 16'hA143);
+    poke_w(CODE + 30, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 30, 2000, reached);
+    check(reached, "CAS2.W: the program finishes");
+    check(dut.u_seq.dreg[2] === 32'hC300_FFAD && dut.u_seq.dreg[3] === 32'h1234_5678,
+          "CAS2.W: both compare registers keep their upper words (PRM 4)");
+
+    // ---- A2: BFFFO adds the whole offset, register or memory --------------
+    // PRM 4, BFFFO: "the bit offset in the instruction plus the offset of the
+    // first one bit", with a register offset of -2^31 to 2^31-1.
+    setup();
+    poke_w(CODE + 0, 16'h203C);            // MOVE.L #37,D0
+    poke_l(CODE + 2, 32'd37);
+    poke_w(CODE + 6, 16'h223C);            // MOVE.L #$04000000,D1 (bit offset 5)
+    poke_l(CODE + 8, 32'h0400_0000);
+    poke_w(CODE + 12, 16'hEDC1);           // BFFFO D1{D0:4},D2
+    poke_w(CODE + 14, 16'h2804);
+    poke_w(CODE + 16, 16'h203C);           // MOVE.L #-27,D0 (also 5 modulo 32)
+    poke_l(CODE + 18, 32'hFFFF_FFE5);
+    poke_w(CODE + 22, 16'hEDC1);           // BFFFO D1{D0:4},D3
+    poke_w(CODE + 24, 16'h3804);
+    poke_w(CODE + 26, 16'h7200);           // MOVEQ #0,D1
+    poke_w(CODE + 28, 16'hEDC1);           // BFFFO D1{D0:4},D4 -- no one bit
+    poke_w(CODE + 30, 16'h4804);
+    poke_w(CODE + 32, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 32, 2000, reached);
+    check(reached, "BFFFO: the program finishes");
+    check(dut.u_seq.dreg[2] === 32'd37, "BFFFO Dn{37:4}: the offset is not reduced modulo 32");
+    check(dut.u_seq.dreg[3] === 32'hFFFF_FFE5, "BFFFO Dn{-27:4}: nor is a negative one");
+    check(dut.u_seq.dreg[4] === 32'hFFFF_FFE9,
+          "BFFFO, no bit set: the offset plus the width");
+
+    // ---- A3: CMP2 and the read-only bit fields read (d16,PC) in program
+    // space -- UM 2.2 and PRM 2, "a program space reference".
+    setup();
+    poke_w(DATA, 16'h1020);                // CMP2.B bounds $10..$20
+    poke_w(DATA + 8, 16'h8000);
+    poke_w(CODE + 0, 16'h243C);            // MOVE.L #$15,D2
+    poke_l(CODE + 2, 32'h0000_0015);
+    poke_w(CODE + 6, 16'h00FA);            // CMP2.B (d16,PC),D2
+    poke_w(CODE + 8, 16'h2000);
+    poke_w(CODE + 10, 16'(DATA - (CODE + 10)));
+    poke_w(CODE + 12, 16'hE8FA);           // BFTST (d16,PC){0:8}
+    poke_w(CODE + 14, 16'h0008);
+    poke_w(CODE + 16, 16'(DATA + 8 - (CODE + 16)));
+    poke_w(CODE + 18, 16'h60FE);
+    reset_dut();
+    nacc = 0;
+    run_until(CODE + 18, 2000, reached);
+    check(reached, "PC-relative CMP2 and BFTST: the program finishes");
+    k = 0;
+    for (int i = 0; i < nacc && i < MAXACC; i++)
+      if ((acc_addr[i] == DATA || acc_addr[i] == DATA + 1 || acc_addr[i] == DATA + 8)
+          && acc_rw[i]) begin
+        k = k + 1;
+        check(acc_prog[i], $sformatf("PC-relative read at %08h is in program space (UM 2.4.11)",
+                                     acc_addr[i]));
+      end
+    check(k == 3, "PC-relative CMP2 and BFTST: two bound reads and one field read");
+
+    // ---- A4: MOVEM to -(An) with An in the list stores An less the size --
+    // PRM 4, MOVEM: "the value written is the initial register value
+    // decremented by the size of the operation" on the MC68020.
+    setup();
+    poke_w(CODE + 0, 16'h267C);            // MOVEA.L #DATA+$100,A3
+    poke_l(CODE + 2, DATA + 32'h100);
+    poke_w(CODE + 6, 16'h48E3);            // MOVEM.L D0-A7,-(A3)
+    poke_w(CODE + 8, 16'hFFFF);
+    poke_w(CODE + 10, 16'h267C);           // MOVEA.L #DATA+$200,A3
+    poke_l(CODE + 12, DATA + 32'h200);
+    poke_w(CODE + 16, 16'h48A3);           // MOVEM.W D0-A7,-(A3)
+    poke_w(CODE + 18, 16'hFFFF);
+    poke_w(CODE + 20, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 20, 4000, reached);
+    check(reached, "MOVEM -(An): the program finishes");
+    check(peek_l(DATA + 32'hEC) === DATA + 32'hFC,
+          "MOVEM.L D0-A7,-(A3): A3 is stored as its initial value less four (PRM 4)");
+    check(peek_w(DATA + 32'h1F6) === 16'(DATA + 32'h1FE),
+          "MOVEM.W D0-A7,-(A3): A3 is stored as its initial value less two");
+    check(dut.u_seq.areg[3] === DATA + 32'h1E0, "MOVEM.W -(A3): A3 left on the last word");
+
+    // ---- A5: a zero divide clears C -- PRM 4, DIVU: "C -- Always cleared"
+    setup();
+    poke_w(CODE + 0, 16'h46FC);            // MOVE #$2719,SR -- X, N and C set
+    poke_w(CODE + 2, 16'h2719);
+    poke_w(CODE + 4, 16'h82FC);            // DIVU.W #0,D1
+    poke_w(CODE + 6, 16'h0000);
+    poke_w(CODE + 8, 16'h60FE);
+    reset_dut();
+    run_until(32'h0000_9000, 2000, reached);
+    check(reached, "DIVU #0: the zero divide is taken");
+    check(peek_w(ISP0 - 6) === 16'h2014, "DIVU #0: format $2, vector 5");
+    got = peek_w(ISP0 - 12);
+    check(got[0] === 1'b0, "DIVU #0: the stacked SR has C clear (PRM 4)");
+    check(got[4] === 1'b1, "DIVU #0: and X as it was");
+
+    // ---- A6: the A7 byte rule belongs to whichever register is A7 ---------
+    // UM 2.4.4 and 2.4.5: a byte through the stack pointer steps it by two.
+    setup();
+    poke_w(CODE + 0, 16'h2C7C);            // MOVEA.L #DATA+$10,A6
+    poke_l(CODE + 2, DATA + 32'h10);
+    poke_w(CODE + 6, 16'hCF0E);            // ABCD -(A6),-(A7)
+    poke_w(CODE + 8, 16'h3C0E);            // MOVE.W A6,D6
+    poke_w(CODE + 10, 16'h3E0F);           // MOVE.W A7,D7
+    poke_w(CODE + 12, 16'hDD0F);           // ADDX.B -(A7),-(A6)
+    poke_w(CODE + 14, 16'h3A0E);           // MOVE.W A6,D5
+    poke_w(CODE + 16, 16'h380F);           // MOVE.W A7,D4
+    poke_w(CODE + 18, 16'hBD0F);           // CMPM.B (A7)+,(A6)+
+    poke_w(CODE + 20, 16'h8F0F);           // SBCD -(A7),-(A7)
+    poke_w(CODE + 22, 16'hBF0E);           // CMPM.B (A6)+,(A7)+
+    poke_w(CODE + 24, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 24, 2000, reached);
+    check(reached, "A7 byte rule: the program finishes");
+    check(dut.u_seq.dreg[6][15:0] === 16'(DATA + 32'hF) && dut.u_seq.dreg[7][15:0] === 16'(ISP0 - 2),
+          "ABCD -(A6),-(A7): A6 down one, A7 down two");
+    check(dut.u_seq.dreg[5][15:0] === 16'(DATA + 32'hE) && dut.u_seq.dreg[4][15:0] === 16'(ISP0 - 4),
+          "ADDX.B -(A7),-(A6): A7 down two, A6 down one");
+    check(dut.u_seq.areg[6] === DATA + 32'h10 && dut.u_seq.isp_q === ISP0 - 4,
+          "CMPM.B both ways and SBCD -(A7),-(A7): each register by its own rule");
+
+    // ---- A7: BTST Dn,#<data> -- PRM 4, BTST: #<data> is a legal operand ----
+    setup();
+    poke_w(CODE + 0, 16'h7202);            // MOVEQ #2,D1
+    poke_w(CODE + 2, 16'h033C);            // BTST D1,#$A5 -- bit 2 is one
+    poke_w(CODE + 4, 16'h00A5);
+    poke_w(CODE + 6, 16'h57C3);            // SEQ D3
+    poke_w(CODE + 8, 16'h7209);            // MOVEQ #9,D1 -- bit 9 mod 8 = 1, zero
+    poke_w(CODE + 10, 16'h033C);           // BTST D1,#$A5
+    poke_w(CODE + 12, 16'h00A5);
+    poke_w(CODE + 14, 16'h57C4);           // SEQ D4
+    poke_w(CODE + 16, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 16, 2000, reached);
+    check(reached, "BTST Dn,#imm: executes, no illegal instruction");
+    check(dut.u_seq.dreg[3][7:0] === 8'h00, "BTST Dn,#imm: bit 2 of $A5 is one");
+    check(dut.u_seq.dreg[4][7:0] === 8'hFF, "BTST Dn,#imm: the number is modulo 8");
+
+    // ---- A8: cpSAVE and cpRESTORE are privileged before anything else ------
+    // UM 7.2.3.3 and 7.2.3.4: in user mode, a privilege violation without
+    // accessing the coprocessor interface -- and so whether or not there is one.
+    for (int w = 0; w < 2; w++) begin
+      setup();
+      poke_l(32'h0000_0020, 32'h0000_0500); // vector 8
+      poke_w(32'h0000_0500, 16'h7E08);      // MOVEQ #8,D7
+      poke_w(32'h0000_0502, 16'h60FE);
+      poke_w(CODE + 0, 16'h207C);           // MOVEA.L #DATA+$40,A0
+      poke_l(CODE + 2, DATA + 32'h40);
+      poke_w(CODE + 6, 16'h4E60);           // MOVE A0,USP
+      poke_w(CODE + 8, 16'h46FC);           // MOVE #$0000,SR -- user mode
+      poke_w(CODE + 10, 16'h0000);
+      poke_w(CODE + 12, w ? 16'hF527 : 16'hF557); // cpSAVE -(A7) / cpRESTORE (A7)
+      poke_w(CODE + 14, 16'h60FE);
+      reset_dut();
+      run_until(32'h0000_0502, 2000, reached);
+      check(reached, w ? "cpSAVE, user mode: a privilege violation"
+                       : "cpRESTORE, user mode: a privilege violation");
+      check(peek_l(ISP0 - 6) === CODE + 12 && peek_w(ISP0 - 2) === 16'h0020,
+            "cpSAVE/cpRESTORE, user mode: format $0, vector 8, at the instruction");
+      check(dut.u_seq.usp_q === DATA + 32'h40, "cpSAVE/cpRESTORE, user mode: A7 untouched");
+    end
+
+    // ---- A9: an effective address the instruction does not have is refused
+    // at decode -- UM 8.1.5 -- before any operand is touched.
+    setup();
+    poke_l(32'h0000_0010, 32'h0000_0500); // vector 4
+    poke_w(32'h0000_0500, 16'h7E04);
+    poke_w(32'h0000_0502, 16'h60FE);
+    poke_w(CODE + 0, 16'h247C);            // MOVEA.L #DATA,A2
+    poke_l(CODE + 2, DATA);
+    poke_w(CODE + 6, 16'h1BDA);            // MOVE.B (A2)+,<111/101>
+    poke_w(CODE + 8, 16'h60FE);
+    reset_dut();
+    run_until(32'h0000_0502, 2000, reached);
+    check(reached, "MOVE.B to destination 111/101: an illegal instruction");
+    check(peek_l(ISP0 - 6) === CODE + 6, "MOVE.B to 111/101: the frame points at it");
+    check(dut.u_seq.areg[2] === DATA, "MOVE.B to 111/101: (A2)+ was never evaluated");
+
+    setup();
+    poke_l(32'h0000_0010, 32'h0000_0500);
+    poke_w(32'h0000_0500, 16'h7E04);
+    poke_w(32'h0000_0502, 16'h60FE);
+    poke_w(CODE + 0, 16'hBF3B);            // EOR.B D7,(d8,PC,Xn)
+    poke_w(CODE + 2, 16'h0000);
+    poke_w(CODE + 4, 16'h60FE);
+    reset_dut();
+    run_until(32'h0000_0502, 2000, reached);
+    check(reached, "EOR.B D7,(d8,PC,Xn): an illegal instruction, not a write");
+    check(peek_l(ISP0 - 6) === CODE, "EOR to a PC-relative destination: at the instruction");
+
+    setup();
+    poke_l(32'h0000_0010, 32'h0000_0500);
+    poke_w(32'h0000_0500, 16'h7E04);
+    poke_w(32'h0000_0502, 16'h60FE);
+    poke_w(CODE + 0, 16'h1240);            // "MOVEA.B D0,A1" -- PRM 4 has none
+    poke_w(CODE + 2, 16'h60FE);
+    reset_dut();
+    run_until(32'h0000_0502, 2000, reached);
+    check(reached, "MOVE.B to An: an illegal instruction");
+
+    // ... and the encodings whose mode the instruction does not have at all:
+    // -(An) for a bit field (control modes only, PRM 4), (An)+ for LEA (PRM 4:
+    // control), and An as a byte operand of ADDQ and ADD (PRM 4: word and long
+    // only). Each an illegal instruction with the register untouched.
+    for (int w = 0; w < 4; w++) begin
+      setup();
+      poke_l(32'h0000_0010, 32'h0000_0500);
+      poke_w(32'h0000_0500, 16'h7E04);
+      poke_w(32'h0000_0502, 16'h60FE);
+      poke_w(CODE + 0, 16'h267C);          // MOVEA.L #DATA+$10,A3
+      poke_l(CODE + 2, DATA + 32'h10);
+      case (w)
+        0: poke_w(CODE + 6, 16'hECE3);     // BFCLR -(A3){..}
+        1: poke_w(CODE + 6, 16'h41DB);     // LEA (A3)+,A0
+        2: poke_w(CODE + 6, 16'h520B);     // ADDQ.B #1,A3
+        default: poke_w(CODE + 6, 16'hD00B); // ADD.B A3,D0
+      endcase
+      poke_w(CODE + 8, 16'h0000);
+      poke_w(CODE + 10, 16'h60FE);
+      reset_dut();
+      run_until(32'h0000_0502, 2000, reached);
+      check(reached && peek_l(ISP0 - 6) === CODE + 6 && dut.u_seq.areg[3] === DATA + 32'h10,
+            $sformatf("illegal mode %0d (BFCLR -(An), LEA (An)+, ADDQ.B An, ADD.B An): vector 4, An untouched", w));
+    end
+
+    // ---- CAS2 with Dc1 = Dc2: PRM 4, "memory operand 1 is stored" ---------
+    setup();
+    poke_l(DATA, 32'h1111_1111);
+    poke_l(DATA + 4, 32'h2222_2222);
+    poke_w(CODE + 0, 16'h227C);            // MOVEA.L #DATA,A1
+    poke_l(CODE + 2, DATA);
+    poke_w(CODE + 6, 16'h247C);            // MOVEA.L #DATA+4,A2
+    poke_l(CODE + 8, DATA + 4);
+    poke_w(CODE + 12, 16'h7600);           // MOVEQ #0,D3
+    poke_w(CODE + 14, 16'h0EFC);           // CAS2.L D3:D3,D4:D5,(A1):(A2)
+    poke_w(CODE + 16, 16'h9103);
+    poke_w(CODE + 18, 16'hA143);
+    poke_w(CODE + 20, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 20, 2000, reached);
+    check(reached && dut.u_seq.dreg[3] === 32'h1111_1111,
+          "CAS2.L with Dc1 = Dc2, failed: the register holds memory operand 1 (PRM 4)");
+
+    // ---- A11: CHK2.B through A7 reads its bounds at A7 and A7+1 -----------
+    // PRM 4, CHK2: the bounds pair, lower first, at consecutive operand-sized
+    // locations; the A7 byte rule is for (A7)+ and -(A7) alone (UM 2.4.4-5).
+    for (int w = 0; w < 2; w++) begin
+      setup();
+      poke_l(32'h0000_0018, 32'h0000_0500); // vector 6
+      poke_w(32'h0000_0500, 16'h60FE);
+      poke_w(CODE + 0, 16'h2E7C);           // MOVEA.L #DATA+$80,A7
+      poke_l(CODE + 2, DATA + 32'h80);
+      poke_w(DATA + 32'h80, 16'h314F);      // bounds $31 .. $4F
+      poke_w(DATA + 32'h82, 16'h7400);      // what A7+2 holds
+      poke_w(CODE + 6, w ? 16'h7040 : 16'h706A); // MOVEQ #$40 / #$6A,D0
+      poke_w(CODE + 8, 16'h00D7);           // CHK2.B (A7),D0
+      poke_w(CODE + 10, 16'h0800);
+      poke_w(CODE + 12, 16'h60FE);
+      reset_dut();
+      run_until(w ? CODE + 12 : 32'h0000_0500, 2000, reached);
+      check(reached, w ? "CHK2.B (A7),D0: $40 is inside $31..$4F, no trap"
+                       : "CHK2.B (A7),D0: $6A is above $4F, vector 6");
+    end
+
+    // ---- Q2 and Q3: LINK A7 and UNLK A7 -----------------------------------
+    // PRM 4, LINK: "SP - 4 -> SP; An -> (SP)" -- the decremented value goes
+    // out. UNLK: "loads the address register with the long word pulled from the
+    // top of the stack" -- for A7, A7 is that long word. doc/manual-
+    // contradictions.md entries 15 and 16.
+    setup();
+    poke_l(DATA + 32'h20, 32'h0000_3000);
+    poke_w(CODE + 0, 16'h2E7C);            // MOVEA.L #DATA+$40,A7
+    poke_l(CODE + 2, DATA + 32'h40);
+    poke_w(CODE + 6, 16'h4E57);            // LINK.W A7,#-8
+    poke_w(CODE + 8, 16'hFFF8);
+    poke_w(CODE + 10, 16'h2C0F);           // MOVE.L A7,D6
+    poke_w(CODE + 12, 16'h2E7C);           // MOVEA.L #DATA+$20,A7
+    poke_l(CODE + 14, DATA + 32'h20);
+    poke_w(CODE + 18, 16'h4E5F);           // UNLK A7
+    poke_w(CODE + 20, 16'h60FE);
+    reset_dut();
+    run_until(CODE + 20, 2000, reached);
+    check(reached, "LINK A7, UNLK A7: the program finishes");
+    check(peek_l(DATA + 32'h3C) === DATA + 32'h3C,
+          "LINK.W A7: pushes the stack pointer after the decrement (PRM 4 operation)");
+    check(dut.u_seq.dreg[6] === DATA + 32'h34, "LINK.W A7,#-8: A7 is the push less eight");
+    check(dut.u_seq.isp_q === 32'h0000_3000,
+          "UNLK A7: A7 is the long word pulled from the stack (PRM 4 description)");
+
+
+
     if (pipe_fails != 0)
       $display("  FAIL: the pipe invariant broke %0d times", pipe_fails);
     $display("core_insn_tb: %0d checks, %0d failed", checks, fails);

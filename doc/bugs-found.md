@@ -1958,3 +1958,25 @@ connecting new ports by name (its `doc/rd68021-inherited-bugs.md`).
 **Stops it coming back:** nothing automatic for a testbench: iverilog does not
 warn about an unconnected input. The RTL side is covered by Verilator's
 `PINMISSING` under `make lint`.
+
+## Post-M13 · CAS and CAS2 wrote a failed compare into the whole data register; CAS2 with one compare register kept operand 2
+
+**What:** when the comparison failed, CAS.B, CAS.W and CAS2.W put the memory
+operand into Dc through `DST_DREG_XR`, which wrote all thirty-two bits: PRM 4,
+"Destination → Compare Operand" at the operation's size, and PRM 2.2, a byte
+or word operation changes only the low-order part of a data register. And a
+failed CAS2 wrote memory operand 1 into Dc1 and then operand 2 into Dc2, so
+with Dc1 = Dc2 the register held operand 2; PRM 4: "If Dc1 and Dc2 specify the
+same data register and the comparison fails, memory operand 1 is stored in the
+data register."
+
+**Found by:** RD68031 (its `doc/bugs-found.md`, M6), in code inherited from
+here: its instruction sweep and the cputest corpus. Confirmed here by its
+`core_insn_tb` cases, which failed.
+
+**Fixed by:** `DST_DREG_XR` writes at the effective size, as `DST_DREG` does
+(its other users, the long multiplies and divides, are long word microwords);
+`cas2_fail` writes Dc2 first and Dc1 last.
+
+**Stops it coming back:** `core_insn_tb`'s CAS.B, CAS.W and CAS2.W failed
+compares, which check the upper bits, and CAS2.L D3:D3.
