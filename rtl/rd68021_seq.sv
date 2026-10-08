@@ -701,6 +701,18 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_BSRC_OPSIZE:  b_bus = opsize_bytes;
       // ... and with no A7 rule: CMP2 and CHK2's bounds are at consecutive
       // operand-sized addresses whatever register the address came from.
+      // The A7 byte rule from the register in bits 11:9 (Ax) -- UM 2.2: a
+      // byte through the stack pointer steps it by two. ADDX, SUBX and CMPM
+      // step Ax by this and Ay by OPSIZE; ABCD and SBCD, byte only, by the two
+      // byte steps.
+      rd68021_ucode_pkg::U_BSRC_OPSIZEW:
+        unique case (eff_size)
+          rd68021_ucode_pkg::U_SIZE_BYTE: b_bus = (wsel == 3'd7) ? 32'd2 : 32'd1;
+          rd68021_ucode_pkg::U_SIZE_WORD: b_bus = 32'd2;
+          default:                        b_bus = 32'd4;
+        endcase
+      rd68021_ucode_pkg::U_BSRC_BSTEP:   b_bus = (rsel == 3'd7) ? 32'd2 : 32'd1;
+      rd68021_ucode_pkg::U_BSRC_BSTEPW:  b_bus = (wsel == 3'd7) ? 32'd2 : 32'd1;
       rd68021_ucode_pkg::U_BSRC_OPBYTES:
         unique case (eff_size)
           rd68021_ucode_pkg::U_SIZE_BYTE: b_bus = 32'd1;

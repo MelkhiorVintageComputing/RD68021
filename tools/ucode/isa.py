@@ -413,6 +413,12 @@ BSRC = enc(
     'THREE',     # the tail of an operand three bytes long
     'PCBIT',     # $4000: the PC bit of a coprocessor primitive -- UM figure 7-22
     'OPBYTES',   # the operand size in bytes with no A7 rule: CMP2's bounds
+    # The A7 byte rule (UM 2.2) belongs to whichever register is A7. OPSIZE
+    # applies it from the effective address's register (bits 2:0, Ay);
+    # OPSIZEW from the one in bits 11:9 (Ax), for the two-register forms.
+    'OPSIZEW',
+    'BSTEP',     # a byte's step through Ay: 1, or 2 for A7 -- ABCD and SBCD
+    'BSTEPW',    # ... and through Ax
     # UM 7.4.9: an (An)+ or -(An) operand steps the register by its length,
     # and by two for a single byte through A7, "to maintain a word-aligned
     # stack".

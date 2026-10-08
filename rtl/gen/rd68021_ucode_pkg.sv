@@ -307,9 +307,12 @@ package rd68021_ucode_pkg;
   localparam logic [5:0] U_BSRC_THREE = 6'd32;
   localparam logic [5:0] U_BSRC_PCBIT = 6'd33;
   localparam logic [5:0] U_BSRC_OPBYTES = 6'd34;
-  localparam logic [5:0] U_BSRC_CPSTEP = 6'd35;
-  localparam logic [5:0] U_BSRC_CPLEN = 6'd36;
-  localparam logic [5:0] U_BSRC_TWENTY = 6'd37;
+  localparam logic [5:0] U_BSRC_OPSIZEW = 6'd35;
+  localparam logic [5:0] U_BSRC_BSTEP = 6'd36;
+  localparam logic [5:0] U_BSRC_BSTEPW = 6'd37;
+  localparam logic [5:0] U_BSRC_CPSTEP = 6'd38;
+  localparam logic [5:0] U_BSRC_CPLEN = 6'd39;
+  localparam logic [5:0] U_BSRC_TWENTY = 6'd40;
 
   localparam logic [5:0] U_ALU_A = 6'd0;
   localparam logic [5:0] U_ALU_B = 6'd1;

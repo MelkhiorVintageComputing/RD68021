@@ -1059,8 +1059,8 @@ def extend_pair(stem, alu, ccr):
       bus='READ', fc='DATA', asel='T0', szsel='IR76')
     u('and hold it',
       asrc='RDATA', alu='A', dst='T2', szsel='IR76')
-    u('the destination register, stepped back',
-      asrc='AREGW', bsrc='OPSIZE', alu='SUB', dst='T1', szsel='IR76')
+    u('the destination register, stepped back -- by its own A7 rule',
+      asrc='AREGW', bsrc='OPSIZEW', alu='SUB', dst='T1', szsel='IR76')
     u('... which is its new value',
       asrc='T1', alu='A', dst='AREG', size='LONG')
     u('read the destination',
@@ -1118,8 +1118,8 @@ u('and hold it',
   asrc='RDATA', alu='A', dst='T2', szsel='IR76')
 u('the destination address, and its register stepped on',
   asrc='AREGW', alu='A', dst='T1', szsel='IR76')
-u('... likewise',
-  asrc='AREGW', bsrc='OPSIZE', alu='ADD', dst='AREG_ADDR', szsel='IR76')
+u('... likewise, by its own A7 rule',
+  asrc='AREGW', bsrc='OPSIZEW', alu='ADD', dst='AREG_ADDR', szsel='IR76')
 u('read the destination',
   bus='READ', fc='DATA', asel='T1', szsel='IR76')
 # Held before it is used: the microword that compares also advances the pipe,
@@ -1977,16 +1977,16 @@ def bcd_pair(stem, alu):
       pf='ADV', seq='DECODE')
 
     label(stem + '_mm')
-    u('the source register, stepped back a byte',
-      asrc='AREG', bsrc='ONE', alu='SUB', dst='T0', size='LONG')
+    u('the source register, stepped back a byte -- two for A7, UM 2.2',
+      asrc='AREG', bsrc='BSTEP', alu='SUB', dst='T0', size='LONG')
     u('... which is its new value',
       asrc='T0', alu='A', dst='AREG_EA', size='LONG')
     u('read the source',
       bus='READ', fc='DATA', asel='T0', bytes=1)
     u('and hold it',
       asrc='RDATA', alu='A', dst='T2', size='BYTE')
-    u('the destination register, stepped back a byte',
-      asrc='AREGW', bsrc='ONE', alu='SUB', dst='T1', size='LONG')
+    u('the destination register, stepped back a byte -- two for A7',
+      asrc='AREGW', bsrc='BSTEPW', alu='SUB', dst='T1', size='LONG')
     u('... which is its new value',
       asrc='T1', alu='A', dst='AREG', size='LONG')
     u('read the destination',

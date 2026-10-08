@@ -2056,3 +2056,23 @@ is copied, clears N, Z, V and C and leaves X (`CLRNZVC`).
 
 **Stops it coming back:** `core_insn_tb`'s DIVU.W #0 with C set reads the
 stacked SR.
+
+## Post-M13 · The A7 byte rule was applied to the wrong register, or to none
+
+**What:** UM 2.2 steps the stack pointer by two for a byte through (A7)+ or
+-(A7). In the two-register memory forms the rule belongs to whichever of Ax and
+Ay is A7. ABCD and SBCD -(Ay),-(Ax) stepped both registers by one, and
+ADDX.B, SUBX.B and CMPM.B stepped Ax by two when Ay was A7 and by one when Ax
+was, because the operand-size source applies the rule from the effective
+address's register field (Ay).
+
+**Found by:** RD68031 (its M6 entry), with the cputest corpus; the sweep's
+`extend` and `bcd` groups never use A7 in these forms. Here its `core_insn_tb`
+case failed.
+
+**Fixed by:** `OPSIZEW`, which applies the rule from the register bits 11:9
+name (Ax), for every Ax step of ADDX, SUBX and CMPM; and `BSTEP` and `BSTEPW`,
+a byte's step through Ay and Ax, for ABCD and SBCD.
+
+**Stops it coming back:** `core_insn_tb` runs ABCD, ADDX.B, CMPM.B both ways and
+SBCD -(A7),-(A7), and checks each register's step.
