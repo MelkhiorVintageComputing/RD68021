@@ -3835,6 +3835,17 @@ def cir_write(comment, off, nbytes, init=False, **kw):
 # access -- "an operation word ... that does not map to one of the valid
 # coprocessor instructions". All of those are the catch-all at the end.
 # --------------------------------------------------------------------------
+# cpSAVE and cpRESTORE built with no coprocessor interface (COPROCESSOR = 0):
+# UM 7.2.3.3 and 7.2.3.4 take the privilege violation "without accessing any
+# of the CIRs", so the check does not depend on there being an interface. In
+# supervisor mode the result is the F-line exception a missing coprocessor's
+# bus error would give (UM 7.5.2.2). rd68021_seq sends the two operation words
+# here when the decode table accepts their effective address.
+label('cp_nocp_priv')
+u('privileged -- UM 7.2.3.3, 7.2.3.4',
+  seq='COND', cond='USER', next='exc_priv')
+u('... and with no coprocessor, an F-line exception', next='exc_line_f')
+
 opcode('1111000---------', 'exc_line_f', 'F-line, CpID 0')
 opcode('1111---000------', 'cp_gen',     'cpGEN')
 opcode('1111---001001---', 'cp_dbcc',    'cpDBcc')

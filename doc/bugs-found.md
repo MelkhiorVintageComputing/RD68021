@@ -2091,3 +2091,22 @@ three microwords: the immediate byte from the low half of the extension word,
 the bit modulo eight, the end.
 
 **Stops it coming back:** `core_insn_tb`'s two BTST Dn,#$A5.
+
+## Post-M13 · cpSAVE and cpRESTORE took an F-line exception in user mode without a coprocessor interface
+
+**What:** built without the interface (`COPROCESSOR = 0`, the default), every
+F-line word went to the F-line exception -- including cpSAVE and cpRESTORE in
+user mode, which UM 7.2.3.3 and 7.2.3.4 make a privilege violation "without
+accessing any of the CIRs": the check comes first, and does not depend on
+there being an interface.
+
+**Found by:** RD68031 (its M6 entry), with the cputest corpus. Here its
+`core_insn_tb` case failed, in the default build.
+
+**Fixed by:** with no interface built, the two operation words go, when the
+decode table accepts their effective address, to `cp_nocp_priv`: a privilege
+violation in user mode and the F-line exception in supervisor mode. With the
+interface built, `cp_save` and `cp_restore` already tested the S bit first.
+
+**Stops it coming back:** `core_insn_tb`'s user-mode cpSAVE -(A7) and cpRESTORE
+(A7), in both builds (`make sim` and `make sim COPROCESSOR=1`).

@@ -162,8 +162,19 @@ module rd68021_seq #(
     if (COPROCESSOR) begin : g_cp_dec
       assign dec_entry = dec_rom_entry;
     end else begin : g_nocp_dec
-      assign dec_entry = (dec_ir[15:12] == 4'hF)
-                         ? rd68021_ucode_pkg::ENTRY_LINE_F : dec_rom_entry;
+      // ... except that cpSAVE and cpRESTORE (types 100 and 101) are
+      // privileged first, and make the check with or without an interface to
+      // talk to: UM 7.2.3.3 and 7.2.3.4. One whose effective address the
+      // table accepts -- its entry is not the F-line one -- goes to
+      // cp_nocp_priv: the privilege violation in user mode, the F-line
+      // exception in supervisor mode.
+      logic nocp_save_rest;
+      assign nocp_save_rest = (dec_ir[15:12] == 4'hF) && (dec_ir[11:9] != 3'b000)
+                           && (dec_ir[8:7] == 2'b10)
+                           && (dec_rom_entry != rd68021_ucode_pkg::ENTRY_LINE_F);
+      assign dec_entry = nocp_save_rest ? rd68021_ucode_pkg::ENTRY_CP_NOCP_PRIV
+                       : (dec_ir[15:12] == 4'hF) ? rd68021_ucode_pkg::ENTRY_LINE_F
+                       : dec_rom_entry;
     end
   endgenerate
 
