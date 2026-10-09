@@ -97,6 +97,7 @@ module rd68021_seq #(
     output logic  [2:0] ckpt_sel,
     output logic [31:0] ckpt_data,
     output logic        ckpt_load,
+    output logic        ckpt_hold,
     input  logic [31:0] ckpt_pc_fetch,
 
     // Cache control -----------------------------------------------------------
@@ -2889,6 +2890,26 @@ module rd68021_seq #(
     else if (retire) resumed_q <= (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_RESUME);
   end
   assign rst_cancel = resumed_q && retire;
+
+  // RTE writes the pipe's fill point before the status register -- it writes
+  // the status register last, because that moves A7 (UM 6.1.12) -- and the
+  // refill must not start before: UM 6.2.1, the rerun prefetch is in "the
+  // program space for the privilege level indicated in the copy of the status
+  // register on the stack". So the pipe fetches nothing from the fill point to
+  // the RESUME, which comes after the status register. A fault in between ends
+  // the hold with the RTE.
+  logic ckpt_hold_q;
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+      ckpt_hold_q <= 1'b0;
+    else if (fault_now)
+      ckpt_hold_q <= 1'b0;
+    else if (commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_FILL))
+      ckpt_hold_q <= 1'b1;
+    else if (commit && (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_RESUME))
+      ckpt_hold_q <= 1'b0;
+  end
+  assign ckpt_hold = ckpt_hold_q;
 
   // UM 6.1.2: "if a bus error occurs during the exception processing for a bus
   // error, address error, or reset ... a double bus fault occurs and the

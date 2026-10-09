@@ -45,6 +45,13 @@ module core_fault_tb;
         && a_o >= ISP0 - 32'h200 && a_o < ISP0)
       user_on_sstack++;
 
+  // The function code of the first fetch from GONE: UM 6.2.1, RTE's rerun
+  // prefetch is in "the program space for the privilege level indicated in
+  // the copy of the status register on the stack".
+  logic  [2:0] fcgone;
+  always @(negedge as_n_o)
+    if (rst_n && as_oe && a_o == GONE && rw_o) fcgone = fc_o;
+
   // An interrupting device drops its request when it is acknowledged.
   always @(negedge as_n_o)
     if (rst_n && fc_o === 3'b111 && a_o[19:16] === 4'hF) ipl_n_i = 3'b111;
@@ -529,11 +536,14 @@ module core_fault_tb;
     check(peek_w(base + 32'h0A) === 16'hF000,
           "resumed into RTS: SSW FC, FB, RC and RB, and nothing else");
     check(peek_l(base + 32'h02) === GONE, "resumed into RTS: +$02 is the jump's target");
+    fcgone  = 3'd0;
     berr_en = 1'b0;
     run_until(32'h0000_0482, 3000, reached);
     check(reached, "resumed into RTS: RTE resumes, and the RTS returns where its stack says");
     check(dut.u_seq.dreg[6] === 32'h0000_0007, "resumed into RTS: the code there ran");
     check(dut.u_seq.usp_q === 32'h0000_1804, "resumed into RTS: the user stack stepped once");
+    check(fcgone === 3'd2,
+          "resumed into RTS: the rerun prefetch in user program space -- UM 6.2.1");
     check(dut.u_seq.isp_q === ISP0, "resumed into RTS: the frame came off");
 
     // ======================================================================

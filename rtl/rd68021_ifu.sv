@@ -75,6 +75,10 @@ module rd68021_ifu #(
     input  logic  [2:0] ckpt_sel,      // rd68021_pkg::CK_*
     input  logic [31:0] ckpt_data,
     input  logic        ckpt_load,
+    // ... and until RTE has written the status register it read, no prefetch:
+    // UM 6.2.1, a rerun prefetch is in "the program space for the privilege
+    // level indicated in the copy of the status register on the stack".
+    input  logic        ckpt_hold,
     output logic [31:0] ckpt_pc_fetch,
 
     // Cache control -----------------------------------------------------------
@@ -168,7 +172,7 @@ module rd68021_ifu #(
 
   logic room;
   assign room = primed_q && (cnt_q != 2'd2) && !pf_odd && !ckpt_busy_q
-             && !scan_now;
+             && !ckpt_hold && !scan_now;
 
   // A word may also go into a full queue that is giving one up on the same
   // edge -- the 2'b11 arm below. Only the push itself looks at that: the pop
@@ -178,7 +182,7 @@ module rd68021_ifu #(
   logic do_flush, do_adv, do_consume, do_pop, auto_load;
   logic room_p;
   assign room_p = primed_q && ((cnt_q != 2'd2) || do_pop) && !pf_odd
-               && !ckpt_busy_q && !scan_now;
+               && !ckpt_busy_q && !ckpt_hold && !scan_now;
 
   logic push;
   assign push = room_p && chr_hit;

@@ -383,6 +383,10 @@ EXEMPT = [
     ('seq', 'rs_rm_q',      '... RM'),
     ('seq', 'rs_rw_q',      '... RW'),
     ('seq', 'rs_space_q',   '... and the address space of the data cycle'),
+    ('seq', 'ckpt_hold_q',  'RTE has written the fill point and not yet the '
+                            'status register, so the pipe may not fetch -- '
+                            'UM 6.2.1. Lives inside one RTE, after its frame '
+                            'has been checked, and a fault ends it'),
     ('seq', 'rupc_q',       'the micro-address RTE will resume at'),
     ('seq', 'rst_addr_q',   'the faulted operand RTE is handing back to the '
                             'bus unit: its address'),

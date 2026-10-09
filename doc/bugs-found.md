@@ -2247,3 +2247,24 @@ the nibble; RTE takes a format error naming itself, below the intact frame,
 whose handler puts it back and RTEs again to finish the faulted read) and its
 "far end" case (the frame's top page goes; RTE faults on `+$5A` with the first
 frame intact, and both finish when the page comes back).
+
+## Post-M13 · RTE's rerun prefetch ran in the handler's program space
+
+**What:** UM 6.2.1: when RTE reruns a prefetch, "the address space for the bus
+cycle is the program space for the privilege level indicated in the copy of the
+status register on the stack". RTE writes the pipe's fill point before the
+status register -- it must write the status register last, because that moves
+A7 -- and the pipe started refilling the moment the fill point was written, in
+the space the status register still named: supervisor program, for a fault
+taken in user mode. A memory system that keeps the spaces apart (a Sun-3's MMU
+does) would refuse the fetch, or answer it from the wrong map.
+
+**Found by:** RD68031 (its M4 entry), in code inherited from here. Confirmed
+here by the check below, which saw function code 6 before the fix.
+
+**Fixed by:** `ckpt_hold`, from the sequencer to the fetch unit: set when RTE
+writes the fill point, cleared when its RESUME, which follows the status
+register, commits, or by a fault. The pipe asks for nothing while it is set.
+
+**Stops it coming back:** `core_fault_tb`'s "resumed into RTS" case records the
+function code of the rerun prefetch of the faulted page, which must be 2.
