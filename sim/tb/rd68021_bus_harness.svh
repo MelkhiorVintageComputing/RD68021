@@ -186,7 +186,11 @@ assign dbus = oe16 ? d16 : 32'bz;
 assign dbus = oe8  ? d8  : 32'bz;
 assign dbus = oew  ? dw  : 32'bz;
 
-assign dsack_n_i = dsack32 & dsack16 & dsack8 & dsackw;
+// `dsack_mask` holds a DSACK bit negated whatever the slaves say, so a test can
+// make one of the two trail the other -- specification 31A's skew.
+logic [1:0] dsack_mask;
+initial dsack_mask = 2'b00;
+assign dsack_n_i = (dsack32 & dsack16 & dsack8 & dsackw) | dsack_mask;
 
 rd68021_slave #(.PORT_BYTES (4), .WAITS (0), .BASE (32'h0000_0000),
                 .MASK (32'hF000_0000)) s32 (

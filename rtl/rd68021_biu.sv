@@ -242,7 +242,7 @@ module rd68021_biu #(
   rd68021_pkg::bus_state_e st_p, st_p_nxt;
   rd68021_pkg::bus_state_e st_n, st_n_nxt;
 
-  logic [1:0] dsack_q;       // the port size sampled at the end of S2
+  logic [1:0] dsack_q;       // the port size, sampled on the edge entering S5
   logic [2:0] end_now;       // how the cycle now ending ended, live
   logic [2:0] req_end_q;     // ... and the copy the sequencer is given
   logic       term_q;        // ... and whether it terminated the cycle at all
@@ -480,8 +480,18 @@ module rd68021_biu #(
   logic [1:0] port_off;      // the address's offset within the port
   logic [2:0] xfer_n;        // bytes this cycle will actually move
 
+  // The port size is taken one clock after the edge that recognised DSACK, at
+  // the falling edge that latches the data -- see the falling-edge block. In
+  // the half clock before that edge (S4, after the rising edge that entered
+  // it) it is the pins themselves, for early_q, the only register clocked on
+  // that edge that reads it; no rising-edge register ever sees this arm,
+  // because st_n is S5 again before the next rising edge.
+  logic [1:0] dsack_port;
+  assign dsack_port = ((st_p == rd68021_pkg::ST_S4) && (st_n != rd68021_pkg::ST_S5))
+                    ? dsack_n_i : dsack_q;
+
   always_comb begin
-    unique case (dsack_q)
+    unique case (dsack_port)
       rd68021_pkg::DSACK_8:  port_bytes = 3'd1;
       rd68021_pkg::DSACK_16: port_bytes = 3'd2;
       rd68021_pkg::DSACK_32: port_bytes = 3'd4;
@@ -490,7 +500,7 @@ module rd68021_biu #(
   end
 
   always_comb begin
-    unique case (dsack_q)
+    unique case (dsack_port)
       rd68021_pkg::DSACK_8:  port_off = 2'd0;
       rd68021_pkg::DSACK_16: port_off = {1'b0, cyc_addr[0]};
       rd68021_pkg::DSACK_32: port_off = cyc_addr[1:0];
@@ -1124,8 +1134,14 @@ module rd68021_biu #(
       bg_n_o <= ~arb_g_of(arb);
 
       // The sample: entering S3, and again at every ST_WL while waiting.
+      //
+      // The cycle terminates on the edge either DSACK is first recognised on
+      // (UM 5.3.1 state 3), but the port size is not taken here: specification
+      // 31A lets the second DSACK trail the first, by up to 15 ns at 16.67 MHz,
+      // and footnote 3 asks only that one of them meet the setup time. The
+      // device holds both until it sees AS negate, so they are taken on the
+      // edge that latches the data, below.
       if (st_n_nxt == rd68021_pkg::ST_S3 || st_n_nxt == rd68021_pkg::ST_WL) begin
-        dsack_q <= dsack_n_i;
         if (berr_s && halt_s) begin
           term_q   <= 1'b1;  term_rty <= 1'b1;               // case 5
         end else if (berr_s) begin
@@ -1152,6 +1168,7 @@ module rd68021_biu #(
       // already in error does not get a second verdict.
       if (st_n_nxt == rd68021_pkg::ST_S5) begin
         d_latched <= d_i;
+        dsack_q   <= dsack_n_i;
         if (!term_err && !term_rty) begin
           if (berr_s && halt_s)   term_rty <= 1'b1;          // case 6
           else if (berr_s)        term_err <= 1'b1;          // case 4

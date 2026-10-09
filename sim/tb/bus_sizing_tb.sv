@@ -218,6 +218,36 @@ module bus_sizing_tb;
       check(cycles == 1, "read through three wait states: one bus cycle");
     end
 
+    // Specification 31A: DSACK0 and DSACK1 may be asserted up to 15 ns apart
+    // at 16.67 MHz, and the second may miss the falling edge that recognises
+    // the first. A 32-bit port whose second DSACK arrives a clock late, just
+    // before the edge that latches the data, is still a 32-bit port: one bus
+    // cycle and the whole long word, whichever of the two comes first.
+    for (int k = 0; k < 2; k++) begin
+      logic [1:0] late;
+      late = (k == 0) ? 2'b10 : 2'b01;
+      fork
+        begin
+          dsack_mask = late;
+          // The other DSACK is recognised on this falling edge ...
+          wait ((dsackw | late) !== 2'b11);
+          @(negedge clk);
+          // ... and the late one arrives just before the next.
+          @(posedge clk);
+          #(CLK_PERIOD / 2.0 - 2.0);
+          dsack_mask = 2'b00;
+        end
+        op_read(32'h3000_0100, 4, got, cycles);
+      join
+      $sformat(what, "DSACK%0d a clock after DSACK%0d (spec 31A): the long word, got %08h",
+               (k == 0) ? 1 : 0, (k == 0) ? 0 : 1, got[31:0]);
+      check(got[31:0] === 32'h70717273, what);
+      $sformat(what, "DSACK%0d a clock after DSACK%0d (spec 31A): one bus cycle, got %0d",
+               (k == 0) ? 1 : 0, (k == 0) ? 0 : 1, cycles);
+      check(cycles == 1, what);
+      repeat (4) @(posedge clk);
+    end
+
     $display("bus_sizing_tb: %0d checks, %0d failures", checks, fails);
     if (fails == 0) $display("PASS: bus_sizing_tb");
     else            $display("FAIL: bus_sizing_tb");

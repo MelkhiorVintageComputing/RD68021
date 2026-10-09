@@ -2418,3 +2418,30 @@ not step.
 request pending starts no cycle; single-stepping a four-cycle operand runs
 exactly one cycle per negation of HALT; and BR is granted on a bus halted with a
 request pending.
+
+## Post-M13 · The port size was read from DSACK on the edge that recognised it
+
+**What:** the bus unit captured DSACK1 and DSACK0 into one flop pair on the
+falling edge that first saw either, and took the port size from that capture.
+Specification 31A lets the second DSACK trail the first (15 ns at 16.67 MHz,
+10 ns above), and its footnote asks only that one of them meet the setup time.
+So a 32-bit port whose second DSACK trailed the first by a legal amount was
+taken as an 8- or 16-bit port: the long word became two bus cycles, the second
+reading the bytes the first had already delivered. The data still came out
+right, but a device with read side effects -- a FIFO, a status register that
+clears on read -- was read twice.
+
+**Found by:** RD68031 (its M3 entry), in code inherited from here. Confirmed
+here by the test below: two bus cycles where the port answered for one, in
+either order of the two DSACKs.
+
+**Fixed by:** the cycle still terminates on the edge either DSACK is first
+recognised on (UM 5.3.1 state 3), but the port size is taken one clock later,
+on the falling edge that latches the data, when both have arrived and the device
+still holds them. In the half clock before it, `early_q` reads the pins
+directly; nothing on a rising edge does.
+
+**Stops it coming back:** `bus_sizing_tb`: a 32-bit port with three wait states
+whose second DSACK arrives a clock after the first, just before the edge that
+latches the data, DSACK0 first and DSACK1 first; one bus cycle and the whole
+long word each time. The harness's `dsack_mask` holds one DSACK off for it.
