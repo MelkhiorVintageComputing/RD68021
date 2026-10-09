@@ -2712,7 +2712,11 @@ module rd68021_seq #(
     if (!rst_n) begin
       df_q      <= 1'b0;
       flt_odd_q <= 1'b0;
-      g0_q      <= 1'b0;
+      // Reset exception processing is a double-bus-fault window from its first
+      // clock: UM 6.1.2, a bus error or address error "during the exception
+      // processing for a bus error, address error, or reset" halts -- the
+      // vector reads and the first instruction's prefetch included.
+      g0_q      <= 1'b1;
       ea_save   <= '0;
       flt_upc   <= '0;
       post_flt_q <= 1'b0;
@@ -2886,12 +2890,17 @@ module rd68021_seq #(
   // attempt to alter the current state of memory. Only an external RESET can
   // restart a processor halted by a double bus fault."
   //
+  // The window is g0_q: exception processing for a bus error, an address error
+  // or reset, up to the first instruction of the handler. Any fault in it
+  // halts -- a data fault, and a prefetch one: the handler's first prefetch
+  // faulted, or odd.
+  //
   // Once set it stays set: the bus unit drives HALT out from it, nothing here
   // retires again, and only the asynchronous reset clears it. Declared at the
   // top of the module, because the stall logic reads it first.
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n)                 dbf_q <= 1'b0;
-    else if (req_fault && g0_q) dbf_q <= 1'b1;
+    else if (fault_now && g0_q) dbf_q <= 1'b1;
   end
   assign dbf = dbf_q;
 

@@ -791,6 +791,47 @@ module core_fault_tb;
     check(dut.u_seq.dbf_q === 1'b1, "double fault: and it is latched");
 
     // ======================================================================
+    // Faults during reset exception processing. UM 6.1.2: "If a bus error or
+    // address error occurs during the exception processing for a bus error,
+    // address error, or reset, the processor halts" -- the vector reads and
+    // the first instruction's prefetch included.
+    // ======================================================================
+    for (int c = 0; c < 3; c++) begin
+      base_setup();
+      case (c)
+        0: begin berr_base = 32'h0; berr_mask = 32'hFFFF_FFF8; end
+        1: poke_l(32'h0000_0004, CODE + 32'd1);
+        default: poke_l(32'h0000_0004, GONE + 32'h100);
+      endcase
+      reset_dut();
+      run_cycles(600);
+      check(dut.u_seq.dbf_q === 1'b1 && halt_n_oe === 1'b1,
+            (c == 0) ? "reset: a bus error reading the reset vector halts -- UM 6.1.2"
+          : (c == 1) ? "reset: an odd initial program counter halts -- UM 6.1.2"
+                     : "reset: a bus error on the first prefetch halts -- UM 6.1.2");
+    end
+
+    // ======================================================================
+    // Faults during exception processing for a bus error, other than on the
+    // stack: the vector points at an odd address, or into the missing page,
+    // and the handler's first prefetch faults before its first instruction
+    // has begun -- UM 6.1.2.
+    // ======================================================================
+    for (int c = 0; c < 2; c++) begin
+      base_setup();
+      poke_w(CODE + 0, 16'h207C);          // MOVEA.L #GONE,A0
+      poke_l(CODE + 2, GONE);
+      poke_w(CODE + 6, 16'h2410);          // MOVE.L (A0),D2 -- faults
+      poke_w(CODE + 8, 16'h60FE);
+      poke_l(32'h0000_0008, (c == 0) ? HAND + 32'd1 : GONE + 32'h100);
+      reset_dut();
+      run_cycles(800);
+      check(dut.u_seq.dbf_q === 1'b1 && halt_n_oe === 1'b1,
+            (c == 0) ? "an odd bus error vector: the address error halts -- UM 6.1.2"
+                     : "a bus error vector into a missing page: the handler's prefetch fault halts -- UM 6.1.2");
+    end
+
+    // ======================================================================
     // The same faults, taken in USER mode -- SunOS's first user process
     // touching its data page. The frame goes on the supervisor stack, in
     // supervisor space, and holds the user's status register.

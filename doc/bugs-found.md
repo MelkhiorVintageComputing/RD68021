@@ -2194,3 +2194,24 @@ the fix. `core_fault_tb`, from RD68031, runs a traced MOVE whose read faults
 (two traces, the MOVE's after it completes, then the next instruction's), and
 the same with an interrupt arriving with the fault (handlers in the order I,
 B, T, T).
+
+## Post-M13 · Reset exception processing was not a double-bus-fault window, and a prefetch fault in one hung
+
+**What:** UM 6.1.2: "If a bus error or address error occurs during the
+exception processing for a bus error, address error, or reset, the processor
+halts." The window, `g0_q`, was opened only by a fault, so a bus error on the
+reset vector read, an odd initial program counter, or a bus error on the first
+instruction's prefetch was taken as an ordinary exception. And inside the
+window only a data fault was a double bus fault: a prefetch fault there -- a
+bus error vector that is odd, or points at a missing page -- neither halted nor
+was taken, and the core hung.
+
+**Found by:** RD68031 (its M8-M9 entry), in code inherited from here.
+Confirmed here by the tests below, all five failing before the fix.
+
+**Fixed by:** `g0_q` comes out of reset set, and `dbf_q` is set by any fault
+inside it (`fault_now`, a data or a prefetch one), not by a data fault alone.
+
+**Stops it coming back:** `core_fault_tb`: a bus error on the reset vector read,
+an odd initial program counter, a bus error on the first prefetch, an odd bus
+error vector and one into the missing page, each checked to halt.
