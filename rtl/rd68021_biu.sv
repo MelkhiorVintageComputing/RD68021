@@ -126,7 +126,7 @@ module rd68021_biu #(
     output logic        as_oe,
     output logic        ds_n_o,
     output logic        ds_oe,
-    output logic        dben_o,
+    output logic        dben_n_o,     // active low -- UM table 3-2
     output logic        dben_oe,
     input  logic  [1:0] dsack_n_i,
     input  logic  [2:0] ipl_n_i,
@@ -613,23 +613,49 @@ module rd68021_biu #(
   end
 
   // ==========================================================================
-  // Two pin windows, declared here because the rising-edge block below uses
-  // as_win and Questa and Vivado both reject a variable read above its own
-  // declaration -- (vlog-2730) and [Synth 8-6901], which scripts/synth.tcl
-  // promotes from an info to an error for exactly this reason. The two lint
-  // front-ends invent an implicit net instead and say nothing.
+  // The strobes, declared here because the rising-edge block below uses as_win
+  // and Questa and Vivado both reject a variable read above its own declaration
+  // -- (vlog-2730) and [Synth 8-6901], which scripts/synth.tcl promotes from an
+  // info to an error for exactly this reason. The two lint front-ends invent an
+  // implicit net instead and say nothing.
   //
-  // ECS: one half clock at the start of every bus cycle. Asserted on the rising
-  // edge entering S0 (specification 6A) and negated on the falling edge entering
-  // S1 (specification 12A), which is the whole of specification 10's width.
-  logic ecs_win;
-  assign ecs_win = (st_p == rd68021_pkg::ST_S0) && (st_n != rd68021_pkg::ST_S1);
+  // EVERY STROBE IS A FLIP-FLOP, NOT A DECODE OF THE STATE. A strobe decoded
+  // from a multi-bit state register glitches whenever two of its bits change on
+  // the same edge and the decode is true of a code in between -- ECS, OCS, DBEN
+  // and the data enable at S2 -> S4. So each pin is the registered value of the
+  // same decode applied to the NEXT state, which is the same waveform from a
+  // flop. A pin that moves on one edge is a flop on that edge; DBEN, which moves
+  // on both, is rd68021_dedge_ff.
+  // ==========================================================================
 
-  // AS: asserted on the falling edge entering S1, negated on the falling edge
-  // entering S5. Purely a function of the negative-edge state.
-  logic as_win;
-  assign as_win = (st_n == rd68021_pkg::ST_S1) || (st_n == rd68021_pkg::ST_S3)
-               || (st_n == rd68021_pkg::ST_WL);
+  // The states AS is asserted in: from the falling edge entering S1 to the
+  // falling edge entering S5.
+  function automatic logic as_set(input rd68021_pkg::bus_state_e st);
+    as_set = (st == rd68021_pkg::ST_S1) || (st == rd68021_pkg::ST_S3)
+          || (st == rd68021_pkg::ST_WL);
+  endfunction
+
+  // DBEN, active high here, as a function of the two states -- UM 5.1.6:
+  // during a read it is asserted one clock after the beginning of the bus
+  // cycle, in S2, and negated as DS is, in S5; during a write it is asserted
+  // with AS and held for the duration of the cycle, through S5.
+  function automatic logic dben_of(input rd68021_pkg::bus_state_e p,
+                                   input rd68021_pkg::bus_state_e n,
+                                   input logic rw);
+    if (rw)
+      dben_of = ((p == rd68021_pkg::ST_S2) || (p == rd68021_pkg::ST_S4)
+                 || (p == rd68021_pkg::ST_WH))
+                && (n != rd68021_pkg::ST_S5);
+    else
+      dben_of = as_set(n)
+                || ((n == rd68021_pkg::ST_S5) && (p == rd68021_pkg::ST_S4));
+  endfunction
+
+  logic as_win;     // AS asserted: a falling-edge register
+  logic ds_q;       // DS asserted: likewise
+  logic ecs_q;      // the rising edge entering S0 has passed
+  logic ocs_q;      // ... and it began an operand
+  logic doe_q;      // write data driven: a rising-edge register
 
   // ==========================================================================
   // Starting a cycle, and starting an operand
@@ -699,6 +725,14 @@ module rd68021_biu #(
 
   // A posted write is outstanding, or RTE has one to rerun.
   assign post_busy = (op_active && op_posted) || rst_self;
+
+  // OCS for a cycle starting at this edge: the first of a new operand, or the
+  // next of one none of whose cycles has finished yet -- op_first as this edge
+  // leaves it.
+  logic first_now;
+  assign first_now = take_rst || take_req || take_fetch
+                  || (op_first && (st_n != rd68021_pkg::ST_S5))
+                  || ((st_n == rd68021_pkg::ST_S5) && op_finishing);
 
   // CPU space synthesises its address from the type field -- UM figure 5-31.
   logic [31:0] cpu_space_addr;
@@ -836,6 +870,9 @@ module rd68021_biu #(
       hiz_q      <= 1'b0;
       rmc_hold   <= 1'b0;
       halt_hold  <= 1'b0;
+      ecs_q      <= 1'b0;
+      ocs_q      <= 1'b0;
+      doe_q      <= 1'b0;
     end else begin
       st_p      <= st_p_nxt;
       req_ack   <= 1'b0;
@@ -877,6 +914,15 @@ module rd68021_biu #(
       hiz_q <= arb_t_of(arb_nxt) && !as_win && !rmc_hold;
 
       halt_hold <= (st_p_nxt == rd68021_pkg::ST_HALT);
+
+      // ECS and OCS from the rising edge entering S0 (specification 6A); write
+      // data from the rising edge entering S2 to the one that ends S5 (UM 5.3.2
+      // state 2, specification 23). cyc_rw is already this cycle's at S2.
+      ecs_q <= (st_p_nxt == rd68021_pkg::ST_S0);
+      ocs_q <= (st_p_nxt == rd68021_pkg::ST_S0) && first_now;
+      doe_q <= !cyc_rw && ((st_p_nxt == rd68021_pkg::ST_S2)
+                           || (st_p_nxt == rd68021_pkg::ST_S4)
+                           || (st_p_nxt == rd68021_pkg::ST_WH));
 
       // The rising edge that ends S5. The cycle is over: take the bytes it moved
       // and advance the residual. Every register the operand owns is written
@@ -1022,8 +1068,19 @@ module rd68021_biu #(
       d_latched <= '0;
       bg_n_o    <= 1'b1;
       early_q   <= 1'b0;
+      as_win    <= 1'b0;
+      ds_q      <= 1'b0;
     end else begin
       st_n <= st_n_nxt;
+
+      // AS from the falling edge entering S1 to the one entering S5. DS on a
+      // read follows it (UM 5.3.1 state 1, "the processor also asserts DS
+      // during S1"); on a write it waits until S3, "indicating that the data on
+      // the data bus is stable" (UM 5.3.2 state 3).
+      as_win <= as_set(st_n_nxt);
+      ds_q   <= cyc_rw ? as_set(st_n_nxt)
+                       : ((st_n_nxt == rd68021_pkg::ST_S3)
+                          || (st_n_nxt == rd68021_pkg::ST_WL));
 
       // Decided on the edge entering S5, which is where Table 5-8's second
       // sample is taken: after it nothing can turn this cycle into a bus error
@@ -1088,41 +1145,42 @@ module rd68021_biu #(
   // ==========================================================================
   // Pins
   //
-  // Each is written as the manual states it, in terms of the two state registers.
-  // Only one of them changes at any instant, so every expression below settles on
-  // exactly one edge.
+  // Each is written as the manual states it, in terms of the two state
+  // registers, and each comes from a flip-flop -- see "The strobes" above.
   // ==========================================================================
 
-  assign ecs_n_o = ~ecs_win;
+  // ECS: one half clock at the start of every bus cycle. Asserted on the rising
+  // edge entering S0 (specification 6A) and negated on the falling edge entering
+  // S1 (specification 12A), which is the whole of specification 10's width.
+  // ecs_q is set only for that half clock, and the one edge in it at which st_n
+  // moves is the one that takes it into S1, so the AND moves once.
+  assign ecs_n_o = ~(ecs_q && (st_n != rd68021_pkg::ST_S1));
 
   // OCS: identical, but only for the first bus cycle of an operand (UM 5.1.1).
-  assign ocs_n_o = ~(ecs_win && op_first);
+  assign ocs_n_o = ~(ocs_q && (st_n != rd68021_pkg::ST_S1));
 
   assign as_n_o = ~as_win;
 
-  // DS: on a read it follows AS (UM 5.3.1 state 1, "the processor also asserts DS
-  // during S1"). On a write it waits until S3, "indicating that the data on the
-  // data bus is stable" (UM 5.3.2 state 3).
-  logic ds_win;
-  assign ds_win = cyc_rw ? as_win
-                         : ((st_n == rd68021_pkg::ST_S3)
-                            || (st_n == rd68021_pkg::ST_WL));
-  assign ds_n_o = ~ds_win;
+  assign ds_n_o = ~ds_q;
 
-  // DBEN: on a read, asserted in S2 and negated in S5. On a write, asserted in S1
-  // and held valid throughout S5. Active high -- it is not an _n signal.
-  logic dben_win;
+  // DBEN, active low (UM table 3-2), from rd68021_dedge_ff: its value after
+  // each edge is dben_of() of the states after that edge. At the rising edge
+  // into S0 it is negated whatever the direction, which is what lets the new
+  // cycle's R/W, latched on that same edge, not matter there.
+  logic dben_q, dben_rise, dben_fall, dben_tp, dben_tn;
   always_comb begin
-    if (cyc_rw) begin
-      dben_win = ((st_p == rd68021_pkg::ST_S2) || (st_p == rd68021_pkg::ST_S4)
-                  || (st_p == rd68021_pkg::ST_WH))
-                 && (st_n != rd68021_pkg::ST_S5);
-    end else begin
-      dben_win = as_win
-                 || ((st_n == rd68021_pkg::ST_S5) && (st_p == rd68021_pkg::ST_S4));
-    end
+    if (st_p_nxt == rd68021_pkg::ST_S0) dben_rise = 1'b0;
+    else                                dben_rise = dben_of(st_p_nxt, st_n, cyc_rw);
+    dben_fall = dben_of(st_p, st_n_nxt, cyc_rw);
   end
-  assign dben_o = dben_win;
+  assign dben_tp = dben_rise ^ dben_q;
+  assign dben_tn = dben_fall ^ dben_q;
+
+  rd68021_dedge_ff #(.RESET_VAL (1'b0)) u_dben (
+      .clk (clk), .rst_n (rst_n), .toggle_p (dben_tp), .toggle_n (dben_tn),
+      .q (dben_q));
+
+  assign dben_n_o = ~dben_q;
 
   assign fc_o    = cyc_fc;
   assign a_o     = cyc_addr;
@@ -1166,10 +1224,7 @@ module rd68021_biu #(
   // Write data is driven from the rising edge entering S2 and held through S5.
   // "When the processor completes a bus cycle with the HALT signal asserted, the
   // data bus is placed in the high-impedance state" -- so no halt term here.
-  assign d_oe = !cyc_rw && !bus_granted
-                && ((st_p == rd68021_pkg::ST_S2)
-                    || (st_p == rd68021_pkg::ST_S4)
-                    || (st_p == rd68021_pkg::ST_WH));
+  assign d_oe = doe_q && !bus_granted;
 
   // The control group is driven except on relinquish. UM 5.5.3 is explicit that
   // halting negates these rather than releasing them, and 5.7.1.4's T is what

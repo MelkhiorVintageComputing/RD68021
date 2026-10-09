@@ -57,7 +57,7 @@ module bus_ruler_tb;
       ocs_r[NTICK-1-t]  = ocs_n_o;
       as_r[NTICK-1-t]   = as_n_o;
       ds_r[NTICK-1-t]   = ds_n_o;
-      dben_r[NTICK-1-t] = dben_o;
+      dben_r[NTICK-1-t] = dben_n_o;    // the pin: active low, UM table 3-2
       rw_r[NTICK-1-t]   = rw_o;
       aoe_r[NTICK-1-t]  = a_oe;
       doe_r[NTICK-1-t]  = d_oe;
@@ -78,8 +78,8 @@ module bus_ruler_tb;
   always @(posedge ds_n_o)   t_ds_hi   = $realtime;
   always @(negedge ecs_n_o)  t_ecs_lo  = $realtime;
   always @(posedge ecs_n_o)  t_ecs_hi  = $realtime;
-  always @(posedge dben_o)   t_dben_lo = $realtime;
-  always @(negedge dben_o)   t_dben_hi = $realtime;
+  always @(negedge dben_n_o) t_dben_lo = $realtime;
+  always @(posedge dben_n_o) t_dben_hi = $realtime;
   always @(rw_o)             t_rw      = $realtime;
   always @(posedge d_oe)     t_dout    = $realtime;
 
@@ -119,7 +119,7 @@ module bus_ruler_tb;
     expect_pattern("read OCS", ocs_r, 7'b0111111);
     expect_pattern("read AS", as_r, 7'b1000011);
     expect_pattern("read DS", ds_r, 7'b1000011);
-    expect_pattern("read DBEN", dben_r, 7'b0011100);
+    expect_pattern("read DBEN", dben_r, 7'b1100011);
     expect_pattern("read R/W", rw_r, 7'b1111111);
     expect_pattern("read A_OE", aoe_r, 7'b1111110);
     expect_pattern("read D_OE", doe_r, 7'b0000000);
@@ -161,7 +161,7 @@ module bus_ruler_tb;
     expect_pattern("write OCS", ocs_r, 7'b0111111);
     expect_pattern("write AS", as_r, 7'b1000011);
     expect_pattern("write DS", ds_r, 7'b1110011);
-    expect_pattern("write DBEN", dben_r, 7'b0111110);
+    expect_pattern("write DBEN", dben_r, 7'b1000001);
     expect_pattern("write R/W", rw_r, 7'b0000000);
     expect_pattern("write A_OE", aoe_r, 7'b1111110);
     expect_pattern("write D_OE", doe_r, 7'b0011110);
@@ -212,7 +212,7 @@ module bus_ruler_tb;
       //                                     tick  0123456
       expect_pattern("waited read ECS", ecs_r, 7'b0111111);
       expect_pattern("waited read AS", as_r, 7'b1000000);  // still asserted
-      expect_pattern("waited read DBEN", dben_r, 7'b0011111);
+      expect_pattern("waited read DBEN", dben_r, 7'b1100000);
       expect_ge("waited read, AS width asserted",
                 t_as_hi - t_as_lo, 100.0);
     end

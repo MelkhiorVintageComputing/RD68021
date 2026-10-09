@@ -38,9 +38,17 @@ way.
 
 Exemptions are named individually in EXEMPT below, with the argument for each, and
 the audit fails if a second one appears. A blanket allowance would defeat the point.
+
+The same netlist answers a second question: is each bus strobe a flip-flop? A
+pin decoded from a multi-bit state register glitches when two of its bits change
+on one edge and the decode is true of a code in between, and no simulation of an
+RTL model shows it. So for each pin in STROBES the audit walks the logic cone
+back to the registers that feed it, and fails if they are not exactly the ones
+named: the strobe's own flop, and nothing of the state it was decoded from.
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -118,6 +126,56 @@ def scan_source(files):
     return bad
 
 
+# Bus pins that must come straight from their own register -- doc/coding-
+# standard.md. The value is the set of flip-flops the pin's cone may reach,
+# by the name of the register's output, and nothing else may be in it.
+STROBES = {
+    'as_n_o':   {'u_biu.as_win'},
+    'ds_n_o':   {'u_biu.ds_q'},
+    # moves on both edges: the two halves of rd68021_dedge_ff
+    'dben_n_o': {'u_biu.u_dben.half_p', 'u_biu.u_dben.half_n'},
+}
+
+
+def strobe_cones(json_path, top):
+    """{pin: set of flip-flop output names its cone reaches}."""
+    with open(json_path) as f:
+        mod = json.load(f)['modules'][top]
+    # The name of a net bit, preferring one that is not yosys's own.
+    names = {}
+    for n, info in mod['netnames'].items():
+        for i, b in enumerate(info['bits']):
+            if isinstance(b, int) and (b not in names or names[b][0].startswith('$')):
+                w = len(info['bits'])
+                names[b] = (n, n if w == 1 else '%s[%d]' % (n, i))
+    driver = {}
+    for cname, c in mod['cells'].items():
+        for port, bits in c['connections'].items():
+            if c.get('port_directions', {}).get(port) == 'output':
+                for b in bits:
+                    if isinstance(b, int):
+                        driver[b] = c
+    cones = {}
+    for pin in STROBES:
+        seen, ffs, todo = set(), set(), list(mod['ports'][pin]['bits'])
+        while todo:
+            b = todo.pop()
+            if not isinstance(b, int) or b in seen:
+                continue
+            seen.add(b)
+            c = driver.get(b)
+            if c is None:
+                continue
+            if 'DFF' in c['type']:
+                ffs.add(names[b][0] if b in names else '?')
+                continue
+            for port, bits in c['connections'].items():
+                if c['port_directions'].get(port) == 'input':
+                    todo.extend(bits)
+        cones[pin] = ffs
+    return cones
+
+
 def yosys_netlist(files, top, build, params=()):
     """Elaborate to bit-level cells and return {cell type: count}.
 
@@ -141,7 +199,7 @@ def yosys_netlist(files, top, build, params=()):
               # also delete every genuine register nothing reads yet.
               f"delete w:*$memwr$* %ci1:+$dff[Q] t:$dff %i; "
               f"simplemap; "
-              f"stat; write_verilog {out}")
+              f"stat; write_verilog {out}; write_json {out[:-2]}.json")
     proc = subprocess.run(['yosys', '-p', script], capture_output=True, text=True)
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout + proc.stderr)
@@ -199,7 +257,7 @@ def main():
 
     if not args.source_only:
         os.makedirs(args.build, exist_ok=True)
-        counts, _ = yosys_netlist(args.files, args.top, args.build,
+        counts, out = yosys_netlist(args.files, args.top, args.build,
                                   args.param)
 
         reset = sum(n for c, n in counts.items() if c in RESET_FF)
@@ -240,6 +298,18 @@ def main():
             print(f'  netlist: {reset} flip-flops, every one reset'
                   + (f', {allowed} exempted' if allowed else ''))
             print(f'           {breakdown}')
+
+        if args.top == 'rd68021_top':
+            cones = strobe_cones(out[:-2] + '.json', args.top)
+            for pin, want in STROBES.items():
+                got = cones[pin]
+                if got != want:
+                    failed = True
+                    print(f'FAIL: audit -- {pin} is not a flip-flop of its own: '
+                          f'its cone reaches {", ".join(sorted(got)) or "no register"}, '
+                          f'where only {", ".join(sorted(want))} may be')
+            if not failed:
+                print(f'  strobes: {", ".join(STROBES)} each from its own register')
 
     if failed:
         return 1

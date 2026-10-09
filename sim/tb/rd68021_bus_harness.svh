@@ -96,7 +96,7 @@ logic        rw_o, rw_oe;
 logic        rmc_n_o, rmc_oe;
 logic        as_n_o, as_oe;
 logic        ds_n_o, ds_oe;
-logic        dben_o, dben_oe;
+logic        dben_n_o, dben_oe;
 logic  [1:0] dsack_n_i;
 logic        bg_n_o;
 logic        reset_n_o, reset_n_oe;
@@ -164,7 +164,7 @@ rd68021_biu dut (
     .rmc_n_o (rmc_n_o), .rmc_oe (rmc_oe),
     .as_n_o (as_n_o), .as_oe (as_oe),
     .ds_n_o (ds_n_o), .ds_oe (ds_oe),
-    .dben_o (dben_o), .dben_oe (dben_oe),
+    .dben_n_o (dben_n_o), .dben_oe (dben_oe),
     .dsack_n_i (dsack_n_i),
     .ipl_n_i (3'b111), .avec_n_i (~avec_drv),
     .br_n_i (~br_drv), .bg_n_o (bg_n_o), .bgack_n_i (~bgack_drv),

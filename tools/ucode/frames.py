@@ -328,6 +328,11 @@ EXEMPT = [
     ('biu', 'bg_n_o',       'the grant pin'),
     ('biu', 'rmc_hold',     'arbitration is inhibited across a read-modify-write'),
     ('biu', 'halt_hold',    'the processor is halted'),
+    ('biu', 'as_win',       'the AS pin, registered'),
+    ('biu', 'ds_q',         'the DS pin, registered'),
+    ('biu', 'ecs_q',        'the ECS pin, registered'),
+    ('biu', 'ocs_q',        'the OCS pin, registered'),
+    ('biu', 'doe_q',        'the data bus enable, registered'),
 
     ('seq', 'dreg',         'architectural: D0 to D7'),
     ('seq', 'areg',         'architectural: A0 to A6'),

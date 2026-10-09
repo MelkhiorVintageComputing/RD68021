@@ -2296,3 +2296,32 @@ Two microwords fewer than before.
 built by hand with internal words that would wreck the restore if read: images
 accepted, rerun bits honoured, a byte write rerun at its size and address, and
 a user-mode frame whose stage D and refill are read in user program space.
+
+## Post-M13 · DBEN was active high on the pin, and the strobes were decoded from the bus state
+
+**What:** two defects in the bus unit's pins.
+
+- The bus unit drove `dben_o` high to enable the data buffers. DBEN is active
+  low (UM table 3-2, "Data Buffer Enable ... Output, Low"). `bus_ruler_tb`
+  encoded the inversion as the expected pattern.
+- AS, DS, DBEN, ECS, OCS and the write-data enable were combinational decodes of
+  the two bus-state registers. A decode of a multi-bit register is true for an
+  instant of any code a transition passes through, so it glitches whenever two
+  state bits change on one edge and an intermediate code is in the decoded set.
+  S2 to S4 is such a transition. No RTL simulation of this bus unit shows it;
+  on a board, a glitch on AS is a bus cycle.
+
+**Found by:** RD68031 (its M1 entries), in code inherited from here. Confirmed
+here by UM table 3-2 for the first, and for the second by the netlist check
+below, which reports that AS, DS and DBEN each reach `st_n`, `st_p` or R/W
+before the fix.
+
+**Fixed by:** `dben_n_o`, active low. Every strobe from a flip-flop holding the
+decode of the next state: AS and DS falling-edge registers, ECS and OCS a
+rising-edge register gated by the single term `st_n != S1`, the data enable a
+rising-edge register, and DBEN, the one strobe that moves on both edges,
+`rd68021_dedge_ff`.
+
+**Stops it coming back:** `bus_ruler_tb` checks DBEN's pin level tick by tick,
+and `make audit` walks the netlist cone of AS, DS and DBEN and fails if it
+reaches any register but the strobe's own (`doc/coding-standard.md`).

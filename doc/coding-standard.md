@@ -44,8 +44,15 @@ manual is worth something.
 - Asynchronous active-low reset in the sensitivity list
 - A **posedge flop and a negedge flop combined with XOR** to make an output that changes
   on both edges (`rd68021_dedge_ff`). Only one side can change at any instant, so the
-  result is glitch-free, and every tool infers it correctly. `ECS` and `OCS`, which are
-  asserted for exactly one half clock, are built from it.
+  result is glitch-free, and every tool infers it correctly. `DBEN`, which moves on both
+  edges, is built from it.
+- **A bus pin comes from a flip-flop**, not from a decode of a state register. A decode
+  of a multi-bit register glitches when two of its bits change on one edge and the
+  decode is true of a code in between, and no RTL simulation shows it. Each strobe is
+  the registered value of the decode applied to the *next* state. `make audit` checks
+  `AS`, `DS` and `DBEN` in the netlist (`STROBES` in `tools/reset_audit.py`); `ECS` and
+  `OCS` are a rising-edge flop gated by the single term `st_n != S1`, which moves once
+  in the half clock they are asserted.
 
 ### Forbidden — project rules rather than tool limits
 

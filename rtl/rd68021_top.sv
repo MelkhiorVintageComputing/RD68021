@@ -64,7 +64,7 @@ module rd68021_top #(
     output logic        as_oe,
     output logic        ds_n_o,
     output logic        ds_oe,
-    output logic        dben_o,
+    output logic        dben_n_o,     // active low -- UM table 3-2
     output logic        dben_oe,
     input  logic  [1:0] dsack_n_i,  // [1] is DSACK1; sample both on the same edge
 
@@ -401,7 +401,7 @@ module rd68021_top #(
       .rmc_n_o        (rmc_n_o),     .rmc_oe     (rmc_oe),
       .as_n_o         (as_n_o),      .as_oe      (as_oe),
       .ds_n_o         (ds_n_o),      .ds_oe      (ds_oe),
-      .dben_o         (dben_o),      .dben_oe    (dben_oe),
+      .dben_n_o       (dben_n_o),      .dben_oe    (dben_oe),
       .dsack_n_i      (dsack_n_i),
       .ipl_n_i        (ipl_n_i),     .avec_n_i   (avec_n_i),
       .br_n_i         (br_n_i),      .bg_n_o     (bg_n_o),    .bgack_n_i (bgack_n_i),

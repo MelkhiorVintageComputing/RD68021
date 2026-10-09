@@ -67,7 +67,7 @@ assign pad = core_oe ? 1'b0 : 1'bz;     // open-drain pin (RESET, HALT)
 | `rmc_n_o`, `rmc_oe` | out | Asserted across every bus cycle of a read-modify-write, and inhibits `BG` absolutely while it is up. |
 | `as_n_o`, `as_oe` | out | Asserted half a clock after the cycle begins — which is the window in which a cache hit may abort the cycle (§5.2.5). |
 | `ds_n_o`, `ds_oe` | out | One strobe, not the MC68010's UDS/LDS pair. |
-| `dben_o`, `dben_oe` | out | Data buffer enable. Not called three-state in §3.6, but specification 16 measures "Clock High to AS, DS, R/W, DBEN High Impedance" — see `doc/manual-contradictions.md`. |
+| `dben_n_o`, `dben_oe` | out | Data buffer enable, active low (UM table 3-2). Not called three-state in §3.6, but specification 16 measures "Clock High to AS, DS, R/W, DBEN High Impedance" — see `doc/manual-contradictions.md`. |
 | `dsack_n_i[1:0]` | in | `[1]` is DSACK1. Sampled at the falling edge entering S3, and **both bits must be captured by the same flop pair on the same edge** and decoded afterwards: specification 31A allows 15 ns of skew between them at 16.67 MHz, and sampling them independently lets a 32-bit port present transiently as 8-bit. |
 
 ### Interrupt control (§3.7)
