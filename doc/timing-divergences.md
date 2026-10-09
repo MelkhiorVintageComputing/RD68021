@@ -284,7 +284,7 @@ overlap with the prefetch of the next instruction, but it is close.
 | `PEA (A0)` | 7 | 5 + calc (An) 2 | 6 | -1 | 8 |
 | `LINK.W A4,#-8` | 5 | 5 | 6 | **+1** | 8 |
 | `LINK.L A4,#-8` | 6 | 6 | 8 | **+2** | 15 |
-| `UNLK A4` | 6 | 6 | 7 | **+1** | 9 |
+| `UNLK A4` | 6 | 6 | 8 | **+2** | 9 |
 | `JMP (A5)` | 6 | 4 + jump (An) 2 | 6 |  | 13 |
 | `JSR (A3)` | 7 | 5 + jump (An) 2 | 9 | **+2** | 17 |
 | `BSR.S` | 7 | 7 | 9 | **+2** | 12 |

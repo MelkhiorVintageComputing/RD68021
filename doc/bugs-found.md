@@ -2126,3 +2126,36 @@ first thirty failures of a testbench, and it was the thirty-first.
 read itself.
 
 **Stops it coming back:** `core_insn_tb`'s UNLK A7.
+
+## Post-M13 · Effective addresses an instruction does not have were found too late
+
+**What:** the opcode patterns took every mode, and the addressing-mode table,
+consulted when the instruction asks for its address, refused only the modes
+no instruction computes an address from. So two kinds of illegal word ran:
+- an alterable destination given a PC-relative mode computed the address and
+  wrote there (`EOR.B D7,(d8,PC,Xn)` never came back);
+- MOVE, which evaluates its source first, found a nonexistent destination only
+  after the source had been read and an (An)+ stepped (`$1BDA`).
+
+The same was true of (An)+ and -(An) for the control-address instructions
+(`BFCLR -(A3)` never came back), and of An as a byte operand of ADD, SUB,
+CMP, ADDQ and SUBQ. UM 6.1.5: an illegal instruction is found at decode, and
+nothing is executed.
+
+**Found by:** RD68031 (its M6 entry), with the cputest corpus. Here its
+`core_insn_tb` cases failed.
+
+**Fixed by:** RD68031's `_refuse_modes` in `tools/ucode/program.py`. It puts
+refusal patterns, to `exc_illegal`, in front of each pattern that would
+otherwise claim the words:
+- the PC-relative modes for every instruction whose <ea> is written;
+- for MOVE, the destinations 111/010-111 and, for MOVE.B, An;
+- (An)+ and -(An) for the control-address instructions;
+- An as a byte operand.
+
+A refusal is inserted only where it takes something no earlier pattern
+claims. 589 opcode patterns became 691.
+
+**Stops it coming back:** `core_insn_tb` runs `$1BDA`, `EOR.B D7,(d8,PC,Xn)`,
+a MOVE.B to An, `BFCLR -(A3)`, `LEA (A3)+,A0`, `ADDQ.B #1,A3` and `ADD.B
+A3,D0`, and checks the frame and that no register was touched.

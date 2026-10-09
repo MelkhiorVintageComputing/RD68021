@@ -5026,6 +5026,124 @@ MERGED_TAILS = _merge_tails()
 
 
 # ==========================================================================
+
+# ==========================================================================
+# EFFECTIVE ADDRESSES AN INSTRUCTION DOES NOT HAVE -- decided at decode
+#
+# UM 6.1.5: an illegal instruction is detected when the operation word is
+# decoded, and nothing is executed. The addressing-mode table above refuses
+# the modes no instruction can compute an address from (Dn, An, immediate,
+# 111/101-111), but it is consulted only when the instruction asks for its
+# address, which is too late in two cases (doc/bugs-found.md):
+#
+#   * a destination that is not alterable -- the two program-counter-relative
+#     modes, which are program references, allowed for reads only (PRM 2). The table computes
+#     the address and the instruction wrote there; EOR.B D7,(d8,PC,Xn) never
+#     came back at all.
+#   * MOVE, which evaluates its source before its destination. A destination
+#     that does not exist (PRM 4, MOVE: data alterable only, and no MOVEA.B)
+#     was found after the source had been read and an (An)+ stepped.
+#
+# So the operation words are refused here, by opcode patterns put in front of
+# the ones that would otherwise claim them. First match wins, so a pattern
+# inserted immediately before an instruction's wildcard takes only encodings
+# that wildcard would have taken.
+# ==========================================================================
+
+# Every instruction whose <ea> is written: PRM 4 and 6 give each of them a data,
+# memory or control ALTERABLE operand, none of which includes (d16,PC) or
+# (d8,PC,Xn) and their full-format relatives. CMPI, TST, BTST, CHK, CMP2/CHK2
+# and the read-only bit-field instructions are not here: on the MC68020 they take the program-counter-relative modes (PRM 4).
+_ALTERABLE = (
+    'clr_mem', 'neg_mem', 'negx_mem', 'not_mem', 'nbcd_mem', 'tas_mem',
+    'add_to_mem', 'sub_to_mem', 'and_to_mem', 'or_to_mem', 'eor_to_mem',
+    'ori_immw_mem', 'ori_imml_mem', 'andi_immw_mem', 'andi_imml_mem',
+    'subi_immw_mem', 'subi_imml_mem', 'addi_immw_mem', 'addi_imml_mem',
+    'eori_immw_mem', 'eori_imml_mem',
+    'addq_mem', 'subq_mem', 'scc_mem', 'shift_mem',
+    'bchg_d_mem', 'bchg_s_mem', 'bclr_d_mem', 'bclr_s_mem',
+    'bset_d_mem', 'bset_s_mem',
+    'move_from_ccr_mem', 'move_from_sr_mem', 'movem_to_ctl', 'moves',
+    'bfchg_mem', 'bfclr_mem', 'bfset_mem', 'bfins_mem', 'cas', 'cp_scc',
+)
+
+
+# Every instruction whose <ea> is a CONTROL address (PRM 2.2: no Dn, An, (An)+,
+# -(An) or immediate): JMP, JSR, LEA, PEA, CMP2/CHK2, the eight bit-field
+# instructions in memory, and MOVEM's control forms, whose (An)+ or -(An) slot
+# the other direction of MOVEM owns. The table refuses Dn, An and immediate on
+# its own; (An)+ and -(An) it would compute, stepping the register, so they are
+# refused here. `BFCLR -(A3)` ran into the weeds instead of taking vector 4.
+_CONTROL = (
+    'jmp', 'jsr', 'lea', 'pea', 'cmp2',
+    'bftst_mem', 'bfextu_mem', 'bfchg_mem', 'bfexts_mem',
+    'bfclr_mem', 'bfffo_mem', 'bfset_mem', 'bfins_mem',
+    'movem_to_ctl', 'movem_from_ctl',
+)
+
+
+def _cube_minus(a, b):
+    """The cubes covering a but not b -- assemble.py's, for the check below."""
+    for i in range(len(a)):
+        if a[i] != '-' and b[i] != '-' and a[i] != b[i]:
+            return [a]
+    out, cur = [], list(a)
+    for i in range(len(a)):
+        if b[i] != '-' and a[i] == '-':
+            piece = list(cur)
+            piece[i] = '1' if b[i] == '0' else '0'
+            out.append(''.join(piece))
+            cur[i] = b[i]
+    return out
+
+
+def _refuse_modes():
+    bad = [l for l in _ALTERABLE + _CONTROL if l not in LABELS]
+    if bad:
+        raise SystemExit('program: _ALTERABLE names no label %s' % ', '.join(bad))
+    out = []
+
+    def add(pat, what):
+        # Only where it takes something: a refusal every earlier pattern
+        # already shadows would be refused by assemble.py.
+        cubes = [pat]
+        for q, _t, _m in out:
+            cubes = [c for x in cubes for c in _cube_minus(x, q)]
+        if cubes:
+            out.append((pat, 'exc_illegal', what))
+
+    moved = set()
+    for p, t, m in PATTERNS:
+        if t in _ALTERABLE and p[10:] == '------':
+            add(p[:10] + '11101-', m + ', a PC-relative destination -- illegal')
+        # An is a word or long operand only -- PRM 4, ADD, SUB, CMP ("word and
+        # long operations only" for An), ADDQ and SUBQ ("word and long only"
+        # for an address register destination). The byte encodings are not
+        # instructions.
+        if t in ('add_an', 'sub_an', 'cmp_an') and p[8:10] == '--':
+            add(p[:8] + '00' + p[10:], m + ', byte size -- illegal')
+        if t in ('addq_an', 'subq_an') and p[8:10] == '00':
+            out.append((p, 'exc_illegal', m + ' -- no byte form, illegal'))
+            continue
+        if t in _CONTROL and p[10:] == '------':
+            add(p[:10] + '011---', m + ', (An)+ is not a control mode -- illegal')
+            add(p[:10] + '100---', m + ', -(An) is not a control mode -- illegal')
+        # MOVE's destination is bits 11:6, register first. PRM 4, MOVE: data
+        # alterable; and MOVEA has no byte form (PRM 4, MOVEA), so An is not a
+        # destination of MOVE.B. Put in front of the first pattern of each size.
+        sz = p[:4]
+        if sz in ('0001', '0011', '0010') and sz not in moved:
+            moved.add(sz)
+            add(sz + '01-111------', 'MOVE, destination 111/010-011 -- illegal')
+            add(sz + '1--111------', 'MOVE, destination 111/100-111 -- illegal')
+            if sz == '0001':
+                add(sz + '---001------', 'MOVEA.B -- no such instruction')
+        out.append((p, t, m))
+    PATTERNS[:] = out
+
+
+_refuse_modes()
+
 def entry(name):
     if name not in LABELS:
         raise SystemExit('program: no label %r' % name)
