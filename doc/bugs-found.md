@@ -2159,3 +2159,38 @@ claims. 589 opcode patterns became 691.
 **Stops it coming back:** `core_insn_tb` runs `$1BDA`, `EOR.B D7,(d8,PC,Xn)`,
 a MOVE.B to An, `BFCLR -(A3)`, `LEA (A3)+,A0`, `ADDQ.B #1,A3` and `ADD.B
 A3,D0`, and checks the frame and that no register was touched.
+
+## Post-M13 · The trace exception traced itself, and a traced instruction that faulted traced its bus error handler
+
+**What:** two faults in when the decode arm decides to trace.
+
+- With T1 set, the boundary that ends a trace exception's own processing was
+  judged against the trace mode latched for the traced instruction, so it took
+  a second trace exception, and a second format $2 frame went on the stack
+  before the handler ran. An interrupt taken just after an instruction set T1
+  did the same. UM 6.1.7: trace exception processing clears T1 and T0, and the
+  handler's first instruction is the first that could be traced.
+- The boundary that ends a bus error's exception processing still had the
+  faulted instruction's trace mode, so with T1 set a trace was taken there,
+  naming the handler. UM 6.1.7: "if an instruction does not complete due to a
+  bus error or address error exception, trace exception processing is
+  deferred until after the execution of the suspended instruction is resumed
+  and the instruction execution completes normally".
+
+**Found by:** RD68031 (its M1 and M8-M9 entries), in code inherited from here.
+Confirmed here: the second came out of RD68031's `core_fault_tb` case, which
+also showed the first. `core_exc_tb`'s own check of the first passed at
+first, because it stopped at the handler's first decode, before the second
+frame was pushed; it now runs on long enough to see it.
+
+**Fixed by:** the decode arm marks what it starts as not traced (`notrace_q`)
+when that is the trace or the interrupt exception rather than an instruction;
+and `trace_take` is false at a boundary `g0_q` is still set at. The trace mode
+and the cancel bit are in the frame and come back with the RTE.
+
+**Stops it coming back:** `core_exc_tb` checks a traced MOVEQ leaves exactly
+one frame, and an interrupt after T1 set only its own, both failing without
+the fix. `core_fault_tb`, from RD68031, runs a traced MOVE whose read faults
+(two traces, the MOVE's after it completes, then the next instruction's), and
+the same with an interrupt arriving with the fault (handlers in the order I,
+B, T, T).

@@ -1575,7 +1575,13 @@ module rd68021_seq #(
   // it has changed the flow yet is what trace-on-change-of-flow asks.
   assign cp_int = {11'd0, notrace_q, pc_kept_q, flow_q, trace_mode_q};
 
-  assign trace_take = !notrace_q
+  // Not at a boundary g0_q is still set at -- the end of exception processing
+  // for a bus or address error. UM 6.1.7: "if an instruction does not complete
+  // due to a bus error or address error exception, trace exception processing
+  // is deferred until after the execution of the suspended instruction is
+  // resumed and the instruction execution completes normally". The trace mode
+  // and the cancel bit are in the frame and come back with the RTE.
+  assign trace_take = !notrace_q && !g0_q
                    && ((trace_mode_q == 2'b10)
                        || ((trace_mode_q == 2'b01) && flow_eff));
 
@@ -2272,7 +2278,14 @@ module rd68021_seq #(
           // changed the flow yet.
           trace_mode_q <= {sr_eff[rd68021_pkg::SR_T1], sr_eff[rd68021_pkg::SR_T0]};
           flow_q       <= 1'b0;
-          notrace_q    <= 1'b0;
+          // ... unless what starts is not an instruction at all but the trace
+          // or the interrupt exception the decode arm puts in front of one.
+          // Exception processing is not traced: the trace exception clears T1
+          // and T0, and the handler's first instruction is the first that
+          // could be (UM 6.1.7). Without this, the boundary that ends a trace
+          // exception's own processing was judged against the trace mode of
+          // the instruction it traced, and with T1 set took a second trace.
+          notrace_q    <= trace_take || irq_pending;
           // And the address of the instruction that has just finished, which
           // is what a trace frame carries at +$08. pc_d is still it at this
           // edge: the pipe advance that moves it on is a non-blocking write on

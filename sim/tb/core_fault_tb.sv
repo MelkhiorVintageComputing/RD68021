@@ -44,6 +44,10 @@ module core_fault_tb;
         && a_o >= ISP0 - 32'h200 && a_o < ISP0)
       user_on_sstack++;
 
+  // An interrupting device drops its request when it is acknowledged.
+  always @(negedge as_n_o)
+    if (rst_n && fc_o === 3'b111 && a_o[19:16] === 4'hF) ipl_n_i = 3'b111;
+
   task automatic base_setup();
     int unsigned v;
     for (v = 0; v < 256; v = v + 1)
@@ -930,6 +934,100 @@ module core_fault_tb;
     check(peek_l(GONE) === 32'h5A5A_5A5A, "posted, repaired: RTE did not write it again");
     check(dut.u_seq.dreg[6] === 32'h0000_0011, "posted, repaired: the program went on");
     check(dut.u_seq.isp_q === ISP0, "posted, repaired: the frame came off the stack");
+
+    // ======================================================================
+    // A traced instruction that faults. UM 6.1.7: "if an instruction does not
+    // complete due to a bus error or address error exception, trace exception
+    // processing is deferred until after the execution of the suspended
+    // instruction is resumed and the instruction execution completes
+    // normally". So no trace between the bus error's exception processing and
+    // its handler, and one -- for the faulted instruction -- after the RTE.
+    // ======================================================================
+    base_setup();
+    poke_l(32'h0000_0024, HAND + 32'h80);  // vector 9, trace
+    poke_w(CODE + 32'h000, 16'h207C);  // movea.l #0x8000,%a0
+    poke_w(CODE + 32'h002, 16'h0000);
+    poke_w(CODE + 32'h004, 16'h8000);
+    poke_w(CODE + 32'h006, 16'h43F8);  // lea 0x3800,%a1 -- the trace log
+    poke_w(CODE + 32'h008, 16'h3800);
+    poke_w(CODE + 32'h00A, 16'h007C);  // ori.w #0x8000,%sr -- T1 from the next one
+    poke_w(CODE + 32'h00C, 16'h8000);
+    poke_w(CODE + 32'h00E, 16'h2410);  // move.l (%a0),%d2 -- traced, faults
+    poke_w(CODE + 32'h010, 16'h027C);  // andi.w #0x7FFF,%sr -- traced
+    poke_w(CODE + 32'h012, 16'h7FFF);
+    poke_w(CODE + 32'h014, 16'h7C55);  // moveq #0x55,%d6
+    poke_w(CODE + 32'h016, 16'h60FE);  // bra.s .
+    poke_w(HAND + 32'h080, 16'h22EF);  // move.l 8(%a7),(%a1)+ -- what was traced
+    poke_w(HAND + 32'h082, 16'h0008);
+    poke_w(HAND + 32'h084, 16'h4E73);  // rte
+    poke_w(HAND + 0, 16'h4E73);        // the bus error handler: RTE
+    poke_l(32'h3800, 32'h0);
+    poke_l(32'h3804, 32'h0);
+    poke_l(32'h3808, 32'h0);
+    poke_l(GONE, 32'h7777_1234);
+    reset_dut();
+    run_until(HAND + 0, 4000, reached);
+    check(reached && dut.u_seq.areg[1] === 32'h3800,
+          "trace and a bus error: the bus error handler is entered, and no trace before it -- UM 6.1.7");
+    berr_en = 1'b0;
+    run_until(CODE + 32'h016, 4000, reached);
+    check(reached && dut.u_seq.dreg[2] === 32'h7777_1234 && dut.u_seq.dreg[6] === 32'h55,
+          "trace and a bus error: the instruction completes after RTE");
+    check(peek_l(32'h3800) === CODE + 32'h00E && peek_l(32'h3804) === CODE + 32'h010
+          && dut.u_seq.areg[1] === 32'h3808,
+          "trace and a bus error: two traces, the faulted MOVE's after it completed, then the ANDI's");
+
+    // ======================================================================
+    // A bus error, an interrupt and a trace together -- UM 6.1.12:
+    // the bus error first (1.1), then the interrupt (4.2) at the boundary
+    // that ends its exception processing, the trace (4.1) deferred until the
+    // faulted instruction completes (UM 6.1.7). Handlers run in the reverse
+    // order of exception processing: the interrupt's, then the bus error's,
+    // then -- after the instruction completes -- the trace's.
+    // ======================================================================
+    base_setup();
+    poke_l(32'h0000_0024, HAND + 32'h80);  // vector 9, trace
+    poke_l(32'h0000_006C, HAND + 32'h40);  // vector 27, level 3 autovector
+    poke_w(CODE + 32'h000, 16'h207C);  // movea.l #0x8000,%a0
+    poke_w(CODE + 32'h002, 16'h0000);
+    poke_w(CODE + 32'h004, 16'h8000);
+    poke_w(CODE + 32'h006, 16'h45F8);  // lea 0x3900,%a2 -- who ran, in order
+    poke_w(CODE + 32'h008, 16'h3900);
+    poke_w(CODE + 32'h00A, 16'h46FC);  // move.w #0x2000,%sr -- mask 0
+    poke_w(CODE + 32'h00C, 16'h2000);
+    poke_w(CODE + 32'h00E, 16'h007C);  // ori.w #0x8000,%sr
+    poke_w(CODE + 32'h010, 16'h8000);
+    poke_w(CODE + 32'h012, 16'h2410);  // move.l (%a0),%d2 -- traced, faults
+    poke_w(CODE + 32'h014, 16'h027C);  // andi.w #0x7FFF,%sr -- traced
+    poke_w(CODE + 32'h016, 16'h7FFF);
+    poke_w(CODE + 32'h018, 16'h7C55);  // moveq #0x55,%d6
+    poke_w(CODE + 32'h01A, 16'h60FE);  // bra.s .
+    poke_w(HAND + 32'h000, 16'h14FC);  // move.b #'B',(%a2)+
+    poke_w(HAND + 32'h002, 16'h0042);
+    poke_w(HAND + 32'h004, 16'h4E73);  // rte
+    poke_w(HAND + 32'h040, 16'h14FC);  // move.b #'I',(%a2)+
+    poke_w(HAND + 32'h042, 16'h0049);
+    poke_w(HAND + 32'h044, 16'h4E73);  // rte
+    poke_w(HAND + 32'h080, 16'h14FC);  // move.b #'T',(%a2)+
+    poke_w(HAND + 32'h082, 16'h0054);
+    poke_w(HAND + 32'h084, 16'h4E73);  // rte
+    poke_l(32'h3900, 32'h0);
+    poke_l(GONE, 32'h7777_1234);
+    avec_n_i = 1'b0;                       // the device autovectors -- UM 5.4.1
+    reset_dut();
+    // The request arrives with the bus error.
+    @(negedge berr_n_i);
+    ipl_n_i = ~3'd3;
+    run_until(HAND + 0, 4000, reached);
+    berr_en = 1'b0;
+    run_until(CODE + 32'h01A, 6000, reached);
+    check(reached && dut.u_seq.dreg[6] === 32'h55 && dut.u_seq.dreg[2] === 32'h7777_1234,
+          "bus error, interrupt and trace: the program completes");
+    check(peek_l(32'h3900) === 32'h4942_5454,
+          $sformatf("bus error, interrupt and trace: handlers ran I, B, T, T -- UM 6.1.12 -- got %08h",
+                    peek_l(32'h3900)));
+    avec_n_i = 1'b1;
+    ipl_n_i  = 3'b111;
 
     if (fails == 0) $display("PASS: core_fault_tb");
     else            $display("FAIL: core_fault_tb");

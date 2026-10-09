@@ -746,6 +746,48 @@ module core_exc_tb;
     check(iack_level === 3'd5, "posted, interrupt: the acknowledge asked for level 5");
     check(peek_l(32'h0000_8000) === 32'hFACE_B00C, "posted, interrupt: the write was rerun");
 
+    // ======================================================================
+    // The trace exception is not traced, nor is an interrupt's processing.
+    // UM 6.1.7: trace exception processing clears T1 and T0, and the
+    // handler's first instruction is the first that could be traced. So one
+    // traced MOVEQ leaves exactly one trace frame -- six words -- and an
+    // interrupt taken just after an instruction set T1 leaves only its own
+    // four-word frame, not a trace frame on top of it.
+    // ======================================================================
+    base_setup();
+    poke_l(32'h0000_0024, HAND);           // vector 9, trace
+    poke_w(CODE + 0, 16'h007C);            // ORI #$8000,SR -- T1 from the next one
+    poke_w(CODE + 2, 16'h8000);
+    poke_w(CODE + 4, 16'h7001);            // MOVEQ #1,D0 -- traced
+    poke_w(CODE + 6, 16'h7002);            // MOVEQ #2,D0
+    poke_w(CODE + 8, 16'h60FE);
+    poke_w(HAND + 0, 16'h60FE);
+    reset_dut();
+    run_until(HAND, 2000, reached);
+    run_cycles(60);                        // long enough for a second frame
+    check(reached && dut.u_seq.dreg[0] === 32'd1, "trace: the MOVEQ is traced");
+    check(dut.u_seq.isp_q === ISP0 - 32'd12,
+          $sformatf("trace: exactly one trace frame, nothing below it -- UM 6.1.7 (SP %08h)",
+                    dut.u_seq.isp_q));
+
+    base_setup();
+    poke_l(32'h0000_0074, HAND);           // vector 29 = 24 + 5
+    poke_l(32'h0000_0024, HAND + 32'h20);  // vector 9: must not run
+    poke_w(CODE + 0, 16'h46FC);            // MOVE #$A000,SR -- T1 and mask 0
+    poke_w(CODE + 2, 16'hA000);
+    poke_w(CODE + 4, 16'h7001);
+    poke_w(CODE + 6, 16'h60FE);
+    poke_w(HAND + 0, 16'h60FE);
+    poke_w(HAND + 32'h20, 16'h60FE);
+    reset_dut();
+    request(5, IACK_AUTO, 8'd0);
+    run_until(HAND, 2000, reached);
+    run_cycles(60);
+    check(reached, "interrupt after T1 set: the interrupt handler runs");
+    check(dut.u_seq.isp_q === ISP0 - 32'd8,
+          $sformatf("interrupt after T1 set: only the interrupt's frame, not traced -- UM 6.1.7 (SP %08h)",
+                    dut.u_seq.isp_q));
+
     if (fails == 0 && pipe_fails == 0) $display("PASS: core_exc_tb");
     else                               $display("FAIL: core_exc_tb");
     $finish;
