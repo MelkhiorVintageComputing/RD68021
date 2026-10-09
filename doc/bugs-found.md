@@ -2395,3 +2395,26 @@ release waited for the RMC only that write can negate.
 held for eight clocks with BR still asserted, BG checked throughout, then the
 hand-over to the second), its state 6 to 3 case, and single-wire arbitration on
 an idle bus, during a cycle, and during a read-modify-write.
+
+## Post-M13 · HALT asserted on an idle bus did not stop the next cycle
+
+**What:** the bus unit consulted HALT only at the end of a cycle. With the bus
+idle when HALT came, the next request started a cycle anyway, and the bus halted
+only after it. UM 5.5.3: the processor "halts external bus activity at the next
+bus cycle boundary", and single-stepping (figure 5-41) is built on HALT being
+asserted between cycles. Fixing it exposes a second fault behind it: the
+arbiter defers a grant while the bus unit "has made an internal decision to
+execute a bus cycle", and with HALT holding a pending request off that decision
+is never made, so BR would never be granted.
+
+**Found by:** RD68031 (its M2 entry), in code inherited from here. Confirmed
+here by the tests below: a cycle started under HALT, and single-stepping did
+not step.
+
+**Fixed by:** HALT, synchronised, in the condition for starting any cycle
+(`start_ok`), and in the arbiter's deferral.
+
+**Stops it coming back:** `bus_arb_tb`: HALT asserted on an idle bus with a
+request pending starts no cycle; single-stepping a four-cycle operand runs
+exactly one cycle per negation of HALT; and BR is granted on a bus halted with a
+request pending.

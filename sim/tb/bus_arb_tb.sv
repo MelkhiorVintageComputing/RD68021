@@ -478,6 +478,76 @@ module bus_arb_tb;
     end
 
     // -------------------------------------------------------------------
+    // HALT on its own -- UM 5.5.3 and figure 5-41. HALT asserted while the
+    // bus is idle stops the next cycle from starting: the processor "halts
+    // external bus activity at the next bus cycle boundary". Then single-step:
+    // "negating and reasserting HALT in accordance with the correct timing
+    // requirements provides a single-step (bus cycle to bus cycle)
+    // operation". A long word from the 8-bit port is four cycles, so four
+    // steps.
+    // -------------------------------------------------------------------
+    begin
+      bit ok_step, quiet;
+      int unsigned c0, i;
+      @(posedge clk);
+      halt_drv = 1'b1;
+      repeat (4) @(posedge clk);
+      c0 = as_count;
+      ok_step = 1'b1;
+      quiet = 1'b1;
+      fork
+        op_read(32'h2000_0100, 4, got, cycles);
+        begin
+          repeat (10) @(posedge clk);
+          if (as_count != c0) quiet = 1'b0;
+          for (i = 1; i <= 4; i = i + 1) begin
+            // One step: negate HALT, and assert it again once the cycle it
+            // lets out has begun.
+            halt_drv = 1'b0;
+            wait (as_count >= c0 + i);
+            @(posedge clk);
+            halt_drv = 1'b1;
+            repeat (8) @(posedge clk);
+            if (as_count != c0 + i) ok_step = 1'b0;
+          end
+          halt_drv = 1'b0;
+        end
+      join
+      check(quiet, "HALT asserted on an idle bus: no cycle starts (UM 5.5.3)");
+      check(ok_step, "single-step: exactly one bus cycle per negation of HALT (figure 5-41)");
+      check(got[31:0] === 32'h10111213, "single-step: the operand assembled across four steps");
+      repeat (4) @(posedge clk);
+
+      // HALT asserted on an idle bus, with a request pending: no cycle starts,
+      // so there is no "internal decision to execute a bus cycle" to defer the
+      // grant behind (UM 5.7.1.3), and BR is granted as on any idle bus.
+      c0 = as_count;
+      @(posedge clk);
+      halt_drv = 1'b1;
+      repeat (4) @(posedge clk);
+      fork
+        begin
+          repeat (4) @(posedge clk);
+          br_drv = 1'b1;
+          waited = 0;
+          while (bg_n_o !== 1'b0 && waited < 20) begin @(posedge clk); waited = waited + 1; end
+          $sformat(what, "halted on an idle bus with a request pending: BR granted (%0d clocks)", waited);
+          check(bg_n_o === 1'b0 && waited <= 4, what);
+          check(as_count == c0, "halted on an idle bus: the pending request did not start");
+          @(posedge clk);
+          br_drv = 1'b0;
+          repeat (4) @(posedge clk);
+          halt_drv = 1'b0;
+        end
+        op_read(32'h0000_0114, 4, got, cycles);
+      join
+      check(got[31:0] === 32'h24252627, "halted on an idle bus: the request runs once HALT negates");
+      check(as_count == c0 + 1, "halted on an idle bus: as one cycle");
+      $display("  .. HALT on an idle bus done");
+      repeat (6) @(posedge clk);
+    end
+
+    // -------------------------------------------------------------------
     // Double bus fault: UM 5.5.4, "the processor halts and asserts HALT".
     // -------------------------------------------------------------------
     check(halt_n_oe === 1'b0, "no double bus fault: HALT is not driven");

@@ -318,8 +318,12 @@ module rd68021_biu #(
   assign bus_is_idle = (st_p == rd68021_pkg::ST_IDLE)
                        && (st_n == rd68021_pkg::ST_IDLE);
 
+  // HALT stops the NEXT cycle from starting, whether the bus was busy or idle
+  // when it came: the processor "halts external bus activity at the next bus
+  // cycle boundary" (UM 5.5.3). Synchronised, as every asynchronous input
+  // other than the termination samples is.
   logic start_ok;
-  assign start_ok = want_cycle && !arb_t_of(arb_nxt);
+  assign start_ok = want_cycle && halt_sync_n && !arb_t_of(arb_nxt);
 
   // Retry clears when BOTH BERR and HALT have been negated -- UM 5.5.2, "does not
   // begin another bus cycle until the BERR and HALT signals have been negated by
@@ -403,7 +407,8 @@ module rd68021_biu #(
       rd68021_pkg::ARB_IDLE: begin
         if (arb_a && !rmc_hold)
           arb_nxt = rd68021_pkg::ARB_HELD;
-        else if (arb_req && !(bus_is_idle && want_cycle))
+        // A bus held by HALT has made no such decision, and does not defer.
+        else if (arb_req && !(bus_is_idle && want_cycle && halt_sync_n))
           arb_nxt = rd68021_pkg::ARB_GRANT;
         else
           arb_nxt = rd68021_pkg::ARB_IDLE;
