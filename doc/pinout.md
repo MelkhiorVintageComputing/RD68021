@@ -26,7 +26,7 @@ assign pad = core_oe ? 1'b0 : 1'bz;     // open-drain pin (RESET, HALT)
 | Port | Dir | Notes |
 |---|---|---|
 | `clk` | in | Free-running. Both edges are used: one bus state S0–S5 per half period, so a bus cycle with no wait states is three clocks. |
-| `rst_n` | in | **Not an MC68020 pin.** Asynchronous hardware reset for simulation and FPGA bring-up, so that every register has a defined value without power-on initialisation. The architectural reset is `reset_n_i` below. |
+| `rst_n` | in | **Not an MC68020 pin.** Asynchronous power-on initialisation, so that every register has a defined value without power-on state, after which the processor runs reset exception processing. The architectural reset is `reset_n_i` below; `rst_n` resets everything it does and more -- the registers UM 6.1.1 leaves alone, the arbiter, and the RESET instruction's own counter, which the pin cannot reset because that counter drives it (`doc/divergences.md`, "The two resets"). |
 
 ### Function codes (§3.2)
 
@@ -91,7 +91,7 @@ assign pad = core_oe ? 1'b0 : 1'bz;     // open-drain pin (RESET, HALT)
 | Port | Dir | Notes |
 |---|---|---|
 | `berr_n_i` | in | Bus error. With HALT, selects retry rather than exception. |
-| `reset_n_i` | in | External reset input. Unlike the MC68000 and MC68010 it does **not** need HALT asserted with it. |
+| `reset_n_i` | in | External reset input, the pin as the processor sees it, wired with `reset_n_oe` as the open-drain pin is. Unlike the MC68000 and MC68010 it does **not** need HALT asserted with it. Ignored while the RESET instruction drives the pin and for four clocks after (UM 5.8). |
 | `reset_n_o`, `reset_n_oe` | out | Open drain. `reset_n_o` is constant 0; the `RESET` instruction asserts `reset_n_oe` for **512 clocks** (§5.8) to reset peripherals without disturbing the core. |
 | `halt_n_i` | in | Suspends bus activity at the end of the current cycle; with BERR, requests a retry. |
 | `halt_n_o`, `halt_n_oe` | out | Open drain. `halt_n_o` is constant 0; driven on a double bus fault. |

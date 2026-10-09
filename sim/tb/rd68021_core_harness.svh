@@ -115,6 +115,12 @@ localparam bit TB_CP = 1'b1;
 localparam bit TB_CP = 1'b0;
 `endif
 
+// The RESET pin is open drain: low when the processor drives it, as a wired
+// pin would, and a testbench pulls it low from outside with `reset_in_n` to
+// reset the processor -- UM 5.8.
+logic        reset_in_n;
+initial reset_in_n = 1'b1;
+
 rd68021_top #(.ICACHE_ENTRIES (`TB_ICACHE_ENTRIES),
               .COPROCESSOR (TB_CP)) dut (
     .clk (clk), .rst_n (rst_n),
@@ -132,7 +138,7 @@ rd68021_top #(.ICACHE_ENTRIES (`TB_ICACHE_ENTRIES),
     .ipl_n_i (ipl_n_i), .ipend_n_o (ipend_n_o), .avec_n_i (avec_n_i),
     .br_n_i (1'b1), .bg_n_o (bg_n_o), .bgack_n_i (1'b1),
     .berr_n_i (berr_n_i),
-    .reset_n_i (1'b1), .reset_n_o (reset_n_o), .reset_n_oe (reset_n_oe),
+    .reset_n_i (reset_in_n & ~reset_n_oe), .reset_n_o (reset_n_o), .reset_n_oe (reset_n_oe),
     .halt_n_i (1'b1), .halt_n_o (halt_n_o), .halt_n_oe (halt_n_oe),
     .cdis_n_i (cdis_n_i)
 );

@@ -268,6 +268,10 @@ EXEMPT = [
 
     ('biu', 'rsto_q',       'the RESET instruction is driving the pin'),
     ('biu', 'rsto_cnt',     '... for this many more clocks'),
+    ('biu', 'rsto_tail_q',  '... and the clocks after it in which the pin is '
+                            'still read as the instruction\'s own -- UM 5.8'),
+    ('biu', 'crst_q',       'the RESET pin is resetting the processor -- UM 5.8, '
+                            '6.1.1. Nothing survives it to be restored'),
     ('biu', 'rsto_arm_q',   '... and the request has been let go since, so the '
                             'count cannot restart itself'),
 

@@ -108,7 +108,8 @@ module rd68021_seq #(
 
     // Status -------------------------------------------------------------------
     input  logic  [2:0] ipl_sync_n,
-    input  logic        reset_sync_n,
+    // The RESET pin from outside, registered by the bus unit -- UM 5.8.
+    input  logic        crst,
     input  logic        halt_sync_n,
     input  logic        bus_idle,
     input  logic        bus_granted,
@@ -142,8 +143,29 @@ module rd68021_seq #(
   logic [4:0] cp_ea;
   logic [15:0] cp_int;
 
+  // ==========================================================================
+  // The two resets
+  //
+  // rst_n is the power-on initialisation, which is not an MC68020 pin: ASIC
+  // has no power-on state, so it gives every register a value. The RESET pin
+  // (`crst`, registered by the bus unit) resets the processor as UM 6.1.1
+  // describes: the status register to supervisor, interrupt mode, mask 7, the
+  // trace bits clear; VBR zero; the cache disabled (UM 4.2); and then reset
+  // exception processing -- the stack pointer and the program counter out of
+  // the vector table, which is the microcode's `reset`. It does not say a
+  // reset changes D0-D7, A0-A6, USP, MSP, SFC, DFC or CAAR, so the pin leaves
+  // them as they were; rst_n still clears them.
+  //
+  // Every register in this unit that is not architectural is reset by both,
+  // asynchronously, through core_rst_n. The one clocked process that holds
+  // the architectural registers takes the pin as a synchronous `crst` arm
+  // instead, which leaves the spared ones out of it.
+  // ==========================================================================
+  logic core_rst_n;
+  assign core_rst_n = rst_n && !crst;
+
   rd68021_ucode_rom u_urom (
-      .clk (clk), .rst_n (rst_n), .addr (upc_nxt), .uw (uw));
+      .clk (clk), .rst_n (core_rst_n), .addr (upc_nxt), .uw (uw));
 
   // The word to decode. An instruction ends with one microword that both
   // advances the pipe and decodes, so the opcode the decoder must look at is the
@@ -1174,7 +1196,7 @@ module rd68021_seq #(
 
 
   rd68021_divider u_divider (
-      .clk (clk), .rst_n (rst_n),
+      .clk (clk), .rst_n (core_rst_n),
       .start (div_start), .dividend (div_num), .divisor (t_q[1]),
       .is_signed (md_signed),
       .busy (div_busy), .quotient (div_q), .remainder (div_r),
@@ -1385,8 +1407,8 @@ module rd68021_seq #(
 
   assign div_start = div_req && !div_go_q && !div_fin_q;
 
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+  always_ff @(posedge clk or negedge core_rst_n) begin
+    if (!core_rst_n) begin
       div_go_q  <= 1'b0;
       div_fin_q <= 1'b0;
     end else if (!div_req) begin
@@ -1478,8 +1500,8 @@ module rd68021_seq #(
   logic iack_now;
   assign iack_now = req_start
                  && (`UF(CPUSPACE) == rd68021_ucode_pkg::U_CPUSPACE_IACK);
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+  always_ff @(posedge clk or negedge core_rst_n) begin
+    if (!core_rst_n) begin
       ipend_q    <= 1'b0;
       iack_due_q <= 1'b0;
     end else begin
@@ -2315,6 +2337,46 @@ module rd68021_seq #(
       for (int i = 0; i < 8; i++) dreg[i] <= '0;
       for (int i = 0; i < 7; i++) areg[i] <= '0;
       for (int i = 0; i < 4; i++) t_q[i]  <= '0;
+    end else if (crst) begin
+      // The RESET pin -- see "The two resets" above. The same values as
+      // rst_n gives them, less the registers UM 6.1.1 does not name: D0-D7,
+      // A0-A6, USP, MSP, SFC, DFC and CAAR keep theirs, and ISP is the first
+      // thing reset exception processing loads.
+      upc    <= rd68021_ucode_pkg::ENTRY_RESET;
+      sr_q   <= rd68021_pkg::SR_RESET;
+      vbr_q  <= '0;
+      cacr_q <= '0;
+      xw_q   <= '0;
+      ea_q   <= '0;
+      cprim_q <= '0;
+      link_q <= '0;
+      eapc_q  <= 1'b0;
+      eadst_q <= 1'b0;
+      trace_mode_q <= 2'b00;
+      flow_q       <= 1'b0;
+      notrace_q    <= 1'b0;
+      pc_prev_q    <= '0;
+      pc_kept_q    <= 1'b0;
+      rs_rc_q      <= 1'b0;
+      rs_rb_q      <= 1'b0;
+      rs_dv_q      <= 1'b0;
+      rs_df_q      <= 1'b0;
+      rs_rm_q      <= 1'b0;
+      rs_rw_q      <= 1'b1;
+      rs_space_q   <= 3'd0;
+      rupc_q       <= '0;
+      rst_addr_q   <= '0;
+      rst_data_q   <= '0;
+      rst_bytes_q  <= 3'd0;
+      size_q  <= rd68021_ucode_pkg::U_SIZE_LONG;
+      // Written out, not looped: a loop index in this arm, which is not the
+      // asynchronous reset's, is a variable yosys gives storage of its own --
+      // flip-flops with no reset, which `make audit` counts
+      // (doc/coding-standard.md).
+      t_q[0] <= '0;
+      t_q[1] <= '0;
+      t_q[2] <= '0;
+      t_q[3] <= '0;
     end else begin
       upc <= upc_nxt;
 
@@ -2777,15 +2839,15 @@ module rd68021_seq #(
 
   // A microword retired early, so the acknowledge the bus unit registers on the
   // same edge is its, not the next one's.
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) early_q <= 1'b0;
+  always_ff @(posedge clk or negedge core_rst_n) begin
+    if (!core_rst_n) early_q <= 1'b0;
     else        early_q <= retire && bus_req && early_hit;
   end
 
   // Entered by the decode arm, once the trace and the interrupt have had their
   // chance at that same boundary, and left only by an interrupt or by reset.
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
+  always_ff @(posedge clk or negedge core_rst_n) begin
+    if (!core_rst_n)
       stopped_q <= 1'b0;
     else if (irq_pending)
       stopped_q <= 1'b0;
@@ -2800,8 +2862,8 @@ module rd68021_seq #(
 
   // The fault itself. Everything here is latched on the one clock the bus unit
   // reports it, because the microcode that follows runs bus cycles of its own.
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+  always_ff @(posedge clk or negedge core_rst_n) begin
+    if (!core_rst_n) begin
       df_q      <= 1'b0;
       flt_odd_q <= 1'b0;
       // Reset exception processing is a double-bus-fault window from its first
@@ -2881,15 +2943,15 @@ module rd68021_seq #(
   // the level from before: a device holds its request until the handler clears
   // it, so that was a fresh "transition", and the non-maskable interrupt was
   // taken a second time, nested (doc/bugs-found.md).
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n)                                        irq_prev_q <= 3'd0;
+  always_ff @(posedge clk or negedge core_rst_n) begin
+    if (!core_rst_n)                                        irq_prev_q <= 3'd0;
     else if ((retire && (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_DECODE))
              || irq_enter)
                                                        irq_prev_q <= irq_level;
   end
 
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n)          irq_taking_q <= 3'd0;
+  always_ff @(posedge clk or negedge core_rst_n) begin
+    if (!core_rst_n)          irq_taking_q <= 3'd0;
     else if (irq_enter)  irq_taking_q <= irq_level;
     // ... and put back by RTE: a posted write's fault may have been taken
     // between the dispatch and the acknowledge -- doc/checkpoint.md rule 9.
@@ -2985,8 +3047,8 @@ module rd68021_seq #(
   // operand it has taken the hand-back by now; if it did not, the fault was a
   // prefetch at a boundary and the hand-back is nobody's. Either way it is over.
   logic resumed_q;
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n)      resumed_q <= 1'b0;
+  always_ff @(posedge clk or negedge core_rst_n) begin
+    if (!core_rst_n)      resumed_q <= 1'b0;
     else if (retire) resumed_q <= (`UF(SEQ) == rd68021_ucode_pkg::U_SEQ_RESUME);
   end
   assign rst_cancel = resumed_q && retire;
@@ -2999,8 +3061,8 @@ module rd68021_seq #(
   // the RESUME, which comes after the status register. A fault in between ends
   // the hold with the RTE.
   logic ckpt_hold_q;
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n)
+  always_ff @(posedge clk or negedge core_rst_n) begin
+    if (!core_rst_n)
       ckpt_hold_q <= 1'b0;
     else if (fault_now)
       ckpt_hold_q <= 1'b0;
@@ -3025,8 +3087,8 @@ module rd68021_seq #(
   // Once set it stays set: the bus unit drives HALT out from it, nothing here
   // retires again, and only the asynchronous reset clears it. Declared at the
   // top of the module, because the stall logic reads it first.
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n)                 dbf_q <= 1'b0;
+  always_ff @(posedge clk or negedge core_rst_n) begin
+    if (!core_rst_n)                 dbf_q <= 1'b0;
     else if (fault_now && g0_q) dbf_q <= 1'b1;
   end
   assign dbf = dbf_q;
@@ -3047,7 +3109,7 @@ module rd68021_seq #(
                         stg_b, stg_c_fault, stg_b_fault,
                         stg_c_rerun, stg_b_rerun, pf_stuck, pf_odd,
                         stg_b_addr, ckpt_pc_fetch,
-                        ipl_sync_n, reset_sync_n, halt_sync_n, bus_idle,
+                        ipl_sync_n, halt_sync_n, bus_idle,
                         bus_granted, reset_busy,
                         dec_illegal, ea_reserved, vbr_q, sfc_q, dfc_q,
                         `UF(COND),

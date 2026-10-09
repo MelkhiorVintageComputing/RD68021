@@ -102,7 +102,7 @@ logic        bg_n_o;
 logic        reset_n_o, reset_n_oe;
 logic        halt_n_o, halt_n_oe;
 logic  [2:0] ipl_sync_n;
-logic        reset_sync_n, halt_sync_n, cdis_sync_n;
+logic        crst, halt_sync_n, cdis_sync_n;
 logic        bus_idle, bus_granted, reset_busy;
 
 // Bus exception and arbitration inputs, driven by the test. UM 5.5 asks for BERR,
@@ -152,7 +152,7 @@ rd68021_biu dut (
     .fetch_ack (fetch_ack), .fetch_last (fetch_last), .fetch_rdata (fetch_rdata),
     .fetch_fault (fetch_fault), .bus_abort (1'b0),
     .reset_req (1'b0), .reset_busy (reset_busy), .dbf (dbf_drv),
-    .ipl_sync_n (ipl_sync_n), .reset_sync_n (reset_sync_n),
+    .ipl_sync_n (ipl_sync_n), .crst (crst),
     .halt_sync_n (halt_sync_n), .cdis_sync_n (cdis_sync_n),
     .bus_idle (bus_idle), .bus_granted (bus_granted),
     .fc_o (fc_o), .fc_oe (fc_oe),
@@ -169,7 +169,7 @@ rd68021_biu dut (
     .ipl_n_i (3'b111), .avec_n_i (~avec_drv),
     .br_n_i (~br_drv), .bg_n_o (bg_n_o), .bgack_n_i (~bgack_drv),
     .berr_n_i (~berr_drv),
-    .reset_n_i (1'b1), .reset_n_o (reset_n_o), .reset_n_oe (reset_n_oe),
+    .reset_n_i (~reset_n_oe), .reset_n_o (reset_n_o), .reset_n_oe (reset_n_oe),
     .halt_n_i (~halt_drv), .halt_n_o (halt_n_o), .halt_n_oe (halt_n_oe),
     .cdis_n_i (1'b1)
 );

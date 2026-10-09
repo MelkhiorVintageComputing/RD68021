@@ -2496,3 +2496,37 @@ that exception processing and drops the hold.
 **Stops it coming back:** `core_exc_tb` checks every change of IPEND over the
 whole run falls on a rising edge, and that at every interrupt acknowledge IPEND
 was negated exactly half a clock before AS: the rising edge that starts S0.
+
+## Post-M13 · The RESET pin did not reset the processor
+
+**What:** UM 5.8: "the external RESET signal resets the processor and the entire
+system". The bus unit synchronised `reset_n_i` and the sequencer listed the
+result among its unused inputs: nothing read it. An external RESET did nothing
+at all -- not to a running program, not to a processor stopped by STOP, not to
+one halted by a double bus fault, which UM 6.1.2 says "only an external RESET
+can restart". The only reset was `rst_n`, which is not an MC68020 pin, and
+`doc/pinout.md` called `reset_n_i` "the architectural reset" all the same. Both
+harnesses tied the pin high, so no testbench ever asserted it.
+
+**Found by:** the user, reading `unused_seq`. Confirmed by `core_reset_tb`
+against the old core: every case fails.
+
+**Fixed by:** RD68031's design, ported. The bus unit registers the pin as
+`crst`, ignoring its own RESET instruction's pulse and four clocks after it (UM
+5.8: an external RESET overlapping the instruction must outlast it by eight
+clocks). `crst` holds the bus engine, the fetch unit, the instruction cache and
+the sequencer's control state in reset and three-states the bus (UM 5.8); the
+sequencer's architectural registers take it as a synchronous arm that resets
+what UM 6.1.1 names and leaves D0-D7, A0-A6, USP, MSP, SFC, DFC and CAAR alone.
+The arbiter, BG and the RESET instruction's counter stay on `rst_n` alone:
+arbitration goes on during RESET (UM 5.7), and the counter that drives the pin
+cannot be reset by it. `rst_n` remains, as the power-on initialisation -- see
+`doc/divergences.md`, "The two resets", for why it cannot be the pin.
+
+**Stops it coming back:** `core_reset_tb`, from RD68021's sibling RD68031: a
+reset in the middle of a program (the bus three-stated while it is held, the
+vector reads, every register UM 6.1.1 names reset and every other kept, the
+cache invalidated), a double bus fault restarted by the pin, STOP restarted by
+it, faults during reset exception processing, and the RESET instruction, whose
+own pulse resets nothing while an external RESET outlasting it by ten clocks
+does. Both harnesses now wire the pin open drain.

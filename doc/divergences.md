@@ -6,51 +6,54 @@ this file is for behaviour.
 
 ---
 
-## The bus arbitration state machine has five states, not seven
+## The two resets, and arbitration under `rst_n`
 
-**UM figure 5-44 draws seven. Two of them cannot be read from the manual.**
+The MC68020 has one reset, the RESET pin. This design has two:
 
-Each state bubble in that figure is labelled with its G and T outputs as an
-overbarred pair, and the arc labels are overbarred pairs of R and A. The overbars
-do not survive the PDF's text layer: every state's label extracts as the bare
-string `GT` and every arc as `RA`, `XX`, `RX` or `XA`, with no way to tell which
-letters were negated. State 0's outputs are known to be `G̅T̅` from the prose, and
-they extract identically to state 1's `GT`. So the figure, as this repository can
-read it, does not determine states 5 and 6 or any of the arcs.
+- **The RESET pin** (`reset_n_i`) resets the processor as UM 5.8 and 6.1.1
+  describe it. The bus unit synchronises it, ignores its own RESET
+  instruction's pulse and the four clocks after it (UM 5.8: an external RESET
+  during the instruction "must extend beyond the reset period of the
+  instruction by at least eight clock cycles to reset the processor"), and
+  registers the rest as `crst`. While `crst` is asserted the bus three-states,
+  a cycle in progress is abandoned, the sequencer, the fetch unit and the
+  instruction cache are held reset, and SR, VBR and CACR take their reset
+  values; when it negates, reset exception processing begins -- the ISP from
+  $0 and the PC from $4 in supervisor program space. What UM 6.1.1 does not
+  name keeps its value: D0-D7, A0-A6, USP, MSP, SFC, DFC and CAAR. The arbiter
+  keeps running: bus arbitration requests are recognised "during normal
+  processing, RESET assertion, HALT assertion" (UM 5.7).
+- **`rst_n`**, which is not an MC68020 pin (`doc/pinout.md`), is the power-on
+  initialisation ASIC needs: every register, the architectural ones included,
+  takes its value from it, and the processor then runs the same reset
+  exception.
 
-What §5.7.1.4's prose *does* determine completely is the normal sequence, and it
-is written out state by state:
+`rst_n` cannot be replaced by the pin. The RESET instruction drives the pin
+from a counter, and its own pulse comes back on the input; the counter, and the
+logic that tells that pulse from an external one, must therefore be reset by
+something other than the pin, or the instruction would reset its own counter on
+the clock it started. And with no power-on state, those registers need a value
+before the pin has been seen at all. A system with no use for the distinction
+-- one that never runs the RESET instruction -- may tie `rst_n` to the pin's
+own power-on assertion; one that does needs a power-on reset of its own.
 
-> State 0 ... in which both G and T are negated, is the state of the bus arbiter
-> while the processor is bus master. Request R and acknowledge A keep the arbiter
-> in state 0 as long as they are both negated. When a request R is received, both
-> grant G and signal T are asserted (in state 1 ...). The next clock causes a
-> change to state 2 ... in which G and T are held. The bus arbiter remains in that
-> state until acknowledge A is asserted or request R is negated. Once either
-> occurs, the arbiter changes to the center state, state 3, and negates grant G.
-> The next clock takes the arbiter to state 4 ... in which grant G remains negated
-> and signal T remains asserted. With acknowledge A asserted, the arbiter remains
-> in state 4 until A is negated or request R is again asserted. When A is negated,
-> the arbiter returns to the original state, state 0, and negates signal T.
+Three differences from the part remain, all about `rst_n` or the edges of the
+pin:
 
-`rd68021_pkg::arb_state_e` is exactly those five states, with exactly those arcs.
+- **Arbitration under `rst_n`.** `rst_n` resets the arbiter with everything
+  else, and BG stays negated while it is asserted. Under the RESET pin it is
+  on.
+- **A RESET shorter than the manual asks for.** "Asserting RESET for 10 clock
+  periods is sufficient for resetting the processor logic"; this design resets
+  on any assertion its synchroniser sees on two consecutive falling edges. The
+  manual says what is enough, not what is ignored.
+- **The address bus after reset.** "Once RESET negates, all control signals
+  are negated, the data bus is in read mode, and the address bus is driven"
+  (5.8, figure 5-51). With `ADDR_HIZ_BETWEEN_CYCLES` set, the default, the
+  address group is released between cycles, and so also from the end of
+  either reset to the first cycle; with it clear the address is driven.
 
-The manual then says only: "Other states apply to other possible sequences of
-combinations of R and A." One such sequence is named elsewhere and is implemented:
-§5.7.1.3's "if another BR is still pending after the assertion of BGACK, another
-BG is asserted within a few clocks of the negation of the first BG", together with
-"the processor does not perform any external bus cycle before it reasserts BG" —
-which is why state 4 returns to state 1, where T is still asserted, rather than
-going through state 0.
-
-**What could differ:** the number of clocks between one grant and the next in the
-re-grant case, and the behaviour on R and A combinations that no correctly
-behaving bus master produces — BGACK asserted without a grant, for instance.
-
-**How it is checked:** `sim/tb/bus_arb_tb.sv` runs the documented sequence, the
-RMC inhibit, a request arriving at each of sixteen phases of a multi-cycle
-operand, and relinquish-and-retry. Resolving the two unknown states properly needs
-a clean copy of figure 5-44 or a real MC68020.
+**How it is checked:** `sim/tb/core_reset_tb.sv`.
 
 ---
 
@@ -458,8 +461,9 @@ at all about SFC, DFC, CAAR, MSP or USP.
 
 So those are undefined after a reset, in the same way the condition codes are,
 and for the same reason: the manual defines the machine's behaviour, not its
-initial state. **This design clears them**; Musashi has its own answer; both are
-allowed and neither is checkable.
+initial state. **`rst_n` clears them, and the RESET pin leaves them as they
+were** (see "The two resets" above); Musashi has its own answer; all are
+allowed and none is checkable.
 
 MOVEC makes the difference visible, because MOVEC Rc,Rn reads them.
 

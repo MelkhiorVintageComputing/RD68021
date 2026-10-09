@@ -194,7 +194,16 @@ module rd68021_top #(
   // Status
   // ==========================================================================
   logic  [2:0] ipl_sync_n;
-  logic        reset_sync_n;
+  // The two resets. rst_n is the power-on initialisation, which is not an
+  // MC68020 pin, and resets every register; the RESET pin resets the
+  // processor as the manual describes it, which leaves the data and address
+  // registers, USP, MSP, SFC, DFC and CAAR alone (rd68021_seq) and the arbiter
+  // running (rd68021_biu). The fetch unit and its cache keep nothing a reset
+  // spares, so the pin resets all of them -- UM 4.2, reset "invalidates all
+  // entries" of the cache.
+  logic        crst;
+  logic        core_rst_n;
+  assign core_rst_n = rst_n && !crst;
   logic        halt_sync_n;
   logic        bus_idle;
   logic        bus_granted;
@@ -278,7 +287,7 @@ module rd68021_top #(
       .cach_op        (cach_op),
 
       .ipl_sync_n     (ipl_sync_n),
-      .reset_sync_n   (reset_sync_n),
+      .crst           (crst),
       .halt_sync_n    (halt_sync_n),
       .bus_idle       (bus_idle),
       .bus_granted    (bus_granted),
@@ -290,7 +299,7 @@ module rd68021_top #(
 
   rd68021_ifu #(.ICACHE_ENTRIES (ICACHE_ENTRIES)) u_ifu (
       .clk            (clk),
-      .rst_n          (rst_n),
+      .rst_n          (core_rst_n),
 
       .pf_op          (pf_op),
       .pf_addr        (pf_addr),
@@ -389,7 +398,7 @@ module rd68021_top #(
       .reset_busy     (reset_busy),
       .dbf            (dbf),
       .ipl_sync_n     (ipl_sync_n),
-      .reset_sync_n   (reset_sync_n),
+      .crst           (crst),
       .halt_sync_n    (halt_sync_n),
       .cdis_sync_n    (cdis_sync_n),
       .bus_idle       (bus_idle),
