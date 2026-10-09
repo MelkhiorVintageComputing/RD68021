@@ -119,7 +119,9 @@ package rd68021_pkg;
     ARB_GRANT,   // state 1: G and T asserted
     ARB_WAIT,    // state 2: held, until A is asserted or R is negated
     ARB_DROP,    // state 3: G negated, T held
-    ARB_HELD     // state 4: the external master has the bus
+    ARB_HELD,    // state 4: G negated, T held -- an external master has the bus
+    ARB_REGRANT, // state 5: G asserted again for a request pending in state 4
+    ARB_REWAIT   // state 6: held while the old master still asserts A
   } arb_state_e;
 
   // ==========================================================================

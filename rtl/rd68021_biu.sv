@@ -281,7 +281,8 @@ module rd68021_biu #(
   assign arb_req = arb_r && !rmc_hold;
 
   function automatic logic arb_g_of(input rd68021_pkg::arb_state_e st);
-    arb_g_of = (st == rd68021_pkg::ARB_GRANT) || (st == rd68021_pkg::ARB_WAIT);
+    arb_g_of = (st == rd68021_pkg::ARB_GRANT) || (st == rd68021_pkg::ARB_WAIT)
+            || (st == rd68021_pkg::ARB_REGRANT) || (st == rd68021_pkg::ARB_REWAIT);
   endfunction
 
   function automatic logic arb_t_of(input rd68021_pkg::arb_state_e st);
@@ -390,10 +391,22 @@ module rd68021_biu #(
       // transcription and is a combinational loop -- st_p_nxt depends on
       // start_ok, which depends on this state -- so the test is on the registered
       // state instead, which says the same thing one expression earlier.
+      //
+      // And figure 5-44's arc from state 0 to state 4: acknowledge A alone puts
+      // the buses in the high-impedance state with no grant at all -- an
+      // alternate master that arbitrates on BGACK by itself. Not inside a
+      // read-modify-write, for the same reason BR is not heard there: "the
+      // MC68020 does not allow arbitration of the external bus during the
+      // read-modify-write sequence", and the release waits for RMC to negate,
+      // which only the sequence's own write can bring about. T asserted in the
+      // gap would hold that write off, and the two would wait for each other.
       rd68021_pkg::ARB_IDLE: begin
-        if (arb_req && !(bus_is_idle && want_cycle))
-             arb_nxt = rd68021_pkg::ARB_GRANT;
-        else arb_nxt = rd68021_pkg::ARB_IDLE;
+        if (arb_a && !rmc_hold)
+          arb_nxt = rd68021_pkg::ARB_HELD;
+        else if (arb_req && !(bus_is_idle && want_cycle))
+          arb_nxt = rd68021_pkg::ARB_GRANT;
+        else
+          arb_nxt = rd68021_pkg::ARB_IDLE;
       end
       // "The next clock causes a change to state 2."
       rd68021_pkg::ARB_GRANT: arb_nxt = rd68021_pkg::ARB_WAIT;
@@ -409,16 +422,27 @@ module rd68021_biu #(
       // negated or request R is again asserted. When A is negated, the arbiter
       // returns to the original state."
       //
-      // The re-grant arc is 5.7.1.3's requirement rather than a state read off
-      // figure 5-44: "if another BR is still pending after the assertion of
-      // BGACK, another BG is asserted within a few clocks of the negation of the
-      // first BG", and "the processor does not perform any external bus cycle
-      // before it reasserts BG" -- which is why it goes to ARB_GRANT, where T is
-      // still asserted, and not through ARB_IDLE.
+      // R again is figure 5-44's states 5 and 6, the re-grant: "if another BR
+      // is still pending after the assertion of BGACK, another BG is asserted
+      // within a few clocks", and "the processor does not perform any external
+      // bus cycles before it reasserts BG" (UM 5.7.1.3). State 5 asserts G
+      // with T still held; state 6 holds G for as long as the old master still
+      // asserts A, and only then passes to state 2 to wait for the new one's.
+      // Going back to state 1 instead, as this arbiter once did, left on the
+      // old master's A two clocks later, and BG pulsed for as long as it kept
+      // the bus.
       rd68021_pkg::ARB_HELD: begin
-        if (arb_req)  arb_nxt = rd68021_pkg::ARB_GRANT;
+        if (arb_req)     arb_nxt = rd68021_pkg::ARB_REGRANT;
         else if (!arb_a) arb_nxt = rd68021_pkg::ARB_IDLE;
-        else          arb_nxt = rd68021_pkg::ARB_HELD;
+        else             arb_nxt = rd68021_pkg::ARB_HELD;
+      end
+      rd68021_pkg::ARB_REGRANT: arb_nxt = rd68021_pkg::ARB_REWAIT;
+      // ... and in state 6 the request may go away instead: G negates (state
+      // 3), and T stays until the old master's A does (state 4).
+      rd68021_pkg::ARB_REWAIT: begin
+        if (!arb_r)      arb_nxt = rd68021_pkg::ARB_DROP;
+        else if (!arb_a) arb_nxt = rd68021_pkg::ARB_WAIT;
+        else             arb_nxt = rd68021_pkg::ARB_REWAIT;
       end
       default: arb_nxt = rd68021_pkg::ARB_IDLE;
     endcase

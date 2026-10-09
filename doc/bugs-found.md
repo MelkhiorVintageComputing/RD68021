@@ -2357,3 +2357,41 @@ nothing back to the bus unit in either case (`doc/checkpoint.md` rule 5).
 and whose handler completes it; a CAS whose write faults while the operand
 changes; CAS2 faulted on each of its four accesses, and completed by the
 handler; a TAS faulted on its read and on its write while the byte changes.
+
+## Post-M13 · The arbiter had five of figure 5-44's seven states: no single-wire arbitration, and the re-grant pulsed BG
+
+**What:** the arbiter was built from the text of UM 5.7.1.4, which describes
+only the ordinary sequence 0-1-2-3-4-0, and figure 5-44's text layer, which
+loses the overbars and the arrows. Two arcs of the figure were missing.
+
+- State 0 to state 4 on A alone: BGACK with no BR puts the buses in the
+  high-impedance state. The arbiter left state 0 only on BR, so an alternate
+  master arbitrating on BGACK by itself drove the bus while the processor still
+  drove it, and the processor went on starting cycles under it.
+- States 5 and 6, the re-grant. With BR still asserted when BGACK came (a
+  second master on the wire-ORed request), the arbiter went from state 4 back
+  to state 1, then 2; state 2 leaves on A, which the first master still
+  asserted, so BG was negated two clocks later, and again, for as long as the
+  first master kept the bus. State 6 holds G while A stays asserted and passes
+  to 2 only once A negates.
+
+**Found by:** RD68031 (its M2 entries), by rendering its manual's figure as an
+image. Here the MC68020 figure's labels sit where RD68031's arcs put them
+("XA" between states 0 and 4, "RX" from 4 to 5, "XX" from 5 to 6, "RX" from 6
+to 3), and the tests below fail on the old arbiter: BG pulses during the
+re-grant, and BGACK alone neither releases the bus nor lets the pending request
+run.
+
+**Fixed by:** the seven states, arc for arc (`rd68021_biu`, `rd68021_pkg`).
+One difference from RD68031: the 0-to-4 arc waits for RMC to negate. The MC68030
+manual makes single-wire arbitration apply "to all bus cycles of a
+read-modify-write sequence"; the MC68020's has no such sentence, says the
+MC68020 "does not allow arbitration of the external bus during the
+read-modify-write sequence", and releases the bus "following the negation of AS
+and RMC". Taken inside the sequence, T would hold the locked write off while the
+release waited for the RMC only that write can negate.
+
+**Stops it coming back:** `bus_arb_tb`'s re-grant case (BGACK from one master
+held for eight clocks with BR still asserted, BG checked throughout, then the
+hand-over to the second), its state 6 to 3 case, and single-wire arbitration on
+an idle bus, during a cycle, and during a read-modify-write.

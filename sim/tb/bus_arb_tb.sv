@@ -22,6 +22,11 @@
 //     AS and RMC" -- so the release waits for the cycle to finish, and a cycle
 //     must never begin on an edge where the bus is about to go away. The harness
 //     watches that one continuously, for every testbench, as drive_violations.
+//
+// Figure 5-44 has seven states. Besides the ordinary sequence 0-1-2-3-4-0 this
+// covers the re-grant through states 5 and 6 with two masters on a wire-ORed BR,
+// 6 back to 3, and single-wire arbitration (0 to 4, BGACK alone) on an idle bus,
+// during a cycle and during a read-modify-write.
 
 `timescale 1ns / 1ps
 
@@ -259,6 +264,217 @@ module bus_arb_tb;
         repeat (4) @(posedge clk);
       end
       $display("  .. BR phase sweep done");
+    end
+
+    // -------------------------------------------------------------------
+    // Figure 5-44, states 4-5-6-2-3-4-0: the re-grant. "If another BR is
+    // still pending after the assertion of BGACK, another BG is asserted
+    // within a few clocks", and "the processor does not perform any external
+    // bus cycles before it reasserts BG" (UM 5.7.1.3). Two masters on a
+    // wire-ORed BR; a request of the processor's own pending throughout, to
+    // show it never gets a cycle in.
+    // -------------------------------------------------------------------
+    begin
+      bit rel, held6, held2;
+      int unsigned c0, w0;
+      realtime tn, ta;
+      c0 = as_count;
+      rel = 1'b1; held6 = 1'b1; held2 = 1'b1;
+      fork
+        begin
+          @(posedge clk);
+          br_drv = 1'b1;                           // master 1
+          @(negedge bg_n_o);
+          @(posedge clk);
+          bgack_drv = 1'b1;                        // master 1 takes the bus,
+          // and BR stays asserted: master 2 is now asking.
+          @(posedge bg_n_o);                       // state 3
+          tn = $realtime;
+          w0 = 0;
+          while (bg_n_o !== 1'b0 && w0 < 20) begin
+            @(posedge clk); #(SNAP); w0 = w0 + 1;
+          end
+          ta = $realtime;
+          $sformat(what, "re-grant: BG asserted again with BGACK still asserted (state 5), after %0.1f clocks",
+                   (ta - tn) / CLK_PERIOD);
+          check(bg_n_o === 1'b0 && w0 < 6, what);
+          $sformat(what, "re-grant: BG negated for at least 1.5 clocks between grants (spec 39, got %0.1f)",
+                   (ta - tn) / CLK_PERIOD);
+          check((ta - tn) >= 1.5 * CLK_PERIOD, what);
+          // State 6: held for as long as master 1 holds BGACK.
+          repeat (8) begin
+            @(negedge clk); #(SNAP);
+            if (bg_n_o !== 1'b0) held6 = 1'b0;
+          end
+          @(posedge clk);
+          bgack_drv = 1'b0;                        // master 1 lets go: state 2
+          repeat (6) begin
+            @(negedge clk); #(SNAP);
+            if (bg_n_o !== 1'b0) held2 = 1'b0;
+            if (a_oe !== 1'b0 || as_oe !== 1'b0) rel = 1'b0;
+          end
+          @(posedge clk);
+          bgack_drv = 1'b1;                        // master 2 takes it
+          @(posedge clk);
+          br_drv = 1'b0;
+          repeat (8) @(posedge clk);
+          check(bg_n_o === 1'b1, "re-grant: BG negated once the second master acknowledges");
+          check(as_count == c0, "re-grant: no processor cycle at any point of the hand-over");
+          @(posedge clk);
+          bgack_drv = 1'b0;                        // state 4 to state 0
+        end
+        begin
+          // The processor's own request, presented from the first grant on --
+          // presented earlier, it would run first: BG is "deferred until the
+          // bus cycle has begun".
+          @(negedge bg_n_o);
+          @(posedge clk);
+          op_read(32'h0000_0100, 4, got, cycles);
+        end
+        begin
+          // The bus stays released from the first grant to the end.
+          @(posedge bgack_drv);
+          @(posedge clk);
+          while (bgack_drv || br_drv) begin
+            @(negedge clk); #(SNAP);
+            if (bgack_drv && (a_oe !== 1'b0 || as_oe !== 1'b0 || rw_oe !== 1'b0))
+              rel = 1'b0;
+          end
+        end
+      join
+      check(held6, "re-grant: BG held while the old master still asserts BGACK (state 6)");
+      check(held2, "re-grant: BG held after the old master lets go, until the new one acknowledges (state 2)");
+      check(rel, "re-grant: the bus stays released through the hand-over");
+      check(got[31:0] === 32'h10111213, "re-grant: the processor's cycle runs once the bus is returned");
+      check(as_count == c0 + 1, "re-grant: ... as one bus cycle");
+      $display("  .. re-grant (states 5 and 6) done");
+      repeat (6) @(posedge clk);
+    end
+
+    // -------------------------------------------------------------------
+    // Figure 5-44, 6 to 3: in state 6 the request goes away. G drops, T stays
+    // until the old master's BGACK does.
+    // -------------------------------------------------------------------
+    begin
+      bit kept;
+      @(posedge clk);
+      br_drv = 1'b1;
+      @(negedge bg_n_o);
+      @(posedge clk);
+      bgack_drv = 1'b1;
+      @(posedge bg_n_o);
+      @(negedge bg_n_o);                          // state 5
+      @(posedge clk);
+      br_drv = 1'b0;                              // 6 -> 3 -> 4
+      repeat (6) @(posedge clk);
+      check(bg_n_o === 1'b1, "state 6, BR negated: BG negates (states 3 and 4)");
+      kept = (a_oe === 1'b0 && as_oe === 1'b0);
+      check(kept, "state 6, BR negated: the bus stays released while BGACK is asserted");
+      @(posedge clk);
+      bgack_drv = 1'b0;
+      repeat (6) @(posedge clk);
+      check(bus_granted === 1'b0 && as_oe === 1'b1, "state 4, BGACK negated: the processor drives again");
+      $display("  .. 6 -> 3 -> 4 -> 0 done");
+    end
+
+    // -------------------------------------------------------------------
+    // Single-wire arbitration, figure 5-44's 0 to 4: BGACK alone, with no BR
+    // and no BG, places the buses in the high-impedance state.
+    // -------------------------------------------------------------------
+    begin
+      bit no_bg;
+      int unsigned c0;
+      no_bg = 1'b1;
+      c0 = as_count;
+      fork
+        begin
+          @(posedge clk);
+          bgack_drv = 1'b1;
+          repeat (4) @(posedge clk);
+          check(bus_granted === 1'b1 && a_oe === 1'b0 && as_oe === 1'b0 && rw_oe === 1'b0,
+                "single-wire, idle bus: BGACK alone releases the bus");
+          repeat (6) @(posedge clk);
+          check(as_count == c0, "single-wire: a pending request waits for BGACK to negate");
+          bgack_drv = 1'b0;
+        end
+        begin
+          wait (bus_granted === 1'b1);
+          op_read(32'h0000_0104, 4, got, cycles);
+        end
+        begin
+          while (bgack_drv !== 1'b1) @(posedge clk);
+          while (bgack_drv === 1'b1) begin
+            @(negedge clk); #(SNAP);
+            if (bg_n_o !== 1'b1) no_bg = 1'b0;
+          end
+        end
+      join
+      check(no_bg, "single-wire: BG is never asserted");
+      check(got[31:0] === 32'h14151617, "single-wire: the request runs once BGACK negates");
+      repeat (4) @(posedge clk);
+
+      // ... and during a cycle: the cycle completes, then the bus goes -- "the
+      // high-impedance state after the next rising edge following the negation
+      // of AS and RMC" (UM 5.7.1.4).
+      fork
+        begin
+          @(negedge as_n_o);
+          @(posedge clk);
+          bgack_drv = 1'b1;
+          @(posedge as_n_o);
+          @(posedge clk); #(SNAP);
+          check(a_oe === 1'b0 && as_oe === 1'b0,
+                "single-wire during a cycle: released at the rising edge after AS negates (UM 5.7.1.4)");
+          repeat (4) @(posedge clk);
+          bgack_drv = 1'b0;
+        end
+        op_read(32'h0000_0108, 4, got, cycles);
+      join
+      check(got[31:0] === 32'h18191A1B && cycles == 1,
+            "single-wire during a cycle: the cycle completes with its data");
+      repeat (6) @(posedge clk);
+    end
+
+    // -------------------------------------------------------------------
+    // Single-wire arbitration during a read-modify-write. "The MC68020 does
+    // not allow arbitration of the external bus during the read-modify-write
+    // sequence", and the release follows "the negation of AS and RMC" (UM
+    // 5.7.1.4): the write completes, still locked, and the bus goes after it.
+    // (The MC68030 releases between the two -- its UM 7.7.4 has single-wire
+    // arbitration apply "to all bus cycles of a read-modify-write sequence";
+    // the MC68020's manual has no such sentence.)
+    // -------------------------------------------------------------------
+    begin
+      bit kept, released;
+      kept = 1'b1; released = 1'b0;
+      s32.mem[12'h180] = 8'h00;
+      fork
+        begin
+          @(negedge as_n_o);
+          @(posedge clk);
+          bgack_drv = 1'b1;
+          while (rmc_n_o === 1'b0) begin
+            @(negedge clk); #(SNAP);
+            if (rmc_n_o === 1'b0 && (bus_granted !== 1'b0 || rmc_oe !== 1'b1)) kept = 1'b0;
+          end
+          repeat (3) @(posedge clk); #(SNAP);
+          released = (bus_granted === 1'b1 && a_oe === 1'b0 && as_oe === 1'b0);
+          repeat (4) @(posedge clk);
+          bgack_drv = 1'b0;
+        end
+        begin
+          req_rmc = 1'b1;
+          op_read (32'h0000_0180, 1, got, cycles);
+          op_write(32'h0000_0180, 1, 40'h80, cycles);
+          req_rmc = 1'b0;
+          op_read (32'h0000_0F00, 4, got, cycles);
+        end
+      join
+      check(kept, "single-wire during RMC: the bus stays driven while RMC is asserted (UM 5.7.1.4)");
+      check(s32.mem[12'h180] === 8'h80, "single-wire during RMC: the locked write completes");
+      check(released, "single-wire during RMC: the bus is released once the sequence is over");
+      $display("  .. single-wire arbitration done");
+      repeat (6) @(posedge clk);
     end
 
     // -------------------------------------------------------------------
