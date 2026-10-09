@@ -235,6 +235,22 @@ module core_reset_tb;
         n = starts;
         repeat (10) @(posedge clk);
         check(starts == n, "1: no bus cycle while the reset is held");
+        // The working registers the pin does not reset -- rd68021_seq's crst
+        // arm -- given junk while it is held: reset exception processing and
+        // the program after it must not read any of them before writing it.
+        dut.u_seq.t_q[0] = 32'hDEAD_0000;
+        dut.u_seq.t_q[1] = 32'hDEAD_0001;
+        dut.u_seq.t_q[2] = 32'hDEAD_0002;
+        dut.u_seq.t_q[3] = 32'hDEAD_0003;
+        dut.u_seq.xw_q       = 16'hBEEF;
+        dut.u_seq.ea_q       = 32'hDEAD_00EA;
+        dut.u_seq.link_q     = '1;
+        dut.u_seq.rupc_q     = '1;
+        dut.u_seq.cprim_q    = 16'hFFFF;
+        dut.u_seq.pc_prev_q  = 32'hDEAD_0FFC;
+        dut.u_seq.rst_addr_q = 32'hDEAD_00AD;
+        dut.u_seq.rst_data_q = 32'hDEAD_00DA;
+        dut.u_seq.rst_bytes_q = 3'd4;
         @(negedge dut.crst);
         nrec = 0;
         rec_on = 1'b1;

@@ -2338,24 +2338,30 @@ module rd68021_seq #(
       for (int i = 0; i < 7; i++) areg[i] <= '0;
       for (int i = 0; i < 4; i++) t_q[i]  <= '0;
     end else if (crst) begin
-      // The RESET pin -- see "The two resets" above. The same values as
-      // rst_n gives them, less the registers UM 6.1.1 does not name: D0-D7,
-      // A0-A6, USP, MSP, SFC, DFC and CAAR keep theirs, and ISP is the first
-      // thing reset exception processing loads.
+      // The RESET pin -- see "The two resets" above. What UM 6.1.1 names, and
+      // the control state the first boundary reads; the same values as rst_n
+      // gives them. D0-D7, A0-A6, USP, MSP, SFC, DFC and CAAR keep theirs, as
+      // the manual leaves them, and ISP is the first thing reset exception
+      // processing loads.
+      //
+      // The working registers are not reset here either: T0-T3, xw, the
+      // address latch, the link, the coprocessor primitive, the operand RTE
+      // hands back (rst_addr, rst_data, rst_bytes and rupc) and pc_prev. Every
+      // one is written before it is read -- by the instruction that uses it,
+      // by RTE before its RESUME, or (pc_prev) by the first decode -- which is
+      // the state they are in at any instruction boundary, and the reset
+      // microcode reads only the vector table. Resetting them from the pin
+      // cost a reset multiplexer per bit, some 300 of them; rst_n still clears
+      // them, because ASIC has no power-on state.
       upc    <= rd68021_ucode_pkg::ENTRY_RESET;
       sr_q   <= rd68021_pkg::SR_RESET;
       vbr_q  <= '0;
       cacr_q <= '0;
-      xw_q   <= '0;
-      ea_q   <= '0;
-      cprim_q <= '0;
-      link_q <= '0;
       eapc_q  <= 1'b0;
       eadst_q <= 1'b0;
       trace_mode_q <= 2'b00;
       flow_q       <= 1'b0;
       notrace_q    <= 1'b0;
-      pc_prev_q    <= '0;
       pc_kept_q    <= 1'b0;
       rs_rc_q      <= 1'b0;
       rs_rb_q      <= 1'b0;
@@ -2364,19 +2370,7 @@ module rd68021_seq #(
       rs_rm_q      <= 1'b0;
       rs_rw_q      <= 1'b1;
       rs_space_q   <= 3'd0;
-      rupc_q       <= '0;
-      rst_addr_q   <= '0;
-      rst_data_q   <= '0;
-      rst_bytes_q  <= 3'd0;
       size_q  <= rd68021_ucode_pkg::U_SIZE_LONG;
-      // Written out, not looped: a loop index in this arm, which is not the
-      // asynchronous reset's, is a variable yosys gives storage of its own --
-      // flip-flops with no reset, which `make audit` counts
-      // (doc/coding-standard.md).
-      t_q[0] <= '0;
-      t_q[1] <= '0;
-      t_q[2] <= '0;
-      t_q[3] <= '0;
     end else begin
       upc <= upc_nxt;
 

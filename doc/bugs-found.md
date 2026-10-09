@@ -2518,6 +2518,10 @@ clocks). `crst` holds the bus engine, the fetch unit, the instruction cache and
 the sequencer's control state in reset and three-states the bus (UM 5.8); the
 sequencer's architectural registers take it as a synchronous arm that resets
 what UM 6.1.1 names and leaves D0-D7, A0-A6, USP, MSP, SFC, DFC and CAAR alone.
+The working registers (T0-T3, xw, the address latch, the link, the primitive,
+RTE's hand-back operand and pc_prev) are not reset by the pin either: each is
+written before it is read, as at any instruction boundary, and resetting them
+cost a multiplexer per bit.
 The arbiter, BG and the RESET instruction's counter stay on `rst_n` alone:
 arbitration goes on during RESET (UM 5.7), and the counter that drives the pin
 cannot be reset by it. `rst_n` remains, as the power-on initialisation -- see
