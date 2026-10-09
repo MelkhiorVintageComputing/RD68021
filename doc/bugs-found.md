@@ -2445,3 +2445,25 @@ directly; nothing on a rising edge does.
 whose second DSACK arrives a clock after the first, just before the edge that
 latches the data, DSACK0 first and DSACK1 first; one bus cycle and the whole
 long word each time. The harness's `dsack_mask` holds one DSACK off for it.
+
+## Post-M13 · The end of a retry read BERR and HALT raw, on the rising edge
+
+**What:** a retry waits for BERR and HALT both to be negated, and the bus unit
+tested that with the raw pins, in the next-state logic of its rising-edge state
+register. Both are asynchronous inputs: UM 5.1 latches them "during a sample
+window around the falling edge of the clock", and specifications 47A and 47B
+bound them only there. So the one place the core read them was the one instant
+a compliant device may be changing them -- in silicon, a metastable input to a
+multi-bit state register, and in simulation a rerun that began on the very
+rising edge the pins had moved a nanosecond before.
+
+**Found by:** RD68031 (its M3 entry), in code inherited from here. Confirmed
+here by the test below: the rerun's S0 came 1.0 ns after the negation.
+
+**Fixed by:** `retry_clr_q`, a falling-edge flop of BERR and HALT both negated,
+which is what the rising-edge state register reads. No synchroniser rank is
+added: the restart is at most half a clock later than it was.
+
+**Stops it coming back:** `bus_error_tb`'s case 5 with BERR and HALT negated a
+nanosecond before a rising edge: the rerun must start more than half a clock
+later, after a falling edge has seen them.

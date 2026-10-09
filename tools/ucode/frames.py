@@ -330,6 +330,7 @@ EXEMPT = [
     ('biu', 'bg_n_o',       'the grant pin'),
     ('biu', 'rmc_hold',     'arbitration is inhibited across a read-modify-write'),
     ('biu', 'halt_hold',    'the processor is halted'),
+    ('biu', 'retry_clr_q',  'BERR and HALT both negated, sampled on the falling edge, for the end of a retry'),
     ('biu', 'as_win',       'the AS pin, registered'),
     ('biu', 'ds_q',         'the DS pin, registered'),
     ('biu', 'ecs_q',        'the ECS pin, registered'),

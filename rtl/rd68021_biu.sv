@@ -327,11 +327,20 @@ module rd68021_biu #(
 
   // Retry clears when BOTH BERR and HALT have been negated -- UM 5.5.2, "does not
   // begin another bus cycle until the BERR and HALT signals have been negated by
-  // external logic". These are the raw pins: they are the same inputs the
-  // termination sample uses, and putting a synchroniser here would delay the
-  // restart by two clocks for no reason.
+  // external logic".
+  //
+  // Sampled on the FALLING edge, like every other use of these two pins. They
+  // are asynchronous inputs, which UM 5.1 latches "during a sample window
+  // around the falling edge of the clock" and specifications 47A and 47B bound
+  // only there; a device is free to move them at a rising edge. This was the
+  // raw pins, read by the rising-edge state register's next-state logic,
+  // which is a metastable sample of a multi-bit register exactly where a
+  // device changes them. One falling-edge flop, as the termination samples
+  // are: no synchroniser rank is added, so the restart is at most half a
+  // clock later than it was.
+  logic retry_clr_q;
   logic retry_clear;
-  assign retry_clear = berr_n_i && halt_n_i;
+  assign retry_clear = retry_clr_q;
 
   // The if/else inside each case item is not a style choice: iverilog rejects a
   // ternary of two enum values assigned to an enum variable with "This assignment
@@ -1109,8 +1118,12 @@ module rd68021_biu #(
       early_q   <= 1'b0;
       as_win    <= 1'b0;
       ds_q      <= 1'b0;
+      retry_clr_q <= 1'b1;
     end else begin
       st_n <= st_n_nxt;
+
+      // BERR and HALT both negated, for the end of a retry -- see retry_clear.
+      retry_clr_q <= berr_n_i && halt_n_i;
 
       // AS from the falling edge entering S1 to the one entering S5. DS on a
       // read follows it (UM 5.3.1 state 1, "the processor also asserts DS

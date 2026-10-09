@@ -116,6 +116,38 @@ module bus_error_tb;
     check(cycles == 2, what);
 
     // -------------------------------------------------------------------
+    // Case 5 again, with BERR and HALT negated a nanosecond before a RISING
+    // edge. Both are asynchronous inputs, sampled "during a sample window
+    // around the falling edge of the clock" (UM 5.1) and bounded by
+    // specifications 47A and 47B only there; a device may move them at a
+    // rising edge. So the rerun may not begin until a falling edge has seen
+    // them negated: its S0 is at least a clock after the negation, never the
+    // rising edge it was negated just before.
+    // -------------------------------------------------------------------
+    begin
+      realtime t_neg, t_ecs;
+      fork
+        begin
+          assert_at_n(1'b1, 1'b1);
+          @(posedge clk);
+          @(posedge clk);
+          #(CLK_PERIOD - 1.0);
+          berr_drv = 1'b0;
+          halt_drv = 1'b0;
+          t_neg = $realtime;
+          @(negedge ecs_n_o);
+          t_ecs = $realtime;
+        end
+        op_read(32'h0000_0100, 4, got, cycles);
+      join
+      check(got[31:0] === 32'h10111213 && cycles == 2,
+            "case 5, negated at a rising edge: the retried cycle returns the data");
+      $sformat(what, "case 5, negated at a rising edge: the rerun waits for a falling edge to see it (S0 %0.1f ns after)",
+               t_ecs - t_neg);
+      check(t_ecs - t_neg > CLK_PERIOD / 2.0, what);
+    end
+
+    // -------------------------------------------------------------------
     // Case 6: BERR and HALT one state pair after DSACK -- the late retry.
     // -------------------------------------------------------------------
     fork
