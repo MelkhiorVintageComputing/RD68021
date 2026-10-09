@@ -694,6 +694,7 @@ module rd68021_seq #(
         b_bus = rd68021_frame_pkg::FRAME_A_BYTES;
       rd68021_ucode_pkg::U_BSRC_FRAME_B_BYTES:
         b_bus = rd68021_frame_pkg::FRAME_B_BYTES;
+      rd68021_ucode_pkg::U_BSRC_VEROFF:  b_bus = rd68021_frame_pkg::OFF_VERSION;
       rd68021_ucode_pkg::U_BSRC_BITMASK: b_bus = bit_mask;
       rd68021_ucode_pkg::U_BSRC_DIVQ:    b_bus = div_q;
       rd68021_ucode_pkg::U_BSRC_IRQLEVEL: b_bus = {29'd0, irq_taking_q};
@@ -1720,6 +1721,11 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_COND_FMTA:  cond_true = (xw_q[15:12] == 4'hA);
       rd68021_ucode_pkg::U_COND_FMTB:  cond_true = (xw_q[15:12] == 4'hB);
       rd68021_ucode_pkg::U_COND_FMT9:  cond_true = (xw_q[15:12] == 4'h9);
+      // UM 6.1.8: a long frame whose version number is not this design's is a
+      // format error. The word at +$36 is in xw.
+      rd68021_ucode_pkg::U_COND_VERBAD:
+        cond_true = (xw_q[rd68021_frame_pkg::VERSION_HI:rd68021_frame_pkg::VERSION_LO]
+                     != rd68021_frame_pkg::FRAME_VERSION);
       // UM 6.2.2: "the only bits in the SSW that may be modified are DF, RB, and
       // RC", so these three are the whole of what a handler can tell RTE, and
       // doc/checkpoint.md's rule on bus-steering conditions admits them: every

@@ -29,6 +29,7 @@ module core_fault_tb;
 
   bit          reached;
   logic [31:0] base;
+  logic [31:0] base2;
   int unsigned i;
 
   // Every cycle to the supervisor stack must be in supervisor space. The
@@ -975,6 +976,99 @@ module core_fault_tb;
     check(peek_l(GONE) === 32'h5A5A_5A5A, "posted, repaired: RTE did not write it again");
     check(dut.u_seq.dreg[6] === 32'h0000_0011, "posted, repaired: the program went on");
     check(dut.u_seq.isp_q === ISP0, "posted, repaired: the frame came off the stack");
+
+    // ======================================================================
+    // RTE refuses a long frame that carries another version number. UM 6.1.8:
+    // "for long bus cycle fault format frames, [RTE] also compares the
+    // internal version number of the processor to that contained in the frame
+    // at memory location SP+54 (SP+$36)", and a mismatch is a format error,
+    // whose four-word frame names the RTE and goes below the one refused.
+    //
+    // The format error's handler puts the nibble back, steps over its own
+    // frame and returns again: the long frame is then taken as it should be.
+    // ======================================================================
+    base_setup();
+    poke_l(32'h0000_0038, 32'h0000_0580);  // vector 14, format error
+    poke_l(GONE, 32'h1357_9BDF);
+    poke_w(CODE + 0, 16'h207C);            // MOVEA.L #GONE,A0
+    poke_l(CODE + 2, GONE);
+    poke_w(CODE + 6, 16'h2410);            // MOVE.L (A0),D2 -- faults
+    poke_w(CODE + 8, 16'h60FE);
+    poke_w(HAND + 0, 16'h0A6F);            // EORI.W #$1000,($36,A7)
+    poke_w(HAND + 2, 16'h1000);            //   ... another version
+    poke_w(HAND + 4, 16'h0036);
+    poke_w(HAND + 6, 16'h4E73);            // RTE -- refused
+    poke_w(32'h0000_0580, 16'h0A6F);       // EORI.W #$1000,($3E,A7)
+    poke_w(32'h0000_0582, 16'h1000);       //   ... ours again
+    poke_w(32'h0000_0584, 16'h003E);
+    poke_w(32'h0000_0586, 16'h508F);       // ADDQ.L #8,A7 -- drop its own frame
+    poke_w(32'h0000_0588, 16'h4E73);       // RTE -- taken
+    reset_dut();
+    run_until(32'h0000_0580, 4000, reached);
+    check(reached, "version: RTE on another version's frame takes a format error -- UM 6.1.8");
+    base = ISP0 - 32'h5C;
+    check(dut.u_seq.isp_q === base - 32'd8,
+          "version: a four-word frame below the long one");
+    check(peek_w(base - 32'd8) === 16'h2700, "version: format error +$00 the status register");
+    check(peek_l(base - 32'd6) === HAND + 6,
+          "version: format error +$02 the RTE that detected it");
+    check(peek_w(base - 32'd2) === 16'h0038,
+          "version: format error +$06 format $0, vector offset $038");
+    check(peek_w(base + 32'h06) === 16'hB008, "version: the refused frame is intact");
+    check(peek_w(base + 32'h36) >> 12 === (rd68021_frame_pkg::FRAME_VERSION ^ 4'h1),
+          "version: ... with the version the handler gave it");
+    check(peek_l(base + 32'h02) === CODE + 6,
+          "version: ... and the faulted instruction's address");
+    berr_en = 1'b0;
+    run_until(CODE + 8, 4000, reached);
+    check(reached, "version: with its own version back, the frame is taken");
+    check(dut.u_seq.dreg[2] === 32'h1357_9BDF, "version: and the read it held was rerun");
+    check(dut.u_seq.isp_q === ISP0, "version: both frames came off");
+
+    // ======================================================================
+    // RTE meets a long frame whose far end is not there. UM 6.1.8: RTE "reads
+    // from both ends of the stack frame to make sure it is accessible. If the
+    // frame is invalid or inaccessible, the processor takes a format error or
+    // a bus error exception, respectively."
+    //
+    // The stack straddles a page boundary at $A000; once the frame is on it
+    // the page above goes, so +$5A cannot be read. The bus error has to come
+    // BEFORE anything is restored: its frame then describes the RTE, and when
+    // the page comes back RTE goes on from where it was.
+    // ======================================================================
+    base_setup();
+    poke_l(32'h0000_0000, 32'h0000_A010);  // a stack across $A000
+    poke_l(GONE, 32'h2468_ACE0);
+    poke_w(CODE + 0, 16'h207C);            // MOVEA.L #GONE,A0
+    poke_l(CODE + 2, GONE);
+    poke_w(CODE + 6, 16'h2410);            // MOVE.L (A0),D2 -- faults
+    poke_w(CODE + 8, 16'h60FE);
+    poke_w(HAND + 0, 16'h4E73);            // RTE -- its far end faults
+    poke_w(HAND + 32'h40, 16'h7C22);       // MOVEQ #$22,D6 -- the second handler
+    poke_w(HAND + 32'h42, 16'h4E73);       // RTE
+    reset_dut();
+    dut.u_seq.dreg[6] = 32'h0;
+    run_until(HAND + 0, 4000, reached);
+    check(reached, "far end: the first bus error is taken");
+    base = 32'h0000_A010 - 32'h5C;
+    poke_l(32'h0000_0008, HAND + 32'h40);  // the next bus error goes elsewhere
+    berr_base = 32'h0000_A000;             // and the frame's top page goes
+    run_until(HAND + 32'h42, 4000, reached);
+    check(reached, "far end: RTE takes a bus error on the frame -- UM 6.1.8");
+    base2 = base - 32'h5C;
+    check(peek_w(base2 + 32'h06) === 16'hB008, "far end: a long frame for it");
+    check(peek_l(base2 + 32'h02) === HAND, "far end: +$02 naming the RTE");
+    check(peek_l(base2 + 32'h10) === base + 32'h5A,
+          "far end: +$10 the last word of the frame it could not read");
+    check(peek_w(base + 32'h06) === 16'hB008, "far end: the first frame is intact");
+    check(dut.u_seq.dreg[6] === 32'h0000_0022, "far end: the second handler ran");
+    check(dut.u_seq.dreg[2] !== 32'h2468_ACE0,
+          "far end: nothing of the first frame had been acted on");
+    berr_en = 1'b0;
+    run_until(CODE + 8, 4000, reached);
+    check(reached, "far end: with the page back, both RTEs complete");
+    check(dut.u_seq.dreg[2] === 32'h2468_ACE0, "far end: the faulted read was rerun");
+    check(dut.u_seq.isp_q === 32'h0000_A010, "far end: both frames came off");
 
     // ======================================================================
     // A traced instruction that faults. UM 6.1.7: "if an instruction does not

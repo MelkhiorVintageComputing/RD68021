@@ -2215,3 +2215,35 @@ inside it (`fault_now`, a data or a prefetch one), not by a data fault alone.
 **Stops it coming back:** `core_fault_tb`: a bus error on the reset vector read,
 an odd initial program counter, a bus error on the first prefetch, an odd bus
 error vector and one into the missing page, each checked to halt.
+
+## Post-M13 · RTE never compared the version number, and restored before it knew the frame was all there
+
+**What:** two checks UM 6.1.8 requires of RTE out of a bus fault frame, both
+missing.
+
+- "For long bus cycle fault format frames, the RTE instruction also compares
+  the internal version number of the processor to that contained in the frame
+  at memory location SP+54 (SP+$36)", and takes a format error if they differ.
+  The frame builder wrote the nibble and RTE read `+$36` back into the bits it
+  carries, but nothing compared it: a long frame of any version was restored.
+  `doc/checkpoint.md` said it was refused.
+- RTE "reads from both ends of the stack frame to make sure it is accessible".
+  It read the format word and then walked the frame upward, writing each field
+  into its register as it went, so a long frame whose top was on a missing page
+  faulted part-way through, with the program counter, the pipe and the special
+  status word already put back.
+
+**Found by:** RD68031 (its M4 entries), in code inherited from here. Confirmed
+here by the tests below, which fail before the fix.
+
+**Fixed by:** `rte_check_long` and `rte_check_short` in `tools/ucode/program.py`.
+Before the walk, RTE reads the frame's last word (`_far_end`); for the long
+frame it then reads `+$36` into `xw`, and the condition `VERBAD` sends a
+mismatch to the format error, which stacks the RTE's own address below the
+untouched frame. Nine microwords.
+
+**Stops it coming back:** `core_fault_tb`'s "version" case (a handler changes
+the nibble; RTE takes a format error naming itself, below the intact frame,
+whose handler puts it back and RTEs again to finish the faulted read) and its
+"far end" case (the frame's top page goes; RTE faults on `+$5A` with the first
+frame intact, and both finish when the page comes back).

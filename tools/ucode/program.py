@@ -3188,9 +3188,9 @@ u('a six-word frame?',
 u('a four-word one?',
   seq='COND', cond='FMT0', next='rte_four')
 u('a short bus fault frame?',
-  seq='COND', cond='FMTA', next='rte_fault_short')
+  seq='COND', cond='FMTA', next='rte_check_short')
 u('a long one?',
-  seq='COND', cond='FMTB', next='rte_fault_long')
+  seq='COND', cond='FMTB', next='rte_check_long')
 u('a coprocessor midinstruction frame? UM 7.4.19',
   seq='COND', cond='FMT9', next='rte_nine')
 u('and anything else is a format error -- UM 6.1.8',
@@ -3381,8 +3381,50 @@ def rte_fault(stem, long_frame):
       rstop=1, seq='RESUME')
 
 
-rte_fault('rte_fault_short', False)
+# --------------------------------------------------------------------------
+# Is the frame one to restore at all? UM 6.1.8: "the RTE instruction checks
+# the validity of the format code and, for long bus cycle fault format frames,
+# also compares the internal version number of the processor to that contained
+# in the frame at memory location SP+54 (SP+$36)", and "reads from both ends of
+# the stack frame to make sure it is accessible. If the frame is invalid or
+# inaccessible, the processor takes a format error or a bus error exception,
+# respectively."
+#
+# Both checks come BEFORE the walk, because the walk writes each field straight
+# into the register it came from: a frame refused half-way would leave the
+# machine half restored, and the format error's own frame would then carry a
+# program counter that is no longer the RTE's. Here nothing has moved yet: a
+# bus error on the far end is an ordinary data fault on this microword, which
+# commits nothing (doc/checkpoint.md rule 2) and is re-executed when its
+# handler returns, and a format error stacks the RTE's own address below a
+# frame it has not touched.
+#
+# The near end is the format word at +$06, already read.
+# --------------------------------------------------------------------------
+def _far_end(frame_bytes):
+    u('the far end of the frame -- UM 6.1.8, "both ends"',
+      asrc='T1', bsrc=frame_bytes, alu='ADD', dst='T2', size='LONG')
+    u('... its last word',
+      asrc='T2', bsrc='TWO', alu='SUB', dst='T2', size='LONG')
+    u('... read, to know it is there; the word itself is not wanted',
+      bus='READ', fc='DATA', asel='T2', bytes=2)
+
+
+label('rte_check_long')
+_far_end('FRAME_B_BYTES')
+u('the version word -- UM 6.1.8, "SP+54 (SP+$36)"',
+  asrc='T1', bsrc='VEROFF', alu='ADD', dst='T2', size='LONG')
+u('... read',
+  bus='READ', fc='DATA', asel='T2', bytes=2)
+u('... and held, because the test below reads it',
+  asrc='RDATA', alu='A', dst='XW', size='WORD')
+u('another version\'s frame is a format error -- UM 6.1.8',
+  seq='COND', cond='VERBAD', next='exc_format')
 rte_fault('rte_fault_long', True)
+
+label('rte_check_short')
+_far_end('FRAME_A_BYTES')
+rte_fault('rte_fault_short', False)
 
 exc_here('exc_format', 14, executed=True)
 

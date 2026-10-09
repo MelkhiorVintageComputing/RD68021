@@ -84,7 +84,12 @@ Software that synthesises internal words from scratch was already not portable
 across implementations.
 
 RD68021 therefore carries its own version number and refuses any other with a
-format error, vector 14.
+format error, vector 14 (`rte_check_long`: the word is read into `xw` and the
+condition `VERBAD` compares it). Before that, and before anything is restored,
+RTE reads the frame's last word, for both bus fault formats: UM 6.1.8 has it
+"read from both ends of the stack frame to make sure it is accessible", and a
+bus error there is an ordinary data fault on a microword that has committed
+nothing (rule 2). A frame refused for either reason is left as it was.
 
 **The short frame has no version field.** UM 6.1.12 validates the stamp only for
 the long frame; for a short one "the processor first checks the format value on

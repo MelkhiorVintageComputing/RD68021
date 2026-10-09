@@ -113,6 +113,8 @@ COND = enc(
     'FMTA',      # ... a short bus fault frame
     'FMTB',      # ... and a long one
     'FMT9',      # ... a coprocessor midinstruction frame -- UM 7.4.19
+    'VERBAD',    # xw holds a long frame's +$36 whose version is not this
+                 # design's -- UM 6.1.8, a format error
     # UM 6.2.2: the three bits of the special status word a handler is allowed
     # to have changed, plus the two that say what the faulted access was, which
     # RTE needs to know which buffer to rerun it from.
@@ -394,6 +396,7 @@ BSRC = enc(
     'BF_BYTEOFF',
     'FRAME_A_BYTES',
     'FRAME_B_BYTES',    # ... and 12, of a six-word one
+    'VEROFF',    # $36, where the long frame's version word is -- UM 6.1.8
     'T0', 'T1', 'T2', 'T3',
     'XW',        # a fetched displacement, sign extended from 16 bits
     'DISP8',     # bits 7:0 of the instruction word, sign extended: a short branch
