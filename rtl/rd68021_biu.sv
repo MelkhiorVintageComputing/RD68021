@@ -52,6 +52,9 @@ module rd68021_biu #(
     output logic        req_fault_post,
     output logic        req_ack,
     output logic        req_last,
+    // The sequencer's request starts its first bus cycle at this rising edge:
+    // S0. IPEND reads it for an interrupt acknowledge -- UM 6.1.9.
+    output logic        req_start,
     // The data operand finishes cleanly at the rising edge that ends S5 -- no
     // bus error, no retry. A falling-edge register, valid for that half clock.
     output logic        req_early,
@@ -277,6 +280,13 @@ module rd68021_biu #(
   // "The BG output will not be asserted while RMC is asserted" -- the note under
   // figure 5-44, and 5.7.1.4: "for the duration of this sequence, the MC68020
   // ignores the BR input".
+  //
+  // That includes the sequence's first read. The MC68030 makes that read the
+  // one exception, relinquishing and retrying on BERR, HALT and BR there (its
+  // UM 7.5.2 and 7.7.4), and RD68031 does. The MC68020 has no exception: it
+  // "does not relinquish the bus during a read-modify-write operation", and a
+  // device that needs the bus must "assert BERR and BR only (HALT must not be
+  // included)" (UM 5.5.2).
   logic arb_req;
   assign arb_req = arb_r && !rmc_hold;
 
@@ -755,6 +765,7 @@ module rd68021_biu #(
                    && (req_valid || rst_post_q) && (rst_bytes != 3'd0);
   assign take_req   = !op_continuing && !post_flt_end && !rst_pend_q
                    && req_valid;
+  assign req_start  = take_req && (st_p_nxt == rd68021_pkg::ST_S0);
   assign take_fetch = !op_continuing && !post_flt_end && !req_valid && fetch_valid
                    && !rst_self;
 

@@ -135,7 +135,7 @@ rd68021_biu dut (
     .req_valid (req_valid), .req_kind (req_kind), .req_fc (req_fc),
     .req_addr (req_addr), .req_bytes (req_bytes), .req_wdata (req_wdata),
     .req_rmc (req_rmc), .req_cpuspace (req_cpuspace), .req_cpuaddr (req_cpuaddr),
-    .req_ack (req_ack), .req_last (req_last), .req_rdata (req_rdata),
+    .req_ack (req_ack), .req_last (req_last), .req_start (), .req_rdata (req_rdata),
     .req_end (req_end), .req_fault (req_fault), .req_fault_wr (req_fault_wr),
     .req_dsack (req_dsack),
     // Every input tied to its inactive value and every output named: iverilog

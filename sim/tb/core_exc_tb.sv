@@ -87,6 +87,38 @@ module core_exc_tb;
   // makes it true: `iack_now` is a continuous assignment, so reading it inside
   // an `always @(negedge as_n_o)` is a delta-cycle race, and it read as false
   // every time.
+  // IPEND moves on rising edges only (figure 6-4): every change of the pin,
+  // over the whole run, is checked to fall on one. A flop's output settles in
+  // the NBA region, after the rising edge's own blocking assignment to t_rise.
+  realtime     t_rise, t_ipend_off;
+  int unsigned ipend_moves, ipend_bad, iack_s0_ok, iack_s0_bad;
+  initial begin
+    t_rise = 0; t_ipend_off = 0;
+    ipend_moves = 0; ipend_bad = 0; iack_s0_ok = 0; iack_s0_bad = 0;
+  end
+  always @(posedge clk) t_rise = $realtime;
+  always @(ipend_n_o) if (rst_n === 1'b1) begin
+    ipend_moves = ipend_moves + 1;
+    if (!(clk === 1'b1 && $realtime == t_rise)) begin
+      ipend_bad = ipend_bad + 1;
+      $display("  FAIL: IPEND moved at %0t, not on a rising edge", $time);
+    end
+  end
+  always @(posedge ipend_n_o) if (rst_n === 1'b1) t_ipend_off = $realtime;
+
+  // ... and is negated on the rising edge that starts the acknowledge's S0,
+  // half a clock before AS asserts -- UM 6.1.9, "if no higher priority
+  // interrupt has been synchronized, the IPEND signal is negated during state
+  // 0 (S0) of an interrupt acknowledge cycle".
+  always @(posedge iack_now) if (ipend_n_o === 1'b1) begin
+    if ($realtime - t_ipend_off == CLK_PERIOD / 2.0) iack_s0_ok = iack_s0_ok + 1;
+    else begin
+      iack_s0_bad = iack_s0_bad + 1;
+      $display("  FAIL: IPEND negated %0.1f ns before the acknowledge's AS, not in its S0",
+               $realtime - t_ipend_off);
+    end
+  end
+
   always @(posedge iack_now) begin
     iacks      = iacks + 1;
     iack_level = a_o[3:1];
@@ -704,6 +736,10 @@ module core_exc_tb;
     // ======================================================================
     if (pipe_fails != 0)
       $display("  FAIL: the pipe invariant broke %0d times", pipe_fails);
+    check(ipend_moves > 0, "IPEND moved at all during the run");
+    check(ipend_bad == 0, "IPEND moved only on rising edges (figure 6-4)");
+    check(iack_s0_ok > 0 && iack_s0_bad == 0,
+          "IPEND negated in S0 of every interrupt acknowledge -- UM 6.1.9");
     $display("core_exc_tb: %0d checks, %0d failed, %0d pipe checks",
              checks, fails, pipe_checks);
     // ======================================================================

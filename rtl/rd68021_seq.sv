@@ -41,6 +41,7 @@ module rd68021_seq #(
     output logic        req_cpfault,
     input  logic        req_ack,
     input  logic        req_last,
+    input  logic        req_start,
     input  logic        req_early,
     input  logic [39:0] req_rdata,
     input  logic  [2:0] req_end,
@@ -1427,6 +1428,10 @@ module rd68021_seq #(
   logic       irq_nmi_edge;
   logic       irq_pending;
   logic       irq_ipend;
+  // A fault is being taken this clock, and the step into an interrupt's entry
+  // point -- both driven further down, read first by IPEND.
+  logic       fault_now;
+  logic       irq_enter;
 
   assign irq_level = ~ipl_sync_n;
 
@@ -1449,7 +1454,42 @@ module rd68021_seq #(
   // UM 6.1.9: IPEND "signals to external devices that an interrupt exception
   // will be taken at an upcoming instruction boundary". It is a pin and is
   // never three-stated.
-  assign ipend_n_o = ~irq_ipend;
+  //
+  // A RISING-edge register. Figure 6-4 asserts it on the rising edge a clock
+  // after the one that compares the synchronised request with the mask. The
+  // comparison reads the level from the input synchroniser, a falling-edge
+  // register, and the mask from sr_q, a rising-edge one, so as a combinational
+  // output it moved on both edges -- and, being a comparison of several bits
+  // of each, could glitch on any edge that changed two of them, which is the
+  // decode doc/coding-standard.md forbids on a pin. The sequencer reads
+  // irq_pending, not the pin.
+  //
+  // And it stays asserted until the acknowledge starts. UM 6.1.9: "if no
+  // higher priority interrupt has been synchronized, the IPEND signal is
+  // negated during state 0 (S0) of an interrupt acknowledge cycle". The
+  // exception raises the mask, and drops the level-7 edge, a few microwords
+  // before the acknowledge runs -- either would negate the comparison early
+  // -- so iack_due_q holds the pin from the step into the interrupt entry to
+  // the rising edge that starts the acknowledge's S0 (req_start). A fault
+  // landing in between (a posted write's, doc/checkpoint.md rule 9) takes the
+  // acknowledge out of this exception processing, and the hold with it.
+  logic ipend_q;
+  logic iack_due_q;
+  logic iack_now;
+  assign iack_now = req_start
+                 && (`UF(CPUSPACE) == rd68021_ucode_pkg::U_CPUSPACE_IACK);
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      ipend_q    <= 1'b0;
+      iack_due_q <= 1'b0;
+    end else begin
+      ipend_q    <= irq_ipend || (iack_due_q && !iack_now);
+      if (fault_now || iack_now) iack_due_q <= 1'b0;
+      else if (irq_enter)        iack_due_q <= 1'b1;
+    end
+  end
+
+  assign ipend_n_o = ~ipend_q;
 
   // ==========================================================================
   // Tracing -- UM 6.1.7 and table 6-2
@@ -1984,7 +2024,6 @@ module rd68021_seq #(
   // doc/bugs-found.md.
 
   // Any of the three, and only the data one sets DF.
-  logic fault_now;
   assign fault_now = req_fault || pipe_fault;
 
   // doc/checkpoint.md rule 2: A FAULTED MICROWORD ENDS BUT COMMITS NOTHING --
@@ -2827,7 +2866,6 @@ module rd68021_seq #(
   // the stopped state -- and not while sitting on it, which a stalled first
   // microword would otherwise do once per clock with whatever the pins then
   // said.
-  logic irq_enter;
   // The coprocessor's midinstruction interrupt is the same acknowledge reached
   // from inside an instruction -- UM 7.5.2.6 -- and latches the same way.
   assign irq_enter = ((upc != rd68021_ucode_pkg::ENTRY_IRQ)

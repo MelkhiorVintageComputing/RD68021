@@ -112,6 +112,7 @@ module rd68021_top #(
 
   logic        req_ack;
   logic        req_last;
+  logic        req_start;
   logic        req_early;
   logic [39:0] req_rdata;
   logic  [2:0] req_end;
@@ -219,6 +220,7 @@ module rd68021_top #(
       .req_cpfault    (req_cpfault),
       .req_ack        (req_ack),
       .req_last       (req_last),
+      .req_start      (req_start),
       .req_early      (req_early),
       .req_rdata      (req_rdata),
       .req_end        (req_end),
@@ -345,6 +347,7 @@ module rd68021_top #(
       .req_cpfault    (req_cpfault),
       .req_ack        (req_ack),
       .req_last       (req_last),
+      .req_start      (req_start),
       .req_early      (req_early),
       .req_rdata      (req_rdata),
       .req_end        (req_end),

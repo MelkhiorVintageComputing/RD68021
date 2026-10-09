@@ -330,6 +330,8 @@ EXEMPT = [
     ('biu', 'bg_n_o',       'the grant pin'),
     ('biu', 'rmc_hold',     'arbitration is inhibited across a read-modify-write'),
     ('biu', 'halt_hold',    'the processor is halted'),
+    ('seq', 'ipend_q',      'the IPEND pin, registered'),
+    ('seq', 'iack_due_q',   'an interrupt is being taken and its acknowledge has not started: IPEND is held until its S0 -- UM 6.1.9'),
     ('biu', 'retry_clr_q',  'BERR and HALT both negated, sampled on the falling edge, for the end of a retry'),
     ('biu', 'as_win',       'the AS pin, registered'),
     ('biu', 'ds_q',         'the DS pin, registered'),

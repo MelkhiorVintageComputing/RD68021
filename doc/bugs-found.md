@@ -2467,3 +2467,32 @@ added: the restart is at most half a clock later than it was.
 **Stops it coming back:** `bus_error_tb`'s case 5 with BERR and HALT negated a
 nanosecond before a rising edge: the rerun must start more than half a clock
 later, after a falling edge has seen them.
+
+## Post-M13 · IPEND was combinational, and was negated before the acknowledge
+
+**What:** two defects in the IPEND pin.
+
+- It was the comparison of the synchronised request level, a falling-edge
+  register, with the mask in `sr_q`, a rising-edge one, driven straight to the
+  pin. So it moved on both edges, and as a comparison of several bits of each
+  it could glitch on any edge that changed two of them. Figure 6-4 asserts it
+  on a rising edge, a clock after the one that compares the request with the
+  mask.
+- UM 6.1.9: "if no higher priority interrupt has been synchronized, the IPEND
+  signal is negated during state 0 (S0) of an interrupt acknowledge cycle".
+  The interrupt exception raises the mask a few microwords before the
+  acknowledge runs, and the pin followed the comparison down, 90 to 210 ns
+  before the acknowledge's AS in `core_exc_tb`.
+
+**Found by:** RD68031 (its M3 and M8-M9 entries), in code inherited from here.
+Confirmed here by the checks below, both failing before the fix.
+
+**Fixed by:** `ipend_q`, a rising-edge register of the comparison, held
+asserted by `iack_due_q` from the step into the interrupt's entry point to the
+rising edge that starts the acknowledge's S0 (`req_start`, a new output of the
+bus unit). A fault in between, a posted write's, takes the acknowledge out of
+that exception processing and drops the hold.
+
+**Stops it coming back:** `core_exc_tb` checks every change of IPEND over the
+whole run falls on a rising edge, and that at every interrupt acknowledge IPEND
+was negated exactly half a clock before AS: the rising edge that starts S0.
