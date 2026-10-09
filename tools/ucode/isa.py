@@ -256,6 +256,9 @@ FC = enc(
     # went to the user's page, faulted, and halted the processor with a double
     # bus fault. Found by SunOS 4.1.1's first user process (doc/bugs-found.md).
     'SDATA',
+    # Program space at the privilege level of the status register a short bus
+    # fault frame carries, which RTE holds in xw -- UM 6.2.1.
+    'FRAMEPROG',
 )
 
 # --------------------------------------------------------------------------
@@ -365,6 +368,8 @@ ASRC = enc(
     'FWLEN',     # ... and its length field alone
     'PC_C_RAW',  # the scanPC as a frame field: the address of stage C, read
                  # without using the word there -- UM 7.4.1
+    'UBOUND',    # the micro-address of rte_boundary, an instruction boundary:
+                 # where RTE out of a short frame resumes
 )
 
 # A convention, not a field: ASRC.DREG and ASRC.AREG read the register that bits
@@ -521,6 +526,8 @@ DST = enc(
     'INT08', 'INT36',
     'LINK', 'PC_PREV',
     'SSW', 'DFA', 'DOB', 'DIB',
+    'SSWA',      # the special status word out of a SHORT frame, with what an
+                 # instruction boundary implies for the rest -- rule 1
     'RUPC',      # the micro-address to resume at
     'AREG_EA',
     # The same two, for an ADDRESS rather than a data operand: written whole,

@@ -102,6 +102,15 @@ be read by something else with no way to know it should not be.
 `tools/ucode/frames.py` enforces that for the private assignment. This design
 satisfies it the simple way: it never builds a short frame (above).
 
+The rule binds RTE too. A short frame RTE meets came from software or from
+another processor, so RTE reads none of its internal words
+(`check_short_reads` in `tools/ucode/assemble.py` fails the build if it does):
+`rte_fault_short` restores the architectural fields and supplies what an
+instruction boundary implies. Stage D is read from memory at the program
+counter, in the stacked status register's program space; `DF` on a write
+becomes a posted write of its own (rule 9), sized by `SIZE`; and it resumes at
+`rte_boundary`, a microword that only decodes.
+
 What makes it possible is that UM 6.2 states the derivation itself:
 
 > For instruction faults, when the short bus fault stack frame applies, the

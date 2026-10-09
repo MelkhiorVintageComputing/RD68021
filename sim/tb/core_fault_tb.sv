@@ -52,6 +52,15 @@ module core_fault_tb;
   always @(negedge as_n_o)
     if (rst_n && as_oe && a_o == GONE && rw_o) fcgone = fc_o;
 
+  // The function codes of RTE's read of a short frame's stage D, at $600, and
+  // of the refill after it, at $604 -- UM 6.2.1.
+  logic  [2:0] fc600, fc604;
+  always @(negedge as_n_o)
+    if (rst_n && as_oe) begin
+      if (a_o == 32'h0000_0600) fc600 = fc_o;
+      if (a_o == 32'h0000_0604 && rw_o) fc604 = fc_o;
+    end
+
   // An interrupting device drops its request when it is acknowledged.
   always @(negedge as_n_o)
     if (rst_n && fc_o === 3'b111 && a_o[19:16] === 4'hF) ipl_n_i = 3'b111;
@@ -67,6 +76,43 @@ module core_fault_tb;
     berr_en   = 1'b1;
     berr_base = GONE;
     berr_mask = 32'hFFFF_F000;             // a 4K page
+  endtask
+
+  // A short bus fault frame, format $A, built by hand -- UM table 6-5. Its
+  // internal words are filled with things that would be ruinous if RTE read
+  // them: +$14 is a micro-address nothing should resume at, +$16 an ILLEGAL,
+  // +$08 has every bit of this design's long-frame word set.
+  localparam logic [31:0] XPC = 32'h0000_0600;
+  task automatic short_frame(input logic [15:0] sr, input logic [15:0] ssw,
+                             input logic [15:0] c, input logic [15:0] b,
+                             input logic [31:0] dfa, input logic [31:0] dob);
+    logic [31:0] f;
+    f = ISP0 - 32'd32;
+    poke_w(f + 32'h00, sr);
+    poke_l(f + 32'h02, XPC);
+    poke_w(f + 32'h06, 16'hA008);
+    poke_w(f + 32'h08, 16'hFFFF);
+    poke_w(f + 32'h0A, ssw);
+    poke_w(f + 32'h0C, c);
+    poke_w(f + 32'h0E, b);
+    poke_l(f + 32'h10, dfa);
+    poke_w(f + 32'h14, 16'hFFFF);
+    poke_w(f + 32'h16, 16'h4AFC);
+    poke_l(f + 32'h18, dob);
+    poke_l(f + 32'h1C, 32'hFFFF_FFFF);
+  endtask
+
+  task automatic short_setup();
+    base_setup();
+    poke_l(32'h0000_0000, ISP0 - 32'd32);  // the reset SP is the frame
+    poke_w(CODE + 0, 16'h4E73);            // RTE
+    poke_w(XPC + 0, 16'h7001);             // MOVEQ #1,D0
+    poke_w(XPC + 2, 16'h7202);             // MOVEQ #2,D1
+    poke_w(XPC + 4, 16'h7403);             // MOVEQ #3,D2
+    poke_w(XPC + 6, 16'h60FE);             // BRA *
+    poke_l(32'h0000_3000, 32'h0);
+    fc600 = 3'd0;
+    fc604 = 3'd0;
   endtask
 
   initial begin
@@ -1079,6 +1125,75 @@ module core_fault_tb;
     check(reached, "far end: with the page back, both RTEs complete");
     check(dut.u_seq.dreg[2] === 32'h2468_ACE0, "far end: the faulted read was rerun");
     check(dut.u_seq.isp_q === 32'h0000_A010, "far end: both frames came off");
+
+    // ======================================================================
+    // RTE out of a SHORT frame -- UM table 6-5, "execution unit at instruction
+    // boundary", and doc/checkpoint.md rule 1. This design never builds one,
+    // so these are built by hand, with internal words that would wreck the
+    // restore if RTE read them.
+    //
+    // The pipe is UM 6.2's: stage C is the word at the program counter plus
+    // two and stage B at plus four, so the operation word at the program
+    // counter is stage D, which RTE reads from memory.
+    // ======================================================================
+    // Nothing to rerun, and the images are memory's own.
+    short_setup();
+    reset_dut();
+    short_frame(16'h2700, 16'h0000, 16'h7202, 16'h7403, 32'h0, 32'h0);
+    run_until(XPC + 6, 3000, reached);
+    check(reached, "short frame: RTE resumes at +$02 -- UM table 6-5");
+    check(dut.u_seq.dreg[0] === 32'd1 && dut.u_seq.dreg[1] === 32'd2
+          && dut.u_seq.dreg[2] === 32'd3,
+          "short frame: the instruction at +$02 and the two after it ran");
+    check(dut.u_seq.isp_q === ISP0, "short frame: sixteen words came off -- UM table 6-5");
+    check(fc600 === 3'd6,
+          "short frame: stage D read in supervisor program space -- UM 6.2.1");
+
+    // RC and RB set: the images are rubbish and must be refetched.
+    short_setup();
+    reset_dut();
+    short_frame(16'h2700, 16'h3000, 16'h4AFC, 16'h4AFC, 32'h0, 32'h0);
+    run_until(XPC + 6, 3000, reached);
+    check(reached, "short frame, RC and RB: RTE resumes");
+    check(dut.u_seq.dreg[1] === 32'd2 && dut.u_seq.dreg[2] === 32'd3,
+          "short frame, RC and RB: the stages were refetched, not taken from the frame");
+
+    // RC and RB clear with images that are NOT memory's. UM 6.2.1: "if a rerun
+    // bit is cleared, the words on the stack for the corresponding stages of
+    // the pipe are accepted as valid".
+    short_setup();
+    reset_dut();
+    short_frame(16'h2700, 16'h0000, 16'h727F, 16'h747E, 32'h0, 32'h0);
+    run_until(XPC + 6, 3000, reached);
+    check(reached, "short frame, repaired: RTE resumes");
+    check(dut.u_seq.dreg[1] === 32'h7F, "short frame, repaired: stage C's image ran -- UM 6.2.1");
+    check(dut.u_seq.dreg[2] === 32'h7E, "short frame, repaired: stage B's image ran -- UM 6.2.1");
+
+    // DF on a byte write: RTE reruns the faulted data access -- the write at
+    // +$10 of the byte right justified at +$18, in the space FC2-FC0 names.
+    short_setup();
+    reset_dut();
+    short_frame(16'h2700, 16'h0115, 16'h7202, 16'h7403, 32'h0000_3001, 32'h0000_00AB);
+    run_until(XPC + 6, 3000, reached);
+    check(reached, "short frame, DF: RTE resumes");
+    check(peek_w(32'h0000_3000) === 16'h00AB,
+          "short frame, DF: the byte at +$10, from +$18, and only it -- UM 6.2.1");
+    check(peek_w(32'h0000_3002) === 16'h0000, "short frame, DF: nothing beyond it");
+    check(dut.u_seq.dreg[2] === 32'd3, "short frame, DF: and the program ran on");
+
+    // A user-mode frame: stage D comes from USER program space. UM 6.2.1: "the
+    // address space for the bus cycle is the program space for the privilege
+    // level indicated in the copy of the status register on the stack".
+    short_setup();
+    reset_dut();
+    dut.u_seq.usp_q = 32'h0000_3800;
+    short_frame(16'h0000, 16'h0000, 16'h7202, 16'h7403, 32'h0, 32'h0);
+    run_until(XPC + 6, 3000, reached);
+    check(reached, "short frame, user: RTE resumes in user mode");
+    check(dut.u_seq.sr_q[13] === 1'b0, "short frame, user: S is clear");
+    check(fc600 === 3'd2, "short frame, user: stage D read in user program space -- UM 6.2.1");
+    check(fc604 === 3'd2, "short frame, user: the refill in user program space -- UM 6.2.1");
+    check(dut.u_seq.dreg[2] === 32'd3, "short frame, user: the program ran");
 
     // ======================================================================
     // A traced instruction that faults. UM 6.1.7: "if an instruction does not

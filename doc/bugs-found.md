@@ -2268,3 +2268,31 @@ register, commits, or by a fault. The pipe asks for nothing while it is set.
 
 **Stops it coming back:** `core_fault_tb`'s "resumed into RTS" case records the
 function code of the rerun prefetch of the faulted page, which must be 2.
+
+## Post-M13 · RTE read a short frame's internal words
+
+**What:** RTE out of a format `$A` frame read `+$08`, `+$14` and `+$16` -- the
+long frame's packed word, micro-address and stage D -- as if this design had
+written the frame. It never writes a short frame (`doc/divergences.md`), so one
+RTE meets came from software or from another processor, and has no version
+field to say whose its internal words are. The micro-address RTE resumed at was
+whatever `+$14` held. `doc/checkpoint.md` rule 1 forbade private state in the
+short frame, and the check enforced it for the frame builder only.
+
+**Found by:** RD68031 (its M4 entry), in code inherited from here. Confirmed
+here: every short-frame case below fails before the fix, the first resuming at
+the micro-address in `+$14`.
+
+**Fixed by:** `rte_fault_short`, a walk of its own that reads the architectural
+fields alone and supplies what an instruction boundary implies: stage D is read
+from memory at the program counter, in the stacked status register's program
+space (`fc = FRAMEPROG`); `DF` on a write becomes a posted write of its own,
+sized by `SIZE` (`dst = SSWA`); and it resumes at `rte_boundary`, a microword
+that only decodes (`asrc = UBOUND`). `check_short_reads` in
+`tools/ucode/assemble.py` fails the build if it ever reads an internal word.
+Two microwords fewer than before.
+
+**Stops it coming back:** `core_fault_tb`'s short-frame cases, from RD68031,
+built by hand with internal words that would wreck the restore if read: images
+accepted, rerun bits honoured, a byte write rerun at its size and address, and
+a user-mode frame whose stage D and refill are read in user program space.

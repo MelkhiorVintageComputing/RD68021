@@ -320,7 +320,7 @@ package rd68021_ucode_pkg;
     # puts in front of the decode arm at every instruction boundary.
     for lbl in ('reset', 'illegal', 'exc_trace', 'exc_irq',
                 'exc_fault_long', 'exc_line_f',
-                'exc_cp_irq', 'cp_nocp_priv'):
+                'exc_cp_irq', 'cp_nocp_priv', 'rte_boundary'):
         out.append('  localparam logic [UADDR-1:0] ENTRY_%s = %d\'d%d;'
                    % (lbl.upper().replace('EXC_', ''),
                       isa.UADDR_BITS,
@@ -788,6 +788,31 @@ def check_frame_fields():
     for name in RTE_IGNORES:
         if name not in [n for _, _, _, n, _, _ in frames.INTERNAL]:
             bad.append('RTE_IGNORES names %r, which is not in frames.INTERNAL' % name)
+    return bad
+
+
+def check_short_reads():
+    """RTE takes a short frame apart with its architectural fields alone.
+
+    doc/checkpoint.md rule 1. Format $A has no version field, so RTE cannot
+    know who wrote its internal words; it reads none of them. It once read
+    three -- +$08, +$14 and +$16 -- as if this design had written the frame,
+    which it never does, so a short frame from anywhere else resumed at
+    whatever micro-address its +$14 happened to hold.
+    """
+    bad = []
+    arch = {}
+    for off, n, field in frames.FRAMES[0xA]['slots']:
+        for w in range(n):
+            arch[off + 2 * w] = field
+    for off, nbytes, dst in program.FRAME_READS.get('rte_fault_short', []):
+        for w in range(max(1, nbytes // 2)):
+            f = arch.get(off + 2 * w, 'outside the frame')
+            if f in ('internal', 'outside the frame'):
+                bad.append('rte_fault_short reads +$%02X into %s, which is %s '
+                           '-- doc/checkpoint.md rule 1' % (off + 2 * w, dst, f))
+    if 'rte_fault_short' not in program.FRAME_READS:
+        bad.append('rte_fault_short does not record what it reads')
     return bad
 
 
@@ -1282,7 +1307,8 @@ def main():
 
     bad = (frames.check() + isa.check() + check_cond_dst() + check_live_shape() + check_bf_shape() + check_mul_shape() + check_shift_src()
            + check_ea_live() + check_ea_set() + check_rdata_restart() + check_read_no_pipe()
-           + check_areg_size() + check_restore_order() + check_frame_fields() + check_posted())
+           + check_areg_size() + check_restore_order() + check_frame_fields() + check_posted()
+           + check_short_reads())
     if bad:
         print('FAIL: the tables are not self-consistent')
         for b in bad:

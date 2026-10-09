@@ -3349,16 +3349,6 @@ def rte_fault(stem, long_frame):
           asrc='RDATA', alu='A', dst=dst, size='LONG' if nbytes == 4 else 'WORD')
         at = off
 
-    if not long_frame:
-        # UM 6.2: "when the short bus fault stack frame applies, the address of
-        # the pipe stage B word is the value in the PC plus four". The long
-        # frame carries that address; the short one is only ever built at an
-        # instruction boundary, where the pipe is sequential and the arithmetic
-        # is exact, so it is derived rather than read -- and writing it is what
-        # says the pipe is whole.
-        u('stage B is at the program counter plus four -- UM 6.2',
-          asrc='PC_D', bsrc='FOUR', alu='ADD', dst='FILL', size='LONG')
-
     u('+$00: the status register, read while the stack pointer is still the base',
       bus='READ', fc='DATA', asel='SP', bytes=2)
     u('the stack pointer, past the frame, while it is still this stack',
@@ -3422,9 +3412,94 @@ u('another version\'s frame is a format error -- UM 6.1.8',
   seq='COND', cond='VERBAD', next='exc_format')
 rte_fault('rte_fault_long', True)
 
+
+# --------------------------------------------------------------------------
+# RTE out of a SHORT bus fault frame -- doc/checkpoint.md rule 1.
+#
+# This design never builds one (every fault frame it writes is the long one,
+# doc/divergences.md), so a short frame RTE meets came from somewhere else --
+# software, or another processor -- and its internal words mean nothing here.
+# It has no version field to say so, so RTE does not read them: it restores
+# the frame from its architectural fields alone, as UM table 6-5 defines a
+# fault "at an instruction boundary".
+#
+#   +$00 the status register, last, as for every frame
+#   +$02 the program counter: the next instruction, whose operation word UM
+#        6.2 places in stage D -- "the address of the stage C word is the
+#        value in the program counter plus two". The frame does not carry
+#        stage D, so RTE reads it, from the program space of the stacked
+#        status register (UM 6.2.1).
+#   +$0A the special status word: RC and RB as for the long frame, and DF on a
+#        write means the write is still to be done. The instruction that made
+#        it has finished, so it goes to the bus unit as a posted write of its
+#        own (rule 9) -- the operand is +$10, +$18 and SIZE, and nothing else.
+#        A read fault is taken with an instruction in progress, which only the
+#        long frame describes, so DF on a read has nowhere to deliver its
+#        data; it is dropped.
+#   +$0C, +$0E stage C and stage B, taken as valid where RC and RB are clear.
+#
+# and then resumes at rte_boundary, an instruction boundary.
+# --------------------------------------------------------------------------
 label('rte_check_short')
 _far_end('FRAME_A_BYTES')
-rte_fault('rte_fault_short', False)
+label('rte_fault_short')
+u('the frame base, which is where the walk starts',
+  asrc='SP', alu='A', dst='EA_SAVE', size='LONG')
+u('+$00: the status register, held for the space stage D is read from',
+  bus='READ', fc='DATA', asel='EA_SAVE', bytes=2)
+u('... held',
+  asrc='RDATA', alu='A', dst='XW', size='WORD')
+_short = [
+    (0x02, 4, 'PC_D'),
+    (0x0A, 2, 'SSWA'),
+    (0x0A, 0, 'PIPE_F'),
+    (0x0C, 2, 'STG_C'),
+    (0x0E, 2, 'STG_B'),
+    (0x10, 4, 'DFA'),
+    (0x18, 4, 'DOB'),
+]
+FRAME_READS['rte_fault_short'] = [(0x00, 2, 'XW')] + \
+    [(off, n, dst) for off, n, dst in _short if n]
+_at = 0
+for _off, _n, _dst in _short:
+    if _n == 0:
+        u('the queue depth, which is what the rerun bits say -- UM 6.2.1',
+          dst=_dst)
+        continue
+    if _off != _at:
+        u('... to +$%02X' % _off,
+          asrc='EA_SAVE', bsrc={2: 'TWO', 4: 'FOUR', 6: 'SIX', 8: 'EIGHT'}[_off - _at],
+          alu='ADD', dst='EA_SAVE', size='LONG')
+    u('read +$%02X' % _off,
+      bus='READ', fc='DATA', asel='EA_SAVE', bytes=_n)
+    u('... into %s' % _dst.lower(),
+      asrc='RDATA', alu='A', dst=_dst, size='LONG' if _n == 4 else 'WORD')
+    _at = _off
+u('stage D is the word at the program counter -- UM 6.2',
+  asrc='PC_D', alu='A', dst='T1', size='LONG')
+u('... read from the stacked status register\'s program space -- UM 6.2.1',
+  bus='READ', fc='FRAMEPROG', asel='T1', bytes=2)
+u('... into stage D',
+  asrc='RDATA', alu='A', dst='STG_D', size='WORD')
+# UM 6.2: "when the short bus fault stack frame applies, the address of the
+# pipe stage B word is the value in the PC plus four" -- and writing it is what
+# says the pipe is whole.
+u('stage B is at the program counter plus four -- UM 6.2',
+  asrc='PC_D', bsrc='FOUR', alu='ADD', dst='FILL', size='LONG')
+u('the frame was taken at an instruction boundary, and resumes at one',
+  asrc='UBOUND', alu='A', dst='RUPC', size='WORD')
+u('+$00: the status register, read while the stack pointer is still the base',
+  bus='READ', fc='DATA', asel='SP', bytes=2)
+u('the stack pointer, past the frame, while it is still this stack',
+  asrc='SP', bsrc='FRAME_A_BYTES', alu='ADD', dst='SP', size='LONG')
+u('and now the status register, which may change which stack that was',
+  asrc='RDATA', alu='A', dst='SR', size='WORD')
+u('hand the posted write back, if there is one, and resume',
+  rstop=1, seq='RESUME')
+
+label('rte_boundary')
+u('an instruction boundary: decode what stage D holds',
+  seq='DECODE')
 
 exc_here('exc_format', 14, executed=True)
 

@@ -637,6 +637,11 @@ module rd68021_seq #(
       // The scanPC -- UM 7.4.1 -- is the address of stage C, "the word
       // following" whatever the instruction has consumed so far.
       rd68021_ucode_pkg::U_ASRC_PC_C_RAW: a_bus = stg_b_addr - 32'd2;
+      // The instruction boundary RTE resumes at out of a short bus fault
+      // frame, which carries no micro-address -- doc/checkpoint.md rule 1.
+      rd68021_ucode_pkg::U_ASRC_UBOUND:
+        a_bus = {{(32 - rd68021_ucode_pkg::UADDR){1'b0}},
+                 rd68021_ucode_pkg::ENTRY_RTE_BOUNDARY};
       default:                         a_bus = 32'd0;
     endcase
   end
@@ -2044,6 +2049,11 @@ module rd68021_seq #(
       // An exception frame is on the supervisor stack whatever mode the
       // exception came from -- isa.py's SDATA.
       rd68021_ucode_pkg::U_FC_SDATA: req_fc = rd68021_pkg::FC_SUPER_DATA;
+      // Program space at the privilege level of the status register a short
+      // bus fault frame carries, which RTE holds in xw -- UM 6.2.1.
+      rd68021_ucode_pkg::U_FC_FRAMEPROG:
+        req_fc = xw_q[rd68021_pkg::SR_S] ? rd68021_pkg::FC_SUPER_PROG
+                                         : rd68021_pkg::FC_USER_PROG;
       default:                      req_fc = super_mode
                                              ? rd68021_pkg::FC_SUPER_DATA
                                              : rd68021_pkg::FC_USER_DATA;
@@ -2363,6 +2373,27 @@ module rd68021_seq #(
             rs_rm_q    <= y[7];
             rs_rw_q    <= y[6];
             rs_space_q <= y[2:0];
+          end
+          // The same word out of a SHORT frame -- doc/checkpoint.md rule 1. The
+          // short frame has no internal word this design can read, so what the
+          // long one's +$08 would say is what an instruction boundary implies:
+          // stage D holds a word (RTE reads it from memory), nothing is
+          // cancelled, and the residual is the whole operand SIZE names, UM
+          // table 5-2. DF stands only for a write -- a read fault is always
+          // taken with an instruction in progress (UM 6.2.1) -- and the post
+          // bit, in the fault block below, makes that write the bus unit's own.
+          rd68021_ucode_pkg::U_DST_SSWA: begin
+            rs_rc_q    <= y[13];
+            rs_rb_q    <= y[12];
+            rs_df_q    <= y[8] & ~y[6];
+            // A short frame is taken at an instruction boundary, where no
+            // read-modify-write can be under way: RM in one is not acted on.
+            rs_rm_q    <= 1'b0;
+            rs_rw_q    <= y[6];
+            rs_space_q <= y[2:0];
+            rs_dv_q    <= 1'b1;
+            notrace_q  <= 1'b0;
+            rst_bytes_q <= (y[5:4] == 2'b00) ? 3'd4 : {1'b0, y[5:4]};
           end
           rd68021_ucode_pkg::U_DST_DFA:     rst_addr_q <= y;
           // The two buffers are one register in the bus unit, and which of
@@ -2758,6 +2789,10 @@ module rd68021_seq #(
         ea_save <= y;
       end else if (commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_INT08)) begin
         post_flt_q <= y[rd68021_frame_pkg::I_POSTED_LO];
+      end else if (commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_SSWA)) begin
+        // A short frame's data fault is a write its finished instruction
+        // posted: RTE hands it to the bus unit to run on its own -- rule 9.
+        post_flt_q <= y[8] & ~y[6];
       end
     end
   end
