@@ -143,6 +143,7 @@ INTERNAL = [
     (0x40, 31,  0, 'pc_fetch',  32,  'the next long word the pipe will fetch'),
     (0x44, 15,  0, 'link',      16,  'the return address of the subroutine under way'),
     (0x4A, 15,  0, 'cprim',     16,  'the coprocessor response primitive being served'),
+    (0x52, 15,  0, 'rmwupc',    16,  'the micro-address the read-modify-write under way starts again at'),
     (0x08,  5,  5, 'posted',     1,  'the faulted access was a posted write, which RTE reruns by itself'),
     (0x08, 12, 10, 'irqlvl',     3,  'the level of the interrupt being taken'),
 ]
@@ -202,6 +203,7 @@ CHECKPOINT = [
     ('seq', 'pc_prev_q',        32, 'pc_prev',       'a trace frame carries it at +$08'),
     ('seq', 'pc_kept_q',         1, 'pc_kept',      'pc_prev_q was taken at a flush, so the decode must not overwrite it'),
     ('seq', 'sr_q',             16, 'sr',            'frame +$00'),
+    ('seq', 'rmw_upc_q',        16, 'rmwupc',        'UM 6.2.3: with DF set, RTE "reruns the entire instruction" of a read-modify-write -- CAS, CAS2 or TAS -- so it resumes at the start of the locked sequence, which the microword marked RMW latched, and not at the faulted access'),
     ('seq', 'cprim_q',          16, 'cprim',         'UM 7.5.2.8: a bus error on any CIR access but the first, or on an operand a primitive moves, is an ordinary bus error, and RTE goes back to the primitive it interrupted'),
     ('seq', 'post_flt_q',        1, 'posted',        'doc/checkpoint.md rule 9: the faulted access belongs to no microword -- the write was posted and the instruction went on -- so RTE runs it on its own and resumes at the microword that was interrupted'),
     ('seq', 'irq_taking_q',      3, 'irqlvl',        'the level of the interrupt being taken, from the dispatch to the acknowledge. A posted write\'s fault can land in between -- doc/checkpoint.md rule 9 -- and the acknowledge after RTE has to ask for the same level'),

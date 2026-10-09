@@ -2325,3 +2325,35 @@ rising-edge register, and DBEN, the one strobe that moves on both edges,
 **Stops it coming back:** `bus_ruler_tb` checks DBEN's pin level tick by tick,
 and `make audit` walks the netlist cone of AS, DS and DBEN and fails if it
 reaches any register but the strobe's own (`doc/coding-standard.md`).
+## Post-M13 · RTE reran a read-modify-write from its faulted cycle, and did not take it as completed
+
+**What:** two rules of UM 6.2.2-6.2.3 for a frame whose SSW says RM, neither
+kept. RTE resumed a CAS, CAS2 or TAS at the microword whose access faulted, as
+for any other access.
+
+- UM 6.2.3: "the rerun operation, executed by the RTE instruction with the DF
+  bit of the SSW set, reruns the entire instruction". A fault on the write
+  wrote the update it had decided on before the fault without reading the
+  operand again, so a value another master had written in the meantime was
+  overwritten, the one thing the locked sequence exists to prevent.
+- UM 6.2.2: with RM set and DF cleared, "the RTE instruction expects the entire
+  operation to have been completed ... This is true even if the fault occurred
+  on the first read cycle." RTE instead went on from the faulted read with the
+  frame's data input buffer, and compared and wrote again over what the handler
+  had done. `doc/checkpoint.md` rule 5 named the entry point this needs; it had
+  never been built.
+
+**Found by:** RD68031 (its M8-M9 entry, which lists the first as inherited;
+the second it fixed in the same change). Confirmed here by the tests below:
+six of their checks fail before the fix.
+
+**Fixed by:** the long frame carries the micro-address the locked sequence
+starts at (`+$52`, `rmwupc`), latched from the microword marked `mark = RMW` (a
+new one-bit microword field: the micro-ROM is 106 bits wide). RESUME goes there
+with RM and DF set, to `rte_rmw_done` with RM set and DF clear, and hands
+nothing back to the bus unit in either case (`doc/checkpoint.md` rule 5).
+
+**Stops it coming back:** `core_fault_tb`, from RD68031: a CAS whose read faults
+and whose handler completes it; a CAS whose write faults while the operand
+changes; CAS2 faulted on each of its four accesses, and completed by the
+handler; a TAS faulted on its read and on its write while the byte changes.

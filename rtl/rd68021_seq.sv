@@ -134,6 +134,7 @@ module rd68021_seq #(
   // decoder and the operand transfers read its fields, and checkpointed because
   // a bus error can land in the middle of one.
   logic [15:0] cprim_q;
+  logic [rd68021_ucode_pkg::UADDR-1:0] rmw_upc_q;
   logic [rd68021_ucode_pkg::UADDR-1:0] cp_entry;
   // The effective address as the primitive decoder sees it -- assigned with
   // the addressing-mode signals below.
@@ -639,6 +640,8 @@ module rd68021_seq #(
       rd68021_ucode_pkg::U_ASRC_PC_C_RAW: a_bus = stg_b_addr - 32'd2;
       // The instruction boundary RTE resumes at out of a short bus fault
       // frame, which carries no micro-address -- doc/checkpoint.md rule 1.
+      rd68021_ucode_pkg::U_ASRC_RMWUPC:
+        a_bus = {{(32 - rd68021_ucode_pkg::UADDR){1'b0}}, rmw_upc_q};
       rd68021_ucode_pkg::U_ASRC_UBOUND:
         a_bus = {{(32 - rd68021_ucode_pkg::UADDR){1'b0}},
                  rd68021_ucode_pkg::ENTRY_RTE_BOUNDARY};
@@ -2206,7 +2209,19 @@ module rd68021_seq #(
         // doc/checkpoint.md rule 2 is what makes this a jump and nothing else:
         // the microword that faulted committed nothing, so re-executing it
         // reissues exactly the same request.
-        rd68021_ucode_pkg::U_SEQ_RESUME: upc_nxt = rupc_q;
+        //
+        // ... except for a read-modify-write, which is not resumed at its
+        // faulted access at all. UM 6.2.2: with RM set and DF cleared, "the RTE
+        // instruction expects the entire operation to have been completed",
+        // "even if the fault occurred on the first read cycle" -- so the
+        // instruction ends (rte_rmw_done). UM 6.2.3: with DF set, "the rerun
+        // operation ... reruns the entire instruction" -- so it starts again
+        // at the first microword of the locked sequence, from the frame's
+        // +$52, and runs every one of its cycles afresh.
+        rd68021_ucode_pkg::U_SEQ_RESUME:
+          upc_nxt = !rs_rm_q ? rupc_q
+                  : rs_df_q  ? rmw_upc_q
+                  :            rd68021_ucode_pkg::ENTRY_RTE_RMW_DONE;
         // Branch when the condition holds, fall through when it does not.
         rd68021_ucode_pkg::U_SEQ_COND:   upc_nxt = cond_true ? `UF(NEXT)
                                                              : upc + 1'b1;
@@ -2757,6 +2772,7 @@ module rd68021_seq #(
       g0_q      <= 1'b1;
       ea_save   <= '0;
       flt_upc   <= '0;
+      rmw_upc_q <= '0;
       post_flt_q <= 1'b0;
       own_q     <= 1'b0;
     end else begin
@@ -2794,6 +2810,15 @@ module rd68021_seq #(
         // posted: RTE hands it to the bus unit to run on its own -- rule 9.
         post_flt_q <= y[8] & ~y[6];
       end
+      // Where a read-modify-write starts -- UM 6.2.3 -- and RTE putting it
+      // back out of the frame. Latched whenever the marked microword is
+      // presented, and not only when it commits: for CAS and TAS it is the
+      // locked read itself, and a fault on that read is one the frame has to
+      // carry it for.
+      if (`UF(MARK) == rd68021_ucode_pkg::U_MARK_RMW)
+        rmw_upc_q <= upc;
+      else if (commit && (`UF(DST) == rd68021_ucode_pkg::U_DST_RMWUPC))
+        rmw_upc_q <= y[rd68021_ucode_pkg::UADDR-1:0];
     end
   end
 
@@ -2903,7 +2928,9 @@ module rd68021_seq #(
   // rst_addr_q, rst_data_q and rst_bytes_q are declared with the checkpoint set
   // at the top of the module: the register-write block uses them first.
 
-  assign rst_op_valid = commit && `UF(RSTOP);
+  // Nothing is handed back for a read-modify-write: it is either finished or
+  // started again from its first cycle -- the RESUME arm above.
+  assign rst_op_valid = commit && `UF(RSTOP) && !rs_rm_q;
   assign rst_addr     = rst_addr_q;
   // UM 6.2.3 reruns the faulted access when DF is still set, and UM 6.2.2 says
   // the handler did it when DF is clear. Both hand the operand back; the only

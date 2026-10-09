@@ -370,6 +370,7 @@ ASRC = enc(
                  # without using the word there -- UM 7.4.1
     'UBOUND',    # the micro-address of rte_boundary, an instruction boundary:
                  # where RTE out of a short frame resumes
+    'RMWUPC',    # the micro-address a read-modify-write starts again at
 )
 
 # A convention, not a field: ASRC.DREG and ASRC.AREG read the register that bits
@@ -529,6 +530,7 @@ DST = enc(
     'SSWA',      # the special status word out of a SHORT frame, with what an
                  # instruction boundary implies for the rest -- rule 1
     'RUPC',      # the micro-address to resume at
+    'RMWUPC',
     'AREG_EA',
     # The same two, for an ADDRESS rather than a data operand: written whole,
     # with no sign extension, whatever the operand size is. Stepping (An)+ and
@@ -683,6 +685,12 @@ CPUSPACE = enc('NONE', 'IACK', 'BKPT', 'COPROC',
 # of the format word at +$06.
 FRAME = enc('F0', 'F1', 'F2', 'F9', 'FA', 'FB')
 
+# The microword a read-modify-write starts again at when RTE reruns it -- UM
+# 6.2.3, "the rerun operation, executed by the RTE instruction with the DF bit
+# of the SSW set, reruns the entire instruction". The sequencer latches its
+# micro-address whenever it is presented, and the long frame carries it.
+MARK = enc('NONE', 'RMW')
+
 # MOVEM's register list: CLRLOW clears the lowest set bit of T0, which is the
 # register REGN and REGNR have just named -- a side effect of the microword, so
 # that the transfer and the step to the next register are one microword.
@@ -803,6 +811,7 @@ FIELDS = OrderedDict([
     # would lose -- mark_sync -- and for NOP, which PRM 4 makes wait for the
     # bus.
     ('sync',  (1,  None,  0)),
+    ('mark',  (1,  MARK,  'NONE')),
 ])
 
 

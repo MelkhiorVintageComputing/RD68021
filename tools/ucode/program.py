@@ -2038,8 +2038,9 @@ u('... in place',
 label('tas_mem')
 u('the address',
   call=1, seq='EAMODE', size='BYTE')
-u('read the byte, holding the bus',
-  bus='READ', fc='DATA', asel='EA', bytes=1, rmc=1)
+u('read the byte, holding the bus. RTE with DF set starts again here -- UM '
+  '6.2.3',
+  bus='READ', fc='DATA', asel='EA', bytes=1, rmc=1, mark='RMW')
 u('its codes come from what was there, before anything is set',
   asrc='RDATA', alu='A', dst='T1', ccr='LOGIC', size='BYTE', rmc=1)
 u('and bit 7 goes back, still holding the bus',
@@ -2512,8 +2513,9 @@ u('the address',
   call=1, seq='EAMODE', szsel='CAS')
 u('... and now the extension word can come back',
   asrc='T0', alu='A', dst='XW', size='WORD')
-u('read the destination, and hold the bus from here -- UM 5.5.2',
-  bus='READ', fc='DATA', asel='EA', szsel='CAS', rmc=1)
+u('read the destination, and hold the bus from here -- UM 5.5.2. RTE with DF '
+  'set starts the read-modify-write again here -- UM 6.2.3',
+  bus='READ', fc='DATA', asel='EA', szsel='CAS', rmc=1, mark='RMW')
 u('... held',
   asrc='RDATA', alu='A', dst='T1', szsel='CAS', rmc=1)
 u('the destination less the compare operand',
@@ -2536,8 +2538,10 @@ u('the first extension word',
   asrc='STG_C', alu='A', dst='T0', size='WORD', pf='CONSUME')
 u('the second',
   asrc='STG_C', alu='A', dst='T1', size='WORD', pf='CONSUME')
-u('the first one names the first address',
-  asrc='T0', alu='A', dst='XW', size='WORD')
+u('the first one names the first address. RTE with DF set starts the '
+  'read-modify-write again here -- UM 6.2.3 -- since T0 and T1 still hold '
+  'both extension words',
+  asrc='T0', alu='A', dst='XW', size='WORD', mark='RMW')
 u('... which is the register it names',
   asrc='XREG', alu='A', dst='EA', size='LONG')
 u('read it, and hold the bus from here to the end',
@@ -3327,6 +3331,8 @@ def rte_fault(stem, long_frame):
             # transfer reads its length and direction from, and which a
             # handler's own coprocessor instructions have since overwritten.
             (0x4A, 2, 'CPRIM'),
+            # UM 6.2.3: where the read-modify-write under way starts again.
+            (0x52, 2, 'RMWUPC'),
         ]
 
     FRAME_READS[stem] = [(off, n, dst) for off, n, dst in fields if n]
@@ -3500,6 +3506,20 @@ u('hand the posted write back, if there is one, and resume',
 label('rte_boundary')
 u('an instruction boundary: decode what stage D holds',
   seq='DECODE')
+
+# RTE out of a long frame whose special status word says RM with DF clear --
+# UM 6.2.2: the handler "must emulate this entire instruction ... because the
+# RTE instruction expects the entire operation to have been completed if the RM
+# bit is set and the DF bit is cleared. This is true even if the fault occurred
+# on the first read cycle." So nothing of the read-modify-write is run again:
+# the sequencer's RESUME comes here instead of to the faulted microword, and the
+# instruction ends. Every read-modify-write in this microcode -- CAS, CAS2, TAS
+# -- has taken all its extension words by the time it holds the bus, so stage C
+# is the next instruction's operation word and an ordinary end of instruction
+# is all there is left.
+label('rte_rmw_done')
+u('the read-modify-write was completed by the handler: the instruction ends',
+  pf='ADV', seq='DECODE')
 
 exc_here('exc_format', 14, executed=True)
 
@@ -3869,7 +3889,10 @@ def fault_frame(stem, long_frame):
         # as whatever the handler's stack held: a frame is copied and restored
         # by a task switch, and one that carries the previous owner's stack is
         # a leak with no upside.
-        fields += [(off, 4, 'ZERO') for off in range(0x4C, 0x5C, 4)]
+        fields += [(0x4C, 4, 'ZERO'), (0x50, 2, 'ZERO'),
+                   # UM 6.2.3: where a read-modify-write starts again.
+                   (0x52, 2, 'RMWUPC'),
+                   (0x54, 4, 'ZERO'), (0x58, 4, 'ZERO')]
     else:
         # UM table 6-5 makes the short frame sixteen words. Its last two are
         # internal and this design has nothing to put in them: a format $A frame

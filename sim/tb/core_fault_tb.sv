@@ -61,6 +61,40 @@ module core_fault_tb;
       if (a_o == 32'h0000_0604 && rw_o) fc604 = fc_o;
     end
 
+  // A bus error on one access, by address and direction, until the testbench
+  // lets it go -- for a fault on a WRITE of a read-modify-write, which the
+  // address-only region cannot single out. UM 5.5.1: BERR may end any cycle,
+  // a locked one included.
+  bit          wf_en;
+  logic [31:0] wf_addr;
+  logic        wf_rw;
+  int unsigned wf_hits;
+  initial begin wf_en = 1'b0; wf_addr = 32'h0; wf_rw = 1'b1; wf_hits = 0; end
+  always @(*) berr_force = wf_en && rst_n && as_oe && !as_n_o && (rw_o === wf_rw)
+                           && (a_o === wf_addr);
+  always @(posedge berr_force) wf_hits++;
+
+  // Bus errors, whatever raised them.
+  int unsigned berrs;
+  initial berrs = 0;
+  always @(negedge berr_n_i) if (rst_n) berrs++;
+
+  // The special status word's data-cycle half -- doc/ssw.md, UM figure 6-8.
+  task automatic check_ssw(input logic [31:0] at, input bit pipe,
+                           input logic [3:0] hi, input bit df, input bit rm,
+                           input bit rw, input logic [1:0] size,
+                           input logic [2:0] fcode, input string what);
+    logic [15:0] w;
+    w = peek_w(at + 32'h0A);
+    if (pipe)
+      check(w[15:12] === hi, {what, ": +$0A FC FB RC RB"});
+    check(w[8] === df,      {what, ": +$0A DF"});
+    check(w[7] === rm,      {what, ": +$0A RM"});
+    check(w[6] === rw,      {what, ": +$0A RW, 1 = read"});
+    check(w[5:4] === size,  {what, ": +$0A SIZE"});
+    check(w[2:0] === fcode, {what, ": +$0A FC2-FC0"});
+  endtask
+
   // An interrupting device drops its request when it is acknowledged.
   always @(negedge as_n_o)
     if (rst_n && fc_o === 3'b111 && a_o[19:16] === 4'hF) ipl_n_i = 3'b111;
@@ -76,6 +110,8 @@ module core_fault_tb;
     berr_en   = 1'b1;
     berr_base = GONE;
     berr_mask = 32'hFFFF_F000;             // a 4K page
+    wf_en     = 1'b0;
+    wf_hits   = 0;
   endtask
 
   // A short bus fault frame, format $A, built by hand -- UM table 6-5. Its
@@ -1194,6 +1230,260 @@ module core_fault_tb;
     check(fc600 === 3'd2, "short frame, user: stage D read in user program space -- UM 6.2.1");
     check(fc604 === 3'd2, "short frame, user: the refill in user program space -- UM 6.2.1");
     check(dut.u_seq.dreg[2] === 32'd3, "short frame, user: the program ran");
+
+
+    // ======================================================================
+    // A read-modify-write the handler completes. UM 6.2.2: the handler "must
+    // emulate this entire instruction ... because the RTE instruction expects
+    // the entire operation to have been completed if the RM bit is set and
+    // the DF bit is cleared. This is true even if the fault occurred on the
+    // first read cycle."
+    //
+    // CAS.L D3,D4,(A0)+ on a missing page faults on its read. The handler sets
+    // Z in the stacked status register and clears DF; the testbench is its
+    // memory system and writes the update operand. RTE must run nothing of the
+    // CAS again -- the page is still missing, so a rerun would fault a second
+    // time -- and go on with the next instruction.
+    // ======================================================================
+    base_setup();
+    poke_w(CODE + 32'h000, 16'h207C);  // movea.l #0x8010,%a0
+    poke_w(CODE + 32'h002, 16'h0000);
+    poke_w(CODE + 32'h004, 16'h8010);
+    poke_w(CODE + 32'h006, 16'h263C);  // move.l #0x11112222,%d3
+    poke_w(CODE + 32'h008, 16'h1111);
+    poke_w(CODE + 32'h00A, 16'h2222);
+    poke_w(CODE + 32'h00C, 16'h283C);  // move.l #0x33334444,%d4
+    poke_w(CODE + 32'h00E, 16'h3333);
+    poke_w(CODE + 32'h010, 16'h4444);
+    poke_w(CODE + 32'h012, 16'h0ED8);  // cas.l %d3,%d4,(%a0)+
+    poke_w(CODE + 32'h014, 16'h0103);
+    poke_w(CODE + 32'h016, 16'h42C5);  // move.w %ccr,%d5
+    poke_w(CODE + 32'h018, 16'h7255);  // moveq #0x55,%d1
+    poke_w(CODE + 32'h01A, 16'h60FE);  // bra.s .
+    poke_w(HAND + 32'h000, 16'h0057);  // ori.w #4,(%a7) -- Z, the compare was equal
+    poke_w(HAND + 32'h002, 16'h0004);
+    poke_w(HAND + 32'h004, 16'h026F);  // andi.w #0xFEFF,10(%a7) -- DF clear
+    poke_w(HAND + 32'h006, 16'hFEFF);
+    poke_w(HAND + 32'h008, 16'h000A);
+    poke_w(HAND + 32'h00A, 16'h4E73);  // rte
+    reset_dut();
+    dut.u_seq.dreg[1] = 32'h0;
+    run_until(HAND, 4000, reached);
+    base = ISP0 - 32'h5C;
+    check_ssw(base, 1'b0, 4'h0, 1'b1, 1'b1, 1'b1, 2'b00, 3'd5,
+              "RMW completed by the handler, the frame as built");
+    run_until(HAND + 32'h00A, 4000, reached);
+    check(reached && (peek_w(base + 32'h0A) & 16'h0FFF) === 16'h00C5,
+          "RMW completed by the handler: the handler reaches its RTE, DF cleared and RM kept");
+    poke_l(GONE + 32'h10, 32'h3333_4444);
+    i = berrs;
+    run_until(CODE + 32'h01A, 4000, reached);
+    check(reached && dut.u_seq.dreg[1] === 32'h55,
+          "RMW completed by the handler: RTE retires the CAS and the next instructions run -- UM 6.2.2");
+    check(berrs == i, "RMW completed by the handler: nothing of the CAS is run again");
+    check(dut.u_seq.dreg[5][2] === 1'b1, "RMW completed by the handler: the codes are the handler's");
+    check(peek_l(GONE + 32'h10) === 32'h3333_4444 && dut.u_seq.dreg[3] === 32'h1111_2222,
+          "RMW completed by the handler: memory and the compare operand as the handler left them");
+    // The effective address was evaluated, and (A0)+ stepped, before the
+    // locked read -- the handler emulates the operation, not the addressing
+    // (doc/checkpoint.md, rule 5).
+    check(dut.u_seq.areg[0] === GONE + 32'h14,
+          "RMW completed by the handler: (A0)+ stepped once, before the fault");
+    check(dut.u_seq.isp_q === ISP0, "RMW completed by the handler: the frame came off");
+
+    // ======================================================================
+    // A read-modify-write rerun by RTE. UM 6.2.3: "the rerun operation,
+    // executed by the RTE instruction with the DF bit of the SSW set, reruns
+    // the entire instruction". The CAS's WRITE faults; meanwhile the handler's
+    // side of the system changes the operand. Rerunning the write alone would
+    // store the update over the new value; rerunning the instruction reads
+    // the new value, the compare fails, and nothing is written.
+    // ======================================================================
+    base_setup();
+    poke_w(CODE + 32'h000, 16'h207C);  // movea.l #0x3000,%a0
+    poke_w(CODE + 32'h002, 16'h0000);
+    poke_w(CODE + 32'h004, 16'h3000);
+    poke_w(CODE + 32'h006, 16'h263C);  // move.l #0x11112222,%d3
+    poke_w(CODE + 32'h008, 16'h1111);
+    poke_w(CODE + 32'h00A, 16'h2222);
+    poke_w(CODE + 32'h00C, 16'h283C);  // move.l #0x33334444,%d4
+    poke_w(CODE + 32'h00E, 16'h3333);
+    poke_w(CODE + 32'h010, 16'h4444);
+    poke_w(CODE + 32'h012, 16'h0ED0);  // cas.l %d3,%d4,(%a0)
+    poke_w(CODE + 32'h014, 16'h0103);
+    poke_w(CODE + 32'h016, 16'h42C5);  // move.w %ccr,%d5
+    poke_w(CODE + 32'h018, 16'h7255);  // moveq #0x55,%d1
+    poke_w(CODE + 32'h01A, 16'h60FE);  // bra.s .
+    poke_w(HAND + 0, 16'h4E73);        // RTE, DF set
+    poke_l(32'h3000, 32'h1111_2222);
+    berr_en = 1'b0;
+    // A write the bus error refuses does not reach memory -- the harness's
+    // MMU model, as core_cow_tb uses it.
+    wr_protect = 1'b1;
+    wf_addr = 32'h3000;
+    wf_rw   = 1'b0;
+    wf_en   = 1'b1;
+    reset_dut();
+    run_until(HAND + 0, 4000, reached);
+    check(reached && wf_hits == 1, "RMW rerun: the CAS's write faults");
+    base = ISP0 - 32'h5C;
+    check_ssw(base, 1'b0, 4'h0, 1'b1, 1'b1, 1'b0, 2'b00, 3'd5, "RMW rerun, a write");
+    check(peek_l(base + 32'h10) === 32'h3000 && peek_l(base + 32'h18) === 32'h3333_4444,
+          "RMW rerun: +$10 the address, +$18 the update operand -- UM table 6-5");
+    wf_en = 1'b0;
+    poke_l(32'h3000, 32'h5A5A_5A5A);       // someone else's write, meanwhile
+    run_until(CODE + 32'h01A, 4000, reached);
+    check(reached, "RMW rerun: the program runs on");
+    check(peek_l(32'h3000) === 32'h5A5A_5A5A && dut.u_seq.dreg[3] === 32'h5A5A_5A5A
+          && dut.u_seq.dreg[5][2] === 1'b0,
+          "RMW rerun: the whole CAS ran again -- it read the new value, the compare failed and nothing was written (UM 6.2.3)");
+    wr_protect = 1'b0;
+
+    // ======================================================================
+    // CAS2 -- the gap left open at M4 -- with a fault on each of its four
+    // accesses in turn: the two locked reads, then the two writes (PRM 4,
+    // "Update 1 -> Destination 1; Update 2 -> Destination 2"). Each frame
+    // says RM; the handler only returns, with DF set, and RTE reruns the
+    // whole instruction (UM 6.2.3).
+    //
+    //   k = 0, 1, 2: nothing has reached memory when the fault comes, and the
+    //                rerun does the whole swap.
+    //   k = 3:       the first write has landed. Rerunning "the entire
+    //                instruction" reads it back, so the first compare now
+    //                fails: both destinations go into the compare registers
+    //                and nothing more is written. That is what UM 6.2.3 says
+    //                RTE does with DF set; a handler that wants the swap
+    //                finished instead completes it and clears DF (k = 4).
+    //   k = 4:       the first read faults and the handler completes the
+    //                instruction itself -- UM 6.2.2, RM set and DF cleared.
+    // ======================================================================
+    for (int k = 0; k < 5; k++) begin
+      logic [31:0] fa;
+      logic        frw;
+      fa  = (k == 1 || k == 3) ? 32'h3100 : 32'h3000;
+      frw = (k < 2 || k == 4);
+      base_setup();
+      poke_w(CODE + 32'h000, 16'h207C);  // movea.l #0x3000,%a0
+      poke_w(CODE + 32'h002, 16'h0000);
+      poke_w(CODE + 32'h004, 16'h3000);
+      poke_w(CODE + 32'h006, 16'h227C);  // movea.l #0x3100,%a1
+      poke_w(CODE + 32'h008, 16'h0000);
+      poke_w(CODE + 32'h00A, 16'h3100);
+      poke_w(CODE + 32'h00C, 16'h203C);  // move.l #0x11111111,%d0
+      poke_w(CODE + 32'h00E, 16'h1111);
+      poke_w(CODE + 32'h010, 16'h1111);
+      poke_w(CODE + 32'h012, 16'h223C);  // move.l #0x22222222,%d1
+      poke_w(CODE + 32'h014, 16'h2222);
+      poke_w(CODE + 32'h016, 16'h2222);
+      poke_w(CODE + 32'h018, 16'h243C);  // move.l #0xAAAAAAAA,%d2
+      poke_w(CODE + 32'h01A, 16'hAAAA);
+      poke_w(CODE + 32'h01C, 16'hAAAA);
+      poke_w(CODE + 32'h01E, 16'h263C);  // move.l #0xBBBBBBBB,%d3
+      poke_w(CODE + 32'h020, 16'hBBBB);
+      poke_w(CODE + 32'h022, 16'hBBBB);
+      poke_w(CODE + 32'h024, 16'h0EFC);  // cas2.l %d0:%d1,%d2:%d3,(%a0):(%a1)
+      poke_w(CODE + 32'h026, 16'h8080);
+      poke_w(CODE + 32'h028, 16'h90C1);
+      poke_w(CODE + 32'h02A, 16'h42C5);  // move.w %ccr,%d5
+      poke_w(CODE + 32'h02C, 16'h7C55);  // moveq #0x55,%d6
+      poke_w(CODE + 32'h02E, 16'h60FE);  // bra.s .
+      if (k == 4) begin
+        poke_w(HAND + 32'h000, 16'h0057);  // ori.w #4,(%a7)
+        poke_w(HAND + 32'h002, 16'h0004);
+        poke_w(HAND + 32'h004, 16'h026F);  // andi.w #0xFEFF,10(%a7)
+        poke_w(HAND + 32'h006, 16'hFEFF);
+        poke_w(HAND + 32'h008, 16'h000A);
+        poke_w(HAND + 32'h00A, 16'h4E73);  // rte
+      end else begin
+        poke_w(HAND + 0, 16'h4E73);        // RTE, DF set
+      end
+      poke_l(32'h3000, 32'h1111_1111);
+      poke_l(32'h3100, 32'h2222_2222);
+      berr_en = 1'b0;
+      wr_protect = 1'b1;
+      wf_addr = fa;
+      wf_rw   = frw;
+      wf_en   = 1'b1;
+      reset_dut();
+      dut.u_seq.dreg[6] = 32'h0;
+      run_until(HAND, 4000, reached);
+      check(reached && wf_hits == 1,
+            $sformatf("CAS2, access %0d: it faults", k));
+      base = ISP0 - 32'h5C;
+      check_ssw(base, 1'b0, 4'h0, 1'b1, 1'b1, frw, 2'b00, 3'd5,
+                $sformatf("CAS2, access %0d", k));
+      check(peek_l(base + 32'h10) === fa,
+            $sformatf("CAS2, access %0d: +$10 the faulted address -- UM table 6-5", k));
+      check(peek_l(base + 32'h02) === CODE + 32'h024,
+            $sformatf("CAS2, access %0d: +$02 the CAS2 -- UM 6.2.2, \"the operation word at the program counter address\"", k));
+      wf_en = 1'b0;
+      if (k == 4) begin
+        run_until(HAND + 32'h00A, 4000, reached);
+        poke_l(32'h3000, 32'hAAAA_AAAA);
+        poke_l(32'h3100, 32'hBBBB_BBBB);
+      end
+      i = berrs;
+      run_until(CODE + 32'h02E, 4000, reached);
+      check(reached && dut.u_seq.dreg[6] === 32'h55 && berrs == i
+            && dut.u_seq.isp_q === ISP0,
+            $sformatf("CAS2, access %0d: RTE, and the program runs on with no second fault", k));
+      if (k != 3)
+        check(peek_l(32'h3000) === 32'hAAAA_AAAA && peek_l(32'h3100) === 32'hBBBB_BBBB
+              && dut.u_seq.dreg[0] === 32'h1111_1111 && dut.u_seq.dreg[1] === 32'h2222_2222
+              && dut.u_seq.dreg[5][2] === 1'b1,
+              $sformatf("CAS2, access %0d: both updates written once, the compare registers kept, Z set (memory %08h %08h, D0 %08h, D1 %08h, CCR %02h)",
+                        k, peek_l(32'h3000), peek_l(32'h3100), dut.u_seq.dreg[0],
+                        dut.u_seq.dreg[1], dut.u_seq.dreg[5][7:0]));
+      else
+        check(peek_l(32'h3000) === 32'hAAAA_AAAA && peek_l(32'h3100) === 32'h2222_2222
+              && dut.u_seq.dreg[0] === 32'hAAAA_AAAA && dut.u_seq.dreg[1] === 32'h2222_2222
+              && dut.u_seq.dreg[5][2] === 1'b0,
+              $sformatf("CAS2, access 3: the rerun read the first write back, failed the compare and wrote nothing more -- UM 6.2.3 (memory %08h %08h, D0 %08h, D1 %08h, CCR %02h)",
+                        peek_l(32'h3000), peek_l(32'h3100), dut.u_seq.dreg[0],
+                        dut.u_seq.dreg[1], dut.u_seq.dreg[5][7:0]));
+      wr_protect = 1'b0;
+    end
+
+    // ======================================================================
+    // TAS, faulted on its read and on its write, rerun by RTE with DF set.
+    // On the write, the byte is changed meanwhile: rerunning the write alone
+    // would store $80 with Z set, rerunning the instruction tests the new
+    // byte and stores $81 with Z clear -- UM 6.2.3.
+    // ======================================================================
+    for (int k = 0; k < 2; k++) begin
+      base_setup();
+      poke_w(CODE + 32'h000, 16'h207C);  // movea.l #0x3000,%a0
+      poke_w(CODE + 32'h002, 16'h0000);
+      poke_w(CODE + 32'h004, 16'h3000);
+      poke_w(CODE + 32'h006, 16'h4AD0);  // tas (%a0)
+      poke_w(CODE + 32'h008, 16'h42C5);  // move.w %ccr,%d5
+      poke_w(CODE + 32'h00A, 16'h7C55);  // moveq #0x55,%d6
+      poke_w(CODE + 32'h00C, 16'h60FE);  // bra.s .
+      poke_w(HAND + 0, 16'h4E73);        // RTE, DF set
+      poke_l(32'h3000, 32'h0000_0000);
+      berr_en = 1'b0;
+      wr_protect = 1'b1;
+      wf_addr = 32'h3000;
+      wf_rw   = (k == 0);
+      wf_en   = 1'b1;
+      reset_dut();
+      run_until(HAND + 0, 4000, reached);
+      base = ISP0 - 32'h5C;
+      check(reached && wf_hits == 1, $sformatf("TAS, access %0d: it faults", k));
+      check_ssw(base, 1'b0, 4'h0, 1'b1, 1'b1, (k == 0), 2'b01, 3'd5,
+                $sformatf("TAS, access %0d", k));
+      wf_en = 1'b0;
+      if (k == 1) poke_w(32'h3000, 16'h0100);
+      run_until(CODE + 32'h00C, 4000, reached);
+      if (k == 0)
+        check(reached && peek_w(32'h3000) === 16'h8000 && dut.u_seq.dreg[5][2] === 1'b1,
+              "TAS, its read faulted: rerun, $80 written, Z set");
+      else
+        check(reached && peek_w(32'h3000) === 16'h8100 && dut.u_seq.dreg[5][2] === 1'b0,
+              "TAS, its write faulted: the whole instruction rerun -- $81 written, Z clear (UM 6.2.3)");
+      wr_protect = 1'b0;
+    end
+
 
     // ======================================================================
     // A traced instruction that faults. UM 6.1.7: "if an instruction does not

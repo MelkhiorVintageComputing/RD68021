@@ -18,7 +18,7 @@
 
 package rd68021_ucode_pkg;
 
-  localparam int UW    = 105;   // microword width
+  localparam int UW    = 106;   // microword width
   localparam int UADDR = 12;   // micro-address width
 
   localparam int U_SEQ_LSB = 0;
@@ -89,6 +89,8 @@ package rd68021_ucode_pkg;
   localparam int U_POST_W   = 1;
   localparam int U_SYNC_LSB = 104;
   localparam int U_SYNC_W   = 1;
+  localparam int U_MARK_LSB = 105;
+  localparam int U_MARK_W   = 1;
 
   localparam logic [2:0] U_SEQ_NEXT = 3'd0;
   localparam logic [2:0] U_SEQ_DECODE = 3'd1;
@@ -274,6 +276,7 @@ package rd68021_ucode_pkg;
   localparam logic [6:0] U_ASRC_FWLEN = 7'd71;
   localparam logic [6:0] U_ASRC_PC_C_RAW = 7'd72;
   localparam logic [6:0] U_ASRC_UBOUND = 7'd73;
+  localparam logic [6:0] U_ASRC_RMWUPC = 7'd74;
 
   localparam logic [5:0] U_BSRC_ZERO = 6'd0;
   localparam logic [5:0] U_BSRC_STG_C_U = 6'd1;
@@ -384,24 +387,25 @@ package rd68021_ucode_pkg;
   localparam logic [5:0] U_DST_DIB = 6'd25;
   localparam logic [5:0] U_DST_SSWA = 6'd26;
   localparam logic [5:0] U_DST_RUPC = 6'd27;
-  localparam logic [5:0] U_DST_AREG_EA = 6'd28;
-  localparam logic [5:0] U_DST_AREG_ADDR = 6'd29;
-  localparam logic [5:0] U_DST_AREG_EA_ADDR = 6'd30;
-  localparam logic [5:0] U_DST_DREG_R = 6'd31;
-  localparam logic [5:0] U_DST_CCR = 6'd32;
-  localparam logic [5:0] U_DST_REGN = 6'd33;
-  localparam logic [5:0] U_DST_REGNR = 6'd34;
-  localparam logic [5:0] U_DST_DREG_XQ = 6'd35;
-  localparam logic [5:0] U_DST_DREG_XR = 6'd36;
-  localparam logic [5:0] U_DST_CREG = 6'd37;
-  localparam logic [5:0] U_DST_XREG = 6'd38;
-  localparam logic [5:0] U_DST_USP = 6'd39;
-  localparam logic [5:0] U_DST_XREG_SZ = 6'd40;
-  localparam logic [5:0] U_DST_CPRIM = 6'd41;
-  localparam logic [5:0] U_DST_CPREG = 6'd42;
-  localparam logic [5:0] U_DST_SCANPC = 6'd43;
-  localparam logic [5:0] U_DST_CPINT = 6'd44;
-  localparam logic [5:0] U_DST_AREG_R = 6'd45;
+  localparam logic [5:0] U_DST_RMWUPC = 6'd28;
+  localparam logic [5:0] U_DST_AREG_EA = 6'd29;
+  localparam logic [5:0] U_DST_AREG_ADDR = 6'd30;
+  localparam logic [5:0] U_DST_AREG_EA_ADDR = 6'd31;
+  localparam logic [5:0] U_DST_DREG_R = 6'd32;
+  localparam logic [5:0] U_DST_CCR = 6'd33;
+  localparam logic [5:0] U_DST_REGN = 6'd34;
+  localparam logic [5:0] U_DST_REGNR = 6'd35;
+  localparam logic [5:0] U_DST_DREG_XQ = 6'd36;
+  localparam logic [5:0] U_DST_DREG_XR = 6'd37;
+  localparam logic [5:0] U_DST_CREG = 6'd38;
+  localparam logic [5:0] U_DST_XREG = 6'd39;
+  localparam logic [5:0] U_DST_USP = 6'd40;
+  localparam logic [5:0] U_DST_XREG_SZ = 6'd41;
+  localparam logic [5:0] U_DST_CPRIM = 6'd42;
+  localparam logic [5:0] U_DST_CPREG = 6'd43;
+  localparam logic [5:0] U_DST_SCANPC = 6'd44;
+  localparam logic [5:0] U_DST_CPINT = 6'd45;
+  localparam logic [5:0] U_DST_AREG_R = 6'd46;
 
   localparam logic [1:0] U_SIZE_BYTE = 2'd0;
   localparam logic [1:0] U_SIZE_WORD = 2'd1;
@@ -472,16 +476,20 @@ package rd68021_ucode_pkg;
   localparam logic [2:0] U_CPUSPACE_ACCESS = 3'd4;
   localparam logic [2:0] U_CPUSPACE_CPINIT = 3'd5;
 
+  localparam logic [0:0] U_MARK_NONE = 1'd0;
+  localparam logic [0:0] U_MARK_RMW = 1'd1;
+
   // Named entry points.
   localparam logic [UADDR-1:0] ENTRY_RESET = 12'd0;
   localparam logic [UADDR-1:0] ENTRY_ILLEGAL = 12'd4;
-  localparam logic [UADDR-1:0] ENTRY_TRACE = 12'd1353;
-  localparam logic [UADDR-1:0] ENTRY_IRQ = 12'd1356;
-  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 12'd1384;
+  localparam logic [UADDR-1:0] ENTRY_TRACE = 12'd1355;
+  localparam logic [UADDR-1:0] ENTRY_IRQ = 12'd1358;
+  localparam logic [UADDR-1:0] ENTRY_FAULT_LONG = 12'd1386;
   localparam logic [UADDR-1:0] ENTRY_LINE_F = 12'd1187;
-  localparam logic [UADDR-1:0] ENTRY_CP_IRQ = 12'd1973;
-  localparam logic [UADDR-1:0] ENTRY_CP_NOCP_PRIV = 12'd1445;
+  localparam logic [UADDR-1:0] ENTRY_CP_IRQ = 12'd1977;
+  localparam logic [UADDR-1:0] ENTRY_CP_NOCP_PRIV = 12'd1449;
   localparam logic [UADDR-1:0] ENTRY_RTE_BOUNDARY = 12'd3;
+  localparam logic [UADDR-1:0] ENTRY_RTE_RMW_DONE = 12'd268;
 
 endpackage
 

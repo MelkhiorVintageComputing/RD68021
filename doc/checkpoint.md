@@ -178,10 +178,11 @@ This is a cycle-count divergence, measured and justified in
 | `+$40` | 31:0 | `pc_fetch` | the next long word the pipe will fetch |
 | `+$44` | 15:0 | `link` | the return address of the subroutine under way |
 | `+$4A` | 15:0 | `cprim` | the coprocessor response primitive being served |
+| `+$52` | 15:0 | `rmwupc` | the micro-address the read-modify-write under way starts again at |
 | `+$08` | 5 | `posted` | the faulted access was a posted write, which RTE reruns by itself |
 | `+$08` | 12:10 | `irqlvl` | the level of the interrupt being taken |
 
-**492 bits available, 353 used, 8 words spare** (`+$4C`, `+$4E`, `+$50`, `+$52`, `+$54`, `+$56`, `+$58`, `+$5A`).
+**492 bits available, 369 used, 7 words spare** (`+$4C`, `+$4E`, `+$50`, `+$54`, `+$56`, `+$58`, `+$5A`).
 
 ### The frozen set
 
@@ -226,6 +227,7 @@ This is a cycle-count divergence, measured and justified in
 | `seq` | `pc_prev_q` | 32 | `pc_prev` | a trace frame carries it at +$08 |
 | `seq` | `pc_kept_q` | 1 | `pc_kept` | pc_prev_q was taken at a flush, so the decode must not overwrite it |
 | `seq` | `sr_q` | 16 | `sr` | frame +$00 |
+| `seq` | `rmw_upc_q` | 16 | `rmwupc` | UM 6.2.3: with DF set, RTE "reruns the entire instruction" of a read-modify-write -- CAS, CAS2 or TAS -- so it resumes at the start of the locked sequence, which the microword marked RMW latched, and not at the faulted access |
 | `seq` | `cprim_q` | 16 | `cprim` | UM 7.5.2.8: a bus error on any CIR access but the first, or on an operand a primitive moves, is an ordinary bus error, and RTE goes back to the primitive it interrupted |
 | `seq` | `post_flt_q` | 1 | `posted` | doc/checkpoint.md rule 9: the faulted access belongs to no microword -- the write was posted and the instruction went on -- so RTE runs it on its own and resumes at the microword that was interrupted |
 | `seq` | `irq_taking_q` | 3 | `irqlvl` | the level of the interrupt being taken, from the dispatch to the acknowledge. A posted write's fault can land in between -- doc/checkpoint.md rule 9 -- and the acknowledge after RTE has to ask for the same level |
@@ -322,8 +324,11 @@ afterwards.
 
 5. **RMC sequences are atomic to the handler.** UM 6.2.2: if `RM` is set and `DF`
    cleared, RTE expects the whole read-modify-write to have been completed by the
-   handler. The microcode therefore needs an entry point reachable from RESUME
-   meaning "the read-modify-write is already done, retire the instruction".
+   handler, "even if the fault occurred on the first read cycle"; RESUME then goes
+   to `rte_rmw_done`, which only ends the instruction. UM 6.2.3: with `DF` set,
+   RTE "reruns the entire instruction"; RESUME goes to the micro-address at
+   `+$52`, `rmwupc`, the start of the locked sequence, which the microword marked
+   `mark = RMW` latched. Either way nothing is handed back to the bus unit.
 
 6. **Only `DF`, `RB` and `RC` may have been modified** by the handler — UM 6.2.2,
    "the only bits in the SSW that may be modified are DF, RB, and RC". Our RTE
